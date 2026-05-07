@@ -1,0 +1,4 @@
+build/
+dist/
+tools/_smoketest
+tools/_smoketest.c
