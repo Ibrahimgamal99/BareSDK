@@ -41,8 +41,8 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 ## Quick start
 
 ```bash
-git clone --recurse-submodules https://github.com/your-org/baresdk
-cd baresdk
+git clone --recurse-submodules https://github.com/Ibrahimgamal99/BareSDK.git
+cd BareSDK
 
 ./scripts/build-linux.sh
 ./tools/verify.sh dist/linux/x86_64/baresdk.a link
