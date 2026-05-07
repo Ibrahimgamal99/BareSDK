@@ -20,6 +20,7 @@
     "enabled": true,
     "uri": "120@pbx.example.com",
     "password": "secret",
+    "transport": "ws",
     "server_url": "ws://pbx.example.com:8088/"
   },
   {
@@ -29,6 +30,7 @@
     "password": "secret",
     "server_url": "wss://pbx.example.com:443/",
     "media_enc": "dtls_srtp",
+    "transport": "wss",
     "ice_enabled": true,
     "stun_server": "stun:stun.l.google.com:19302",
     "verify_tls": false

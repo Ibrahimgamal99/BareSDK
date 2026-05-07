@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "uri": "100@192.168.1.10",
+  "uri": "100@pbx.example.com",
   "password": "secret",
   "transport": "udp"
 }

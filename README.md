@@ -316,21 +316,29 @@ bindgen::Builder::default()
 
 ### Python (cffi)
 
-baresdk is a static archive, so cffi cannot `dlopen` it directly. First build a thin shared wrapper:
+baresdk is a static archive, so cffi cannot `dlopen` it directly. First build a thin shared wrapper and preprocess the header:
 
 ```bash
-gcc -shared -fPIC -o baresdk_shared.so \
+# Build shared library
+gcc -shared -o baresdk_shared.so \
     -Wl,--whole-archive dist/linux/x86_64/baresdk.a -Wl,--no-whole-archive \
-    -lpthread -lssl -lcrypto -lm -ldl -lresolv
+    -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv
+
+# Preprocess header (strips system includes for cffi)
+gcc -E -P -undef -D__extension__= -m64 \
+    dist/linux/x86_64/include/baresdk.h -o baresdk_clean.h
 ```
 
-Then load the shared wrapper from Python:
+Then load from Python:
 
 ```python
 from cffi import FFI
+
 ffi = FFI()
-ffi.cdef(open("dist/linux/x86_64/include/baresdk.h").read())
+ffi.cdef(open("baresdk_clean.h").read())
 lib = ffi.dlopen("./baresdk_shared.so")
+
+print(ffi.string(lib.baresdk_version()).decode())  # "1.0.0"
 ```
 
 ### Go (cgo)
