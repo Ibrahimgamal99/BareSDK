@@ -199,57 +199,6 @@ cfg.reg_retry_backoff     = 2.0f;
 
 ---
 
-## WebSocket connectivity
-
-baresdk speaks SIP-over-WebSocket ([RFC 7118](https://tools.ietf.org/html/rfc7118)) — the same protocol used by browser clients like SIP.js and JsSIP.
-
-### Direct WSS (SIP.js-style)
-
-Point `server_url` at the PBX WebSocket endpoint:
-
-```c
-cfg.server_url = "wss://pbx.example.com:8089/ws";   // FreeSWITCH default
-cfg.server_url = "wss://pbx.example.com:5443/ws";   // Kamailio / OpenSIPS
-cfg.server_url = "wss://pbx.example.com:443/ws";    // behind nginx on 443
-```
-
-The scheme, port, and path are all parsed from the URL. No extra fields are needed.
-
-### nginx as a TLS-terminating reverse proxy
-
-nginx terminates TLS and forwards WebSocket traffic to the backend SIP server over plain `ws://`:
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name pbx.example.com;
-
-    location /ws {
-        proxy_pass http://127.0.0.1:8188;    # FreeSWITCH / Asterisk / Kamailio
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
-```
-
-Your app still points at the nginx address. If the nginx TLS certificate CN differs from your SIP domain, set `sni_hostname`:
-
-```c
-cfg.server_url   = "wss://pbx.example.com/ws";
-cfg.sni_hostname = "proxy.example.com";   // cert name, if different from SIP domain
-```
-
-Use `ws_extra_headers` to inject any headers nginx requires (e.g. `X-Real-IP`, auth tokens):
-
-```c
-const char *extra[] = { "X-Custom-Header: value", NULL };
-cfg.ws_extra_headers = extra;
-```
-
----
-
 ## Consuming baresdk
 
 ### CMake
