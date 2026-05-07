@@ -16,12 +16,11 @@
     "verify_tls": true
   },
   {
-    "_comment": "WSS — WebSocket over TLS (Nginx / cloud PBX)",
+    "_comment": "WS — WebSocket plain (Asterisk direct ws)",
     "enabled": true,
     "uri": "120@pbx.example.com",
     "password": "secret",
-    "server_url": "wss://pbx.example.com:443/",
-    "verify_tls": false
+    "server_url": "ws://pbx.example.com:8088/"
   },
   {
     "_comment": "WSS + DTLS-SRTP + ICE — full secure setup",

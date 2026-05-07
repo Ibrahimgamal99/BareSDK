@@ -207,19 +207,19 @@ baresdk_account_config_t acct = {
 
 // WSS via Nginx reverse proxy
 baresdk_account_config_t acct = {
-    .uri        = "120@xpbx.site",
-    .password   = "bare@2026",
-    .server_url = "wss://xpbx.site:443/ws",
+    .uri        = "120@pbx.example.com",
+    .password   = "secret",
+    .server_url = "wss://pbx.example.com:443/ws",
     .verify_tls = false,
 };
 
 // WSS + DTLS-SRTP + ICE (equivalent to baresip accounts-file line)
-// <sip:120@xpbx.site>;auth_pass=bare@2026;outbound="sip:xpbx.site:443;transport=wss";
+// <sip:120@pbx.example.com>;auth_pass=secret;outbound="sip:pbx.example.com:443;transport=wss";
 //   mediaenc=dtls_srtp;medianat=ice;stunserver=stun:stun.l.google.com:19302
 baresdk_account_config_t acct = {
-    .uri         = "120@xpbx.site",
-    .password    = "bare@2026",
-    .server_url  = "wss://xpbx.site:443/ws",
+    .uri         = "120@pbx.example.com",
+    .password    = "secret",
+    .server_url  = "wss://pbx.example.com:443/ws",
     .media_enc   = BARESDK_MEDIA_ENC_DTLS_SRTP,
     .ice_enabled = true,
     .stun_server = "stun:stun.l.google.com:19302",
