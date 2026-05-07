@@ -7,7 +7,61 @@
  */
 
 #include <math.h>
+#include <stdlib.h>
 #include "baresdk_internal.h"
+
+/* ── URI parser: "user@host", "user@host:port", or "sip:user@host" ──────── */
+
+static void parse_account_uri(const char *uri,
+                               char *user, size_t user_sz,
+                               char *host, size_t host_sz,
+                               uint16_t *port)
+{
+	user[0] = host[0] = '\0';
+	*port = 0;
+
+	if (!uri) return;
+
+	/* strip sip: or sips: scheme */
+	if (strncasecmp(uri, "sip:", 4) == 0)  uri += 4;
+	else if (strncasecmp(uri, "sips:", 5) == 0) uri += 5;
+
+	const char *at = strchr(uri, '@');
+	if (!at) {
+		/* no user part — treat everything as host */
+		const char *colon = strchr(uri, ':');
+		if (colon) {
+			size_t hlen = (size_t)(colon - uri);
+			if (hlen >= host_sz) hlen = host_sz - 1;
+			memcpy(host, uri, hlen); host[hlen] = '\0';
+			*port = (uint16_t)strtoul(colon + 1, NULL, 10);
+		} else {
+			str_ncpy(host, uri, host_sz);
+		}
+		return;
+	}
+
+	/* user part */
+	size_t ulen = (size_t)(at - uri);
+	if (ulen >= user_sz) ulen = user_sz - 1;
+	memcpy(user, uri, ulen); user[ulen] = '\0';
+
+	/* host[:port] part — stop at ';' URI params */
+	const char *hp = at + 1;
+	const char *semi = strchr(hp, ';');
+	size_t hp_len = semi ? (size_t)(semi - hp) : strlen(hp);
+
+	const char *colon = memchr(hp, ':', hp_len);
+	if (colon) {
+		size_t hlen = (size_t)(colon - hp);
+		if (hlen >= host_sz) hlen = host_sz - 1;
+		memcpy(host, hp, hlen); host[hlen] = '\0';
+		*port = (uint16_t)strtoul(colon + 1, NULL, 10);
+	} else {
+		if (hp_len >= host_sz) hp_len = host_sz - 1;
+		memcpy(host, hp, hp_len); host[hp_len] = '\0';
+	}
+}
 
 /* ── Deep-copy helpers for account config ───────────────────────────────── */
 
@@ -16,26 +70,44 @@ void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
                               struct baresdk_account *acct)
 {
 	*dst = *src;
-	acct->cfg_aor         = bsdk_strdup(src->aor);
+	acct->cfg_uri         = bsdk_strdup(src->uri);
+	acct->cfg_password    = bsdk_strdup(src->password);
+	acct->cfg_server_host = bsdk_strdup(src->server_host);
+	acct->cfg_server_url  = bsdk_strdup(src->server_url);
 	acct->cfg_auth_user   = bsdk_strdup(src->auth_user);
-	acct->cfg_auth_pass   = bsdk_strdup(src->auth_pass);
 	acct->cfg_display_name = bsdk_strdup(src->display_name);
+	acct->cfg_stun_server = bsdk_strdup(src->stun_server);
+	acct->cfg_turn_server = bsdk_strdup(src->turn_server);
+	acct->cfg_turn_user   = bsdk_strdup(src->turn_user);
+	acct->cfg_turn_pass   = bsdk_strdup(src->turn_pass);
 	acct->cfg_outbound    = bsdk_strdup(src->outbound);
 
-	dst->aor          = acct->cfg_aor;
+	dst->uri          = acct->cfg_uri;
+	dst->password     = acct->cfg_password;
+	dst->server_host  = acct->cfg_server_host;
+	dst->server_url   = acct->cfg_server_url;
 	dst->auth_user    = acct->cfg_auth_user;
-	dst->auth_pass    = acct->cfg_auth_pass;
 	dst->display_name = acct->cfg_display_name;
+	dst->stun_server  = acct->cfg_stun_server;
+	dst->turn_server  = acct->cfg_turn_server;
+	dst->turn_user    = acct->cfg_turn_user;
+	dst->turn_pass    = acct->cfg_turn_pass;
 	dst->outbound     = acct->cfg_outbound;
 }
 
 void bsdk_acct_cfg_deep_free(struct baresdk_account *acct)
 {
-	mem_deref(acct->cfg_aor);         acct->cfg_aor = NULL;
-	mem_deref(acct->cfg_auth_user);   acct->cfg_auth_user = NULL;
-	mem_deref(acct->cfg_auth_pass);   acct->cfg_auth_pass = NULL;
+	mem_deref(acct->cfg_uri);          acct->cfg_uri = NULL;
+	mem_deref(acct->cfg_password);     acct->cfg_password = NULL;
+	mem_deref(acct->cfg_server_host);  acct->cfg_server_host = NULL;
+	mem_deref(acct->cfg_server_url);   acct->cfg_server_url = NULL;
+	mem_deref(acct->cfg_auth_user);    acct->cfg_auth_user = NULL;
 	mem_deref(acct->cfg_display_name); acct->cfg_display_name = NULL;
-	mem_deref(acct->cfg_outbound);    acct->cfg_outbound = NULL;
+	mem_deref(acct->cfg_stun_server);  acct->cfg_stun_server = NULL;
+	mem_deref(acct->cfg_turn_server);  acct->cfg_turn_server = NULL;
+	mem_deref(acct->cfg_turn_user);    acct->cfg_turn_user = NULL;
+	mem_deref(acct->cfg_turn_pass);    acct->cfg_turn_pass = NULL;
+	mem_deref(acct->cfg_outbound);     acct->cfg_outbound = NULL;
 }
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
@@ -60,55 +132,76 @@ static void codec_list_str(const baresdk_codec_t *codecs, int count,
 	}
 }
 
-/* Configure a baresip account object from the global stack config */
+/* Configure a baresip account object.
+ * acct->parsed_* fields (user, host, port, transport) must be set first. */
 static void configure_baresip_account(struct baresdk_account *acct)
 {
 	struct account *ba = ua_account(acct->ua);
 	const baresdk_config_t *cfg = &g_bsdk.cfg;
 
-	/* Auth */
-	if (acct->cfg.auth_user)
-		account_set_auth_user(ba, acct->cfg.auth_user);
-	if (acct->cfg.auth_pass)
-		account_set_auth_pass(ba, acct->cfg.auth_pass);
+	/* Auth — password required; auth_user defaults to uri user part */
+	if (acct->cfg.password)
+		account_set_auth_pass(ba, acct->cfg.password);
+	{
+		const char *au = (acct->cfg.auth_user && acct->cfg.auth_user[0])
+		                 ? acct->cfg.auth_user : acct->parsed_user;
+		if (au && au[0])
+			account_set_auth_user(ba, au);
+	}
 	if (acct->cfg.display_name)
 		account_set_display_name(ba, acct->cfg.display_name);
 
 	/* Registration interval */
 	account_set_regint(ba, cfg->reg_expires);
 
-	/* Outbound proxy */
+	/* Outbound proxy — explicit override → auto from account server info → global */
 	{
 		char ob[512];
-		const char *ob_str = acct->cfg.outbound ? acct->cfg.outbound
-		                   : cfg->outbound_proxy ? cfg->outbound_proxy
-		                   : NULL;
-		if (ob_str) {
-			account_set_outbound(ba, ob_str, 0);
-		} else if (cfg->server_url || cfg->server_host) {
-			bsdk_build_outbound(cfg, ob, sizeof(ob));
-			account_set_outbound(ba, ob, 0);
+		const char *ob_str = acct->cfg.outbound;
+		if (!ob_str) {
+			const char *surl = acct->cfg.server_url;
+			const char *shost = (acct->cfg.server_host && acct->cfg.server_host[0])
+			                    ? acct->cfg.server_host : acct->parsed_host;
+			uint16_t sport = acct->cfg.server_port ? acct->cfg.server_port
+			                                       : acct->parsed_port;
+			if (surl || shost[0]) {
+				bsdk_build_outbound(surl, shost, sport,
+				                    acct->parsed_transport, ob, sizeof(ob));
+				ob_str = ob;
+			}
 		}
+		if (ob_str)
+			account_set_outbound(ba, ob_str, 0);
 	}
 
-	/* Media encryption */
+	/* Media encryption — account overrides global */
 	{
-		const char *menc = bsdk_mediaenc_str(cfg->media_enc);
+		baresdk_media_enc_t enc = acct->cfg.media_enc
+		                        ? acct->cfg.media_enc : cfg->media_enc;
+		const char *menc = bsdk_mediaenc_str(enc);
 		if (menc)
 			account_set_mediaenc(ba, menc);
 	}
 
-	/* ICE / NAT */
-	if (cfg->ice_enabled)
+	/* ICE / NAT — account OR global */
+	if (acct->cfg.ice_enabled || cfg->ice_enabled)
 		account_set_medianat(ba, "ice");
 
-	/* STUN */
-	if (cfg->stun_server)
-		account_set_stun_uri(ba, cfg->stun_server);
-	if (cfg->turn_user)
-		account_set_stun_user(ba, cfg->turn_user);
-	if (cfg->turn_pass)
-		account_set_stun_pass(ba, cfg->turn_pass);
+	/* STUN/TURN — account overrides global */
+	{
+		const char *stun = acct->cfg.stun_server
+		                 ? acct->cfg.stun_server : cfg->stun_server;
+		const char *turn = acct->cfg.turn_server
+		                 ? acct->cfg.turn_server : cfg->turn_server;
+		const char *tu   = acct->cfg.turn_user
+		                 ? acct->cfg.turn_user   : cfg->turn_user;
+		const char *tp   = acct->cfg.turn_pass
+		                 ? acct->cfg.turn_pass   : cfg->turn_pass;
+		if (stun) account_set_stun_uri(ba,  stun);
+		if (turn) account_set_stun_uri(ba,  turn);
+		if (tu)   account_set_stun_user(ba, tu);
+		if (tp)   account_set_stun_pass(ba, tp);
+	}
 
 	/* Audio codecs */
 	if (cfg->audio_codec_count > 0) {
@@ -226,16 +319,38 @@ static void create_fn(void *arg)
 	bsdk_acct_cfg_deep_copy(&acct->cfg, &ctx->cfg, acct);
 	acct->reg_state = BARESDK_REG_UNREGISTERED;
 
-	if (!acct->cfg.aor) {
+	if (!acct->cfg.uri) {
 		mem_deref(acct);
 		ctx->result = BARESDK_ERR_INVAL;
 		return;
 	}
 
+	/* Parse "user@host" or "user@host:port" from uri */
+	parse_account_uri(acct->cfg.uri,
+	                  acct->parsed_user, sizeof(acct->parsed_user),
+	                  acct->parsed_host, sizeof(acct->parsed_host),
+	                  &acct->parsed_port);
+
+	/* Determine transport: server_url → account transport → global default */
+	baresdk_transport_t tp = acct->cfg.transport;
+	if (acct->cfg.server_url) {
+		char sv_host[256], sv_path[256];
+		uint16_t sv_port;
+		bsdk_parse_server_url(acct->cfg.server_url, &tp,
+		                      sv_host, sizeof(sv_host),
+		                      &sv_port, sv_path, sizeof(sv_path));
+		if (!acct->parsed_host[0])
+			str_ncpy(acct->parsed_host, sv_host, sizeof(acct->parsed_host));
+		if (!acct->parsed_port)
+			acct->parsed_port = sv_port;
+	}
+	acct->parsed_transport = tp;
+
+	/* Build AOR: sip:user@host;transport=proto */
 	char aor[512];
-	const baresdk_config_t *gcfg = &g_bsdk.cfg;
-	re_snprintf(aor, sizeof(aor), "%s;transport=%s",
-	            acct->cfg.aor, bsdk_transport_str(gcfg->transport));
+	re_snprintf(aor, sizeof(aor), "sip:%s@%s;transport=%s",
+	            acct->parsed_user, acct->parsed_host,
+	            bsdk_transport_str(tp));
 
 	err = ua_alloc(&acct->ua, aor);
 	if (err) { mem_deref(acct); ctx->result = err; return; }
@@ -253,7 +368,7 @@ static void create_fn(void *arg)
 int baresdk_account_create(const baresdk_account_config_t *cfg,
                             baresdk_account_handle_t *out)
 {
-	if (!cfg || !cfg->aor || !out)
+	if (!cfg || !cfg->uri || !out)
 		return BARESDK_ERR_INVAL;
 
 	create_ctx_t ctx = { .cfg = *cfg, .out = out, .result = 0 };

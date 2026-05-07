@@ -156,45 +156,108 @@ All events arrive on a dedicated dispatch thread (never on `re_main`). The callb
 
 ---
 
-## Config reference (selected fields)
+## Account config
+
+`baresdk_account_config_t` is self-contained — `uri` + `password` + `transport` is all that's required. Everything else is auto-derived but overridable.
+
+```c
+baresdk_account_config_t acct = {
+    // ── Required ──────────────────────────────────────────────────────────
+    .uri      = "120@pbx.example.com",  // "user@host", "user@host:port", or "sip:user@host"
+    .password = "secret",
+
+    // ── Transport & server ─────────────────────────────────────────────────
+    // Option A — plain UDP/TCP/TLS: transport + optional server_host/port override
+    .transport   = BARESDK_TRANSPORT_UDP,   // UDP(0) TCP(1) TLS(2) WS(3) WSS(4)
+    .server_host = "192.168.1.1",           // NULL = host from uri
+    .server_port = 5060,                    // 0 = port from uri or transport default
+
+    // Option B — WebSocket / custom URL (overrides transport/server_host/server_port)
+    .server_url  = "wss://pbx.example.com:443/ws",
+
+    // ── Identity ────────────────────────────────────────────────────────────
+    .auth_user    = "120",       // NULL = user part of uri
+    .display_name = "Alice",     // NULL = omit
+
+    // ── Media / NAT ─────────────────────────────────────────────────────────
+    .media_enc   = BARESDK_MEDIA_ENC_DTLS_SRTP,  // NONE / SDES / DTLS_SRTP
+    .ice_enabled = true,
+    .stun_server = "stun:stun.l.google.com:19302",
+    .turn_server = "turn:turn.example.com:3478",
+    .turn_user   = "turnuser",
+    .turn_pass   = "turnpass",
+
+    // ── Advanced ────────────────────────────────────────────────────────────
+    .outbound    = NULL,     // NULL = auto-derived from server
+    .verify_tls  = false,    // true = verify server TLS certificate
+};
+```
+
+### Common patterns
+
+```c
+// UDP — minimum
+baresdk_account_config_t acct = { .uri = "100@192.168.1.1", .password = "pass" };
+
+// UDP — SIP domain differs from physical server
+baresdk_account_config_t acct = {
+    .uri = "100@company.com", .password = "pass",
+    .server_host = "192.168.1.1", .server_port = 5060,
+};
+
+// WSS via Nginx reverse proxy
+baresdk_account_config_t acct = {
+    .uri        = "120@xpbx.site",
+    .password   = "bare@2026",
+    .server_url = "wss://xpbx.site:443/ws",
+    .verify_tls = false,
+};
+
+// WSS + DTLS-SRTP + ICE (equivalent to baresip accounts-file line)
+// <sip:120@xpbx.site>;auth_pass=bare@2026;outbound="sip:xpbx.site:443;transport=wss";
+//   mediaenc=dtls_srtp;medianat=ice;stunserver=stun:stun.l.google.com:19302
+baresdk_account_config_t acct = {
+    .uri         = "120@xpbx.site",
+    .password    = "bare@2026",
+    .server_url  = "wss://xpbx.site:443/ws",
+    .media_enc   = BARESDK_MEDIA_ENC_DTLS_SRTP,
+    .ice_enabled = true,
+    .stun_server = "stun:stun.l.google.com:19302",
+};
+```
+
+Per-account fields (`media_enc`, `ice_enabled`, `stun_server`, `turn_*`) override the global defaults from `baresdk_config_t` when set.
+
+---
+
+## Global config reference (selected fields)
 
 ```c
 baresdk_config_t cfg;
-baresdk_config_init(&cfg);          // always call this first
+baresdk_config_init(&cfg);   // always call this first — zero-fills and sets defaults
 
-// All string fields are deep-copied by baresdk_init().
-// You can free/overwrite your strings immediately after calling baresdk_init().
+// TLS (global — applies to all accounts)
+cfg.ca_cert_path  = "/etc/ssl/certs/ca-certificates.crt";
+cfg.verify_server = true;
 
-// Transport — use server_url OR server_host, not both.
-// server_url takes precedence if both are set.
-// Use server_url for WS/WSS (it encodes scheme + path).
-// Use server_host + transport for plain UDP/TCP/TLS.
-cfg.server_url  = "wss://pbx:8089/ws";  // full URL — required for WS/WSS
-cfg.server_host = "pbx.example.com";    // simple form (UDP/TCP/TLS)
-cfg.transport   = BARESDK_TRANSPORT_TLS;
-
-// TLS
-cfg.ca_cert_path    = "/etc/ssl/certs/ca-certificates.crt";
-cfg.verify_server   = true;
-
-// NAT
+// NAT defaults (overridable per-account)
 cfg.ice_enabled = true;
 cfg.stun_server = "stun:stun.example.com";
 
-// Media
-cfg.media_enc          = BARESDK_MEDIA_ENC_DTLS_SRTP;
-cfg.audio_codecs[0]    = BARESDK_CODEC_OPUS;
-cfg.audio_codec_count  = 1;
+// Media defaults (overridable per-account)
+cfg.media_enc         = BARESDK_MEDIA_ENC_DTLS_SRTP;
+cfg.audio_codecs[0]   = BARESDK_CODEC_OPUS;
+cfg.audio_codec_count = 1;
 
 // Observability
-cfg.trace_sip        = true;
+cfg.trace_sip         = true;
 cfg.stats_interval_ms = 5000;
-cfg.pcap_path        = "/tmp/capture.pcap";
+cfg.pcap_path         = "/tmp/capture.pcap";
 
 // Registration retry (exponential backoff)
-cfg.reg_retry_initial_ms  = 2000;
-cfg.reg_retry_max_ms      = 300000;
-cfg.reg_retry_backoff     = 2.0f;
+cfg.reg_retry_initial_ms = 2000;
+cfg.reg_retry_max_ms     = 300000;
+cfg.reg_retry_backoff    = 2.0f;
 ```
 
 ---

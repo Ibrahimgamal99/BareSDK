@@ -10,9 +10,7 @@ set(BARESDK_DESKTOP_MODULES
   # Audio codecs
   "opus"
   "g711"
-  "g722"
   "l16"
-  "plc"
   # Audio processing
   "aubridge"
   "auconv"
@@ -26,13 +24,11 @@ set(BARESDK_DESKTOP_MODULES
   "stun"
   "turn"
   "ice"
-  # SIP features
-  "account"
-  "contact"
-  "menu"
+  # SIP features — account/contact/menu intentionally excluded:
+  # the SDK creates accounts/contacts programmatically; those modules
+  # would load from ~/.baresip/{accounts,contacts} which is not wanted.
   "mwi"
   "presence"
   "uuid"
-  "info"
 )
 list(JOIN BARESDK_DESKTOP_MODULES ";" BARESDK_DESKTOP_MODULES)

@@ -151,32 +151,32 @@ int bsdk_parse_server_url(const char *url,
 }
 
 /**
- * Build the baresip outbound proxy string from baresdk config.
+ * Build the baresip outbound proxy string.
  *
- * For WS/WSS with a path:
- *   <sip:host:port;transport=wss>;ob;ws-path=/ws
+ * sip_dialog_alloc wraps this in "Route: <%s;lr>", so the value here
+ * must be a plain SIP URI without angle brackets — e.g.:
+ *   sip:172.16.0.1:5060;transport=udp
+ *   sip:pbx.example.com:443;transport=wss
  *
- * For UDP/TCP/TLS:
- *   <sip:host:port;transport=udp>;ob
+ * server_url, if non-NULL, takes precedence over server_host/server_port.
  */
-int bsdk_build_outbound(const baresdk_config_t *cfg,
+int bsdk_build_outbound(const char *server_url,
+                         const char *server_host, uint16_t server_port,
+                         baresdk_transport_t transport,
                          char *buf, size_t buf_sz)
 {
 	char host[256] = {0};
 	char path[256] = {0};
-	uint16_t port  = 0;
-	baresdk_transport_t transport = cfg->transport;
+	uint16_t port  = server_port;
 
-	if (cfg->server_url) {
-		bsdk_parse_server_url(cfg->server_url, &transport,
+	if (server_url) {
+		bsdk_parse_server_url(server_url, &transport,
 		                      host, sizeof(host),
 		                      &port, path, sizeof(path));
 	} else {
-		str_ncpy(host, cfg->server_host ? cfg->server_host : "",
-		         sizeof(host));
-		port = cfg->server_port;
+		str_ncpy(host, server_host ? server_host : "", sizeof(host));
 		if (!port) {
-			switch (cfg->transport) {
+			switch (transport) {
 			case BARESDK_TRANSPORT_TLS: port = 5061; break;
 			case BARESDK_TRANSPORT_WS:  port = 8088; break;
 			case BARESDK_TRANSPORT_WSS: port = 8089; break;
@@ -185,13 +185,7 @@ int bsdk_build_outbound(const baresdk_config_t *cfg,
 		}
 	}
 
-	if (path[0] && (transport == BARESDK_TRANSPORT_WS ||
-	                transport == BARESDK_TRANSPORT_WSS)) {
-		re_snprintf(buf, buf_sz, "<sip:%s:%u;transport=%s>;ob;ws-path=%s",
-		            host, port, bsdk_transport_str(transport), path);
-	} else {
-		re_snprintf(buf, buf_sz, "<sip:%s:%u;transport=%s>;ob",
-		            host, port, bsdk_transport_str(transport));
-	}
+	re_snprintf(buf, buf_sz, "sip:%s:%u;transport=%s",
+	            host, port, bsdk_transport_str(transport));
 	return 0;
 }

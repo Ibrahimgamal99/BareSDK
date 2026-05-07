@@ -136,27 +136,31 @@ struct srv_ctx {
 	baresdk_transport_t transport;
 };
 
-static void srv_handler(int err, const struct dnsmsg *msg, void *arg)
+static void srv_handler(int err, const struct dnshdr *hdr,
+                        struct list *ansl, struct list *authl,
+                        struct list *addl, void *arg)
 {
 	struct srv_ctx    *sc = arg;
 	struct dns_lookup *lk = sc->lk;
 	baresdk_transport_t t = sc->transport;
 	bool found = false;
 
-	if (!err && msg) {
+	(void)hdr; (void)authl; (void)addl;
+
+	if (!err && ansl) {
 		struct le *le;
-		LIST_FOREACH(&msg->ansl, le) {
+		LIST_FOREACH(ansl, le) {
 			struct dnsrr *rr = le->data;
 			if (rr->type != DNS_TYPE_SRV)
 				continue;
 			/* RFC 2782: "." target means no service at this transport */
-			if (!str_cmp(rr->rr.srv.target, "."))
+			if (!str_cmp(rr->rdata.srv.target, "."))
 				continue;
 			found = true;
-			add_result(lk, t, rr->rr.srv.target,
-			           rr->rr.srv.port,
-			           rr->rr.srv.pri,
-			           rr->rr.srv.weight);
+			add_result(lk, t, rr->rdata.srv.target,
+			           rr->rdata.srv.port,
+			           rr->rdata.srv.pri,
+			           rr->rdata.srv.weight);
 		}
 	}
 
@@ -176,24 +180,28 @@ static void srv_handler(int err, const struct dnsmsg *msg, void *arg)
 
 static void start_srv_queries(struct dns_lookup *lk);
 
-static void naptr_handler(int err, const struct dnsmsg *msg, void *arg)
+static void naptr_handler(int err, const struct dnshdr *hdr,
+                          struct list *ansl, struct list *authl,
+                          struct list *addl, void *arg)
 {
 	struct dns_lookup *lk = arg;
 	bool found = false;
 
-	if (!err && msg) {
+	(void)hdr; (void)authl; (void)addl;
+
+	if (!err && ansl) {
 		struct le *le;
-		LIST_FOREACH(&msg->ansl, le) {
+		LIST_FOREACH(ansl, le) {
 			struct dnsrr *rr = le->data;
 			if (rr->type != DNS_TYPE_NAPTR)
 				continue;
 			/* RFC 3263 §4.1: only "S" flag records point to SRV */
-			if (!rr->rr.naptr.flags ||
-			    str_casecmp(rr->rr.naptr.flags, "S") != 0)
+			if (!rr->rdata.naptr.flags ||
+			    str_casecmp(rr->rdata.naptr.flags, "S") != 0)
 				continue;
 
 			baresdk_transport_t t =
-				transport_from_naptr_service(rr->rr.naptr.services);
+				transport_from_naptr_service(rr->rdata.naptr.services);
 			if ((int)t == -1)
 				continue;
 			if (lk->srv_count >= MAX_SRV)
@@ -201,7 +209,7 @@ static void naptr_handler(int err, const struct dnsmsg *msg, void *arg)
 
 			found = true;
 			struct srv_slot *sl = &lk->srv[lk->srv_count++];
-			str_ncpy(sl->name, rr->rr.naptr.replace, sizeof(sl->name));
+			str_ncpy(sl->name, rr->rdata.naptr.replace, sizeof(sl->name));
 			sl->transport = t;
 		}
 	}

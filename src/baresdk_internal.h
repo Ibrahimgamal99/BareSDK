@@ -76,11 +76,23 @@ struct baresdk_account {
 	struct le                 le;
 	struct ua                *ua;
 	baresdk_account_config_t  cfg;
-	char                     *cfg_aor;
+	/* heap-allocated copies of cfg string fields */
+	char                     *cfg_uri;
+	char                     *cfg_password;
+	char                     *cfg_server_host;
+	char                     *cfg_server_url;
 	char                     *cfg_auth_user;
-	char                     *cfg_auth_pass;
 	char                     *cfg_display_name;
+	char                     *cfg_stun_server;
+	char                     *cfg_turn_server;
+	char                     *cfg_turn_user;
+	char                     *cfg_turn_pass;
 	char                     *cfg_outbound;
+	/* derived from uri at create time */
+	char                      parsed_user[64];
+	char                      parsed_host[256];
+	uint16_t                  parsed_port;
+	baresdk_transport_t       parsed_transport;
 	baresdk_reg_state_t       reg_state;
 	baresdk_error_t           reg_error;
 	char                      reg_error_str[256];
@@ -228,7 +240,10 @@ int bsdk_parse_server_url(const char *url,
                            uint16_t *port,
                            char *path, size_t path_sz);
 
-int bsdk_build_outbound(const baresdk_config_t *cfg, char *buf, size_t buf_sz);
+int bsdk_build_outbound(const char *server_url,
+                         const char *server_host, uint16_t server_port,
+                         baresdk_transport_t transport,
+                         char *buf, size_t buf_sz);
 
 const char *bsdk_transport_str(baresdk_transport_t t);
 const char *bsdk_mediaenc_str(baresdk_media_enc_t enc);

@@ -146,9 +146,6 @@ static void invite_fn(void *arg)
 			mem_deref(ch);
 			continue;
 		}
-		struct pl name_pl;
-		pl_set_str(&name_pl, ch->name);
-		call_add_custom_hdr(bc, &name_pl, "%s", ch->value);
 		list_append(&lc->custom_hdrs, &ch->le, ch);
 	}
 
@@ -297,14 +294,6 @@ static void add_call_hdr_fn(void *arg)
 		return;
 	}
 
-	struct pl name_pl;
-	pl_set_str(&name_pl, ch->name);
-	ctx->result = call_add_custom_hdr(ctx->lc->bc, &name_pl,
-	                                  "%s", ch->value);
-	if (ctx->result) {
-		mem_deref(ch);
-		return;
-	}
 	list_append(&ctx->lc->custom_hdrs, &ch->le, ch);
 }
 

@@ -257,7 +257,8 @@ static void unsubscribe_fn(void *arg)
 	struct contact *c = contact_find(contacts, ctx->uri);
 	if (c) {
 		contact_set_presence(c, false);
-		ctx->result = contact_remove(contacts, c);
+		contact_remove(contacts, c);
+		ctx->result = 0;
 	} else {
 		ctx->result = 0;
 	}

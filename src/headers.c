@@ -32,10 +32,10 @@ static void add_hdr_fn(void *arg)
 	hdr_ctx_t *ctx = arg;
 	if (!ctx->acct->ua) { ctx->result = ENOENT; return; }
 
-	struct pl name_pl;
-	pl_set_str(&name_pl, ctx->name);
-	ctx->result = ua_add_custom_hdr(ctx->acct->ua, &name_pl,
-	                                "%s", ctx->value);
+	struct pl name_pl, value_pl;
+	pl_set_str(&name_pl,  ctx->name);
+	pl_set_str(&value_pl, ctx->value);
+	ctx->result = ua_add_custom_hdr(ctx->acct->ua, &name_pl, &value_pl);
 	if (ctx->result)
 		return;
 

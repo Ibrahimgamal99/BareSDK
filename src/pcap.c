@@ -251,59 +251,6 @@ void bsdk_pcap_write_sip(const char *data, size_t len,
 	mtx_unlock(&g_bsdk.pcap_lock);
 }
 
-	(void)is_udp; /* always write as UDP framing for SIP */
-
-	uint8_t src_ip[4], dst_ip[4];
-	uint16_t src_port, dst_port;
-	sa_to_bytes(src, src_ip, &src_port);
-	sa_to_bytes(dst, dst_ip, &dst_port);
-	if (!src_port) src_port = 5060;
-	if (!dst_port) dst_port = 5060;
-
-	uint16_t udp_len  = (uint16_t)(UDP_HDR_LEN + len);
-	uint16_t ip_total = (uint16_t)(IP_HDR_LEN + udp_len);
-	uint32_t pkt_len  = IP_HDR_LEN + udp_len;
-
-	/* Timestamp */
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-
-	pcap_pkt_hdr_t ph = {
-		.ts_sec   = (uint32_t)tv.tv_sec,
-		.ts_usec  = (uint32_t)tv.tv_usec,
-		.incl_len = pkt_len,
-		.orig_len = pkt_len,
-	};
-
-	ip_hdr_t ip = {
-		.ihl_ver   = 0x45,
-		.tos       = 0,
-		.total_len = htons(ip_total),
-		.id        = 0,
-		.frag_off  = 0,
-		.ttl       = 64,
-		.proto     = IP_PROTO_UDP,
-		.checksum  = 0,
-	};
-	memcpy(ip.src, src_ip, 4);
-	memcpy(ip.dst, dst_ip, 4);
-
-	udp_hdr_t udp = {
-		.src_port = htons(src_port),
-		.dst_port = htons(dst_port),
-		.length   = htons(udp_len),
-		.checksum = 0,
-	};
-
-	fwrite(&ph,  sizeof(ph),  1, g_bsdk.pcap_file);
-	fwrite(&ip,  sizeof(ip),  1, g_bsdk.pcap_file);
-	fwrite(&udp, sizeof(udp), 1, g_bsdk.pcap_file);
-	fwrite(data, 1, len,         g_bsdk.pcap_file);
-	fflush(g_bsdk.pcap_file);
-
-	mtx_unlock(&g_bsdk.pcap_lock);
-}
-
 /* ── Public control API ──────────────────────────────────────────────────── */
 
 int baresdk_pcap_start(const char *path)

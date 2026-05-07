@@ -1,33 +1,71 @@
 /**
- * @file log.c  baresip log → BARESDK_EV_LOG bridge
+ * @file log.c  baresip log + re dbg → BARESDK_EV_LOG bridge
  */
 
 #include "baresdk_internal.h"
+#include <re_dbg.h>
 
-static void log_handler(uint32_t level, const char *msg)
+/*
+ * Baresip log levels:  LEVEL_DEBUG=0  LEVEL_INFO=1  LEVEL_WARN=2  LEVEL_ERROR=3
+ * SDK    log_level:    3=debug        2=info        1=warn        0=err
+ *
+ * A baresip message at level L is shown when L >= (3 - sdk_log_level).
+ * Drop condition: L < (3 - sdk_log_level).
+ */
+static void queue_log_event(const char *msg, size_t len)
 {
-	if ((int)level > g_bsdk.cfg.log_level)
-		return;
-
-	baresdk_event_t ev = {0};
-	ev.type = BARESDK_EV_LOG;
-
-	/* msg points into baresip's buffer — copy before returning */
 	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 	if (!qev)
 		return;
 
 	memset(qev, 0, sizeof(*qev));
-	str_ncpy(qev->buf, msg, sizeof(qev->buf));
+	if (len > 0 && len < sizeof(qev->buf))
+		memcpy(qev->buf, msg, len);
+	else
+		str_ncpy(qev->buf, msg, sizeof(qev->buf));
 	qev->ev.type = BARESDK_EV_LOG;
 	qev->ev.u.log.message = qev->buf;
 
 	mtx_lock(&g_bsdk.ev_lock);
+	if (g_bsdk.ev_queue_len >= g_bsdk.ev_queue_max) {
+		mtx_unlock(&g_bsdk.ev_lock);
+		mem_deref(qev);
+		return; /* silently drop — no warning to avoid re-entrant logging */
+	}
 	list_append(&g_bsdk.ev_queue, &qev->le, qev);
+	g_bsdk.ev_queue_len++;
 	cnd_signal(&g_bsdk.ev_cond);
 	mtx_unlock(&g_bsdk.ev_lock);
+}
 
-	(void)ev;
+static void log_handler(uint32_t level, const char *msg)
+{
+	if ((int)level < (3 - g_bsdk.cfg.log_level))
+		return;
+
+	queue_log_event(msg, 0);
+}
+
+/*
+ * re library dbg levels: DBG_ERR=3, DBG_WARNING=4, DBG_NOTICE=5,
+ *                        DBG_INFO=6, DBG_DEBUG=7
+ * Map to baresip LEVEL_* for the same SDK filter:
+ *   re <= 3 → LEVEL_ERROR (3)
+ *   re == 4 → LEVEL_WARN  (2)
+ *   re >= 5 → LEVEL_INFO  (1)  (DEBUG passes only at sdk log_level 3)
+ */
+static void re_dbg_handler(int re_level, const char *p, size_t len, void *arg)
+{
+	(void)arg;
+	uint32_t bslevel;
+	if (re_level <= 3)      bslevel = 3;
+	else if (re_level == 4) bslevel = 2;
+	else                    bslevel = 1;
+
+	if ((int)bslevel < (3 - g_bsdk.cfg.log_level))
+		return;
+
+	queue_log_event(p, len);
 }
 
 static struct log s_logger = {
@@ -36,11 +74,27 @@ static struct log s_logger = {
 
 int bsdk_log_init(void)
 {
+	/* Route all baresip log output through our handler only.
+	 * log_enable_stdout(false) stops vlog() from printing directly to
+	 * stdout — without this, every warning() call bypasses the handler
+	 * and prints to the terminal regardless of what the app does.
+	 * log_level_set(LEVEL_DEBUG) lets all messages reach the handler;
+	 * we apply the SDK log_level filter above.
+	 *
+	 * dbg_handler_set intercepts re library messages (websock:, tls:,
+	 * sip:, ...) that use DEBUG_WARNING/re_printf.  Once a handler is
+	 * registered, re's dbg_vprintf skips its own stderr write, so
+	 * those messages no longer appear in the terminal. */
+	log_enable_stdout(false);
+	log_level_set(LEVEL_DEBUG);
 	log_register_handler(&s_logger);
+	dbg_handler_set(re_dbg_handler, NULL);
 	return 0;
 }
 
 void bsdk_log_close(void)
 {
+	dbg_handler_set(NULL, NULL);
 	log_unregister_handler(&s_logger);
+	log_enable_stdout(true);
 }

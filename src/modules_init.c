@@ -11,30 +11,34 @@
 
 #include "baresdk_internal.h"
 
-/* Common modules present in both desktop and mobile profiles */
+/* Common modules present in both desktop and mobile profiles.
+ *
+ * Deliberately excluded:
+ *   "account" — reads ~/.baresip/accounts from disk; SDK creates all
+ *               accounts programmatically via baresdk_account_create()
+ *   "contact" — reads ~/.baresip/contacts from disk (template contains
+ *               sip:user@domain;presence=p2p which triggers spurious
+ *               SUBSCRIBE dialogs); contacts are added via the API
+ *   "menu"    — interactive CLI menu; writes to stderr and has no role
+ *               in a library SDK
+ */
 static const char *COMMON_MODULES[] = {
 	"opus",
 	"g711",
-	"g722",
 	"srtp",
 	"dtls_srtp",
 	"stun",
 	"turn",
 	"ice",
-	"account",
-	"contact",
-	"menu",
 	"mwi",
 	"presence",
 	"uuid",
-	"info",    /* SIP INFO — DTMF RFC 2976, application/dtmf-relay */
 	NULL
 };
 
 /* Desktop-only modules */
 static const char *DESKTOP_EXTRA[] = {
 	"l16",
-	"plc",
 	"aubridge",
 	"auconv",
 	"auresamp",

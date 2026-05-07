@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "uri": "120@xpbx.site",
+  "password": "bare@2026",
+  "display_name": "120",
+  "server_url": "wss://xpbx.site:443/",
+  "outbound": "sip:xpbx.site:443;transport=wss",
+  "verify_tls": false,
+  "media_enc": "dtls_srtp",
+  "ice_enabled": true,
+  "stun_server": "stun:stun.l.google.com:19302"
+}

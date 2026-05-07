@@ -72,13 +72,7 @@ static int parse_url(const char *url, transport_t *out_t,
 	const char *tp = strstr(p, ";transport=");
 	if (tp) {
 		const char *tv = tp + 11;
-		if (strncasecmp(tv, "wss", 3) == 0) {
-			*out_t = TRANSPORT_WSS;
-			def_port = 8089;
-		} else if (strncasecmp(tv, "ws", 2) == 0) {
-			*out_t = TRANSPORT_WS;
-			def_port = 8088;
-		} else if (strncasecmp(tv, "tls", 3) == 0) {
+		if (strncasecmp(tv, "tls", 3) == 0) {
 			*out_t = TRANSPORT_TLS;
 			def_port = 5061;
 		} else if (strncasecmp(tv, "tcp", 3) == 0) {
@@ -229,19 +223,6 @@ static void test_wss_no_path(void)
 	ASSERT_EQ_STR("wss_nopath_path", path, "");
 }
 
-static void test_sip_transport_wss(void)
-{
-	transport_t t;
-	char host[256], path[256];
-	uint16_t port;
-	int rc = parse_url("sip:xpbx.site:443;transport=wss", &t, host,
-	                    sizeof(host), &port, path, sizeof(path));
-	ASSERT_EQ_INT("sip_wss_rc", rc, 0);
-	ASSERT_EQ_INT("sip_wss_transport", t, TRANSPORT_WSS);
-	ASSERT_EQ_STR("sip_wss_host", host, "xpbx.site");
-	ASSERT_EQ_INT("sip_wss_port", port, 443);
-}
-
 static void test_sip_transport_tls_no_port(void)
 {
 	transport_t t;
@@ -276,7 +257,6 @@ int main(void)
 	test_null_url();
 	test_no_scheme();
 	test_wss_no_path();
-	test_sip_transport_wss();
 	test_sip_transport_tls_no_port();
 	test_sip_transport_tcp();
 

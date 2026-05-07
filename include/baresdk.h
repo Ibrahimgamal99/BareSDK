@@ -139,6 +139,7 @@ typedef enum {
 } baresdk_event_type_t;
 
 /* ── Event payload structs ────────────────────────────────────────────────── */
+typedef struct {
 	baresdk_account_handle_t account;
 	baresdk_reg_state_t      state;
 	baresdk_error_t          error;         /* BARESDK_OK when REGISTERED */
@@ -413,11 +414,62 @@ typedef struct {
 /* ── Account config ───────────────────────────────────────────────────────── */
 
 typedef struct {
-	const char *aor;          /* "sip:user@domain" — required */
-	const char *auth_user;    /* digest auth username; NULL = use AOR user */
-	const char *auth_pass;    /* digest auth password — required */
-	const char *display_name; /* NULL = omit */
-	const char *outbound;     /* override outbound proxy for this account */
+	/* ── Required ─────────────────────────────────────────────────────── */
+
+	/**
+	 * Login URI — who you are and where the server is.
+	 * Accepted forms:
+	 *   "user@host"            →  AOR sip:user@host, server = host:default_port
+	 *   "user@host:port"       →  AOR sip:user@host, server = host:port
+	 *   "sip:user@host"        →  same as "user@host"
+	 * Required.
+	 */
+	const char          *uri;
+
+	const char          *password;    /* digest auth password — required */
+
+	/* ── Transport & server ────────────────────────────────────────────── */
+
+	/**
+	 * SIP transport protocol.  Defaults to BARESDK_TRANSPORT_UDP (0).
+	 * Ignored when server_url is set (transport is derived from the URL scheme).
+	 */
+	baresdk_transport_t  transport;
+
+	/**
+	 * Override the server address.  NULL = use the host:port from uri.
+	 * Useful when the SIP domain differs from the physical server address.
+	 */
+	const char          *server_host;  /* NULL = host from uri */
+	uint16_t             server_port;  /* 0    = port from uri, or transport default */
+
+	/**
+	 * Full server URL for WebSocket transports or non-standard paths.
+	 *   "wss://pbx.example.com:443/ws"
+	 *   "ws://pbx.internal:8088/"
+	 * When set, overrides transport, server_host, and server_port.
+	 */
+	const char          *server_url;
+
+	/* ── Identity ──────────────────────────────────────────────────────── */
+
+	const char          *auth_user;    /* NULL = user part of uri */
+	const char          *display_name; /* NULL = omit */
+
+	/* ── Media / NAT ──────────────────────────────────────────────────── */
+
+	baresdk_media_enc_t  media_enc;   /* BARESDK_MEDIA_ENC_NONE / SDES / DTLS_SRTP */
+	bool                 ice_enabled; /* false by default */
+	const char          *stun_server; /* NULL = no STUN, e.g. "stun:stun.l.google.com:19302" */
+	const char          *turn_server; /* NULL = no TURN, e.g. "turn:turn.example.com:3478" */
+	const char          *turn_user;
+	const char          *turn_pass;
+
+	/* ── Advanced overrides ────────────────────────────────────────────── */
+
+	const char          *outbound;   /* NULL = auto-derived from server */
+	bool                 verify_tls; /* false = skip TLS cert verification */
+
 } baresdk_account_config_t;
 
 /* ── Lifecycle ────────────────────────────────────────────────────────────── */

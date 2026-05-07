@@ -10,43 +10,62 @@
  */
 
 #include "baresdk_internal.h"
+#include <rem_au.h>
+#include <rem_aulevel.h>
+#include <rem_auframe.h>
 
 /* ── Filter state ────────────────────────────────────────────────────────── */
 
 struct tap_enc_st {
 	struct aufilt_enc_st base;
-	struct call         *bc;
+	const struct audio  *au;
 };
 
 struct tap_dec_st {
 	struct aufilt_dec_st base;
-	struct call         *bc;
+	const struct audio  *au;
 };
 
 /* ── Filter callbacks ────────────────────────────────────────────────────── */
 
 static int tap_encupd(struct aufilt_enc_st **stp, void **ctx,
                        const struct aufilt *af, struct aufilt_prm *prm,
-                       const struct call *call)
+                       const struct audio *au)
 {
 	(void)ctx; (void)af; (void)prm;
 	struct tap_enc_st *st = mem_alloc(sizeof(*st), NULL);
 	if (!st) return ENOMEM;
-	st->bc = (struct call *)call;
+	st->au = au;
 	*stp = (struct aufilt_enc_st *)st;
 	return 0;
 }
 
 static int tap_decupd(struct aufilt_dec_st **stp, void **ctx,
                        const struct aufilt *af, struct aufilt_prm *prm,
-                       const struct call *call)
+                       const struct audio *au)
 {
 	(void)ctx; (void)af; (void)prm;
 	struct tap_dec_st *st = mem_alloc(sizeof(*st), NULL);
 	if (!st) return ENOMEM;
-	st->bc = (struct call *)call;
+	st->au = au;
 	*stp = (struct aufilt_dec_st *)st;
 	return 0;
+}
+
+struct tap_find_ctx { const struct audio *au; struct baresdk_call *found; };
+
+static void tap_find_fn(struct baresdk_call *lc, void *arg)
+{
+	struct tap_find_ctx *ctx = arg;
+	if (!ctx->found && call_audio(lc->bc) == ctx->au)
+		ctx->found = lc;
+}
+
+static struct baresdk_call *tap_find_call(const struct audio *au)
+{
+	struct tap_find_ctx ctx = {.au = au, .found = NULL};
+	bsdk_call_foreach(tap_find_fn, &ctx);
+	return ctx.found;
 }
 
 static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
@@ -54,7 +73,7 @@ static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 	struct tap_enc_st *ts = (struct tap_enc_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
-	struct baresdk_call *lc = bsdk_call_find(ts->bc);
+	struct baresdk_call *lc = tap_find_call(ts->au);
 	if (!lc) return 0;
 
 	mtx_lock(&lc->tap_lock);
@@ -76,7 +95,7 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 	struct tap_dec_st *ts = (struct tap_dec_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
-	struct baresdk_call *lc = bsdk_call_find(ts->bc);
+	struct baresdk_call *lc = tap_find_call(ts->au);
 	if (!lc) return 0;
 
 	mtx_lock(&lc->tap_lock);
@@ -115,7 +134,7 @@ static void ensure_tap_registered(void)
 void bsdk_tap_global_reset(void)
 {
 	if (s_tap_registered) {
-		aufilt_unregister(baresip_aufiltl(), &s_tap_filter);
+		aufilt_unregister(&s_tap_filter);
 		s_tap_registered = false;
 	}
 }

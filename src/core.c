@@ -196,9 +196,19 @@ int baresdk_init(const baresdk_config_t *cfg)
 	if (err)
 		goto fail;
 
+	/* Redirect baresip's config directory to /tmp so it never finds or reads
+	 * ~/.config/baresip/{config,accounts,contacts,...} from disk.
+	 * All SDK configuration is driven exclusively through baresdk_config_t. */
+	conf_path_set("/tmp/.baresdk-empty");
+	conf_configure_buf((const uint8_t *)"#\n", 2);
+
 	err = baresip_init(conf_config());
 	if (err)
 		goto fail;
+
+	/* baresip_init tries to re-read the (missing) config path and may replace
+	 * conf_cur() with NULL. Re-seed so modules_init never sees a NULL conf. */
+	conf_configure_buf((const uint8_t *)"#\n", 2);
 
 	err = bsdk_dns_init();
 	if (err)
@@ -209,10 +219,20 @@ int baresdk_init(const baresdk_config_t *cfg)
 	{
 		const char *sw = g_bsdk.cfg.user_agent ? g_bsdk.cfg.user_agent
 		                                       : "baresdk/1.0";
-		err = ua_init(sw, true, false, false);
+		err = ua_init(sw, true, true, true);
 	}
 	if (err)
 		goto fail;
+
+	{
+		struct tls *tls = uag_tls();
+		if (tls) {
+			if (g_bsdk.cfg.ca_cert_path)
+				tls_add_ca(tls, g_bsdk.cfg.ca_cert_path);
+			if (!g_bsdk.cfg.verify_server)
+				tls_disable_verify_server(tls);
+		}
+	}
 
 	err = bsdk_event_init();
 	if (err)
