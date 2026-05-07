@@ -46,8 +46,8 @@ const char *bsdk_mediaenc_str(baresdk_media_enc_t enc)
  *   "wss://pbx.example.com:443/ws"           → WSS, host=pbx.example.com,  443, /ws
  *   "ws://pbx.internal:8088/ws"              → WS,  host=pbx.internal,    8088, /ws
  *   "sip:pbx.example.com"                    → UDP, host=pbx.example.com,  5060, ""
- *   "sip:xpbx.site:443;transport=wss"        → WSS, host=xpbx.site,        443, ""
- *   "sip:xpbx.site;transport=tls"            → TLS, host=xpbx.site,       5061, ""
+ *   "sip:pbx.example.com:443;transport=wss"        → WSS, host=pbx.example.com,        443, ""
+ *   "sip:pbx.example.com;transport=tls"            → TLS, host=pbx.example.com,       5061, ""
  */
 int bsdk_parse_server_url(const char *url,
                            baresdk_transport_t *out_transport,
