@@ -8,9 +8,9 @@
  * automatic device-change events (e.g., AirPods connect/disconnect).
  */
 
-#include "../../src/libbare_internal.h"
+#include "../../src/baresdk_internal.h"
 
-int bare_platform_audio_init(void)
+int bsdk_platform_audio_init(void)
 {
 	/* baresip's coreaudio module (loaded by modules_init) handles macOS audio */
 	return 0;

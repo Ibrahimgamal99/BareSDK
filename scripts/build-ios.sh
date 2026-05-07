@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build libbare for iOS: device (arm64) + simulator (arm64 + x86_64)
-# Output: dist/ios/libbare.xcframework  +  dist/ios/include/
+# Build baresdk for iOS: device (arm64) + simulator (arm64 + x86_64)
+# Output: dist/ios/baresdk.xcframework  +  dist/ios/include/
 #
 # Prerequisites (macOS only):
 #   - Xcode with iphoneos + iphonesimulator SDKs
@@ -27,17 +27,17 @@ build_slice() {
     -DCMAKE_OSX_SYSROOT="${SYSROOT}" \
     -DCMAKE_OSX_ARCHITECTURES="${ARCHS}" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="${MIN_IOS}" \
-    -DLIBBARE_TLS=mbedtls \
-    -DLIBBARE_MODULES_PROFILE=mobile
+    -DBARESDK_TLS=mbedtls \
+    -DBARESDK_MODULES_PROFILE=mobile
 
-  cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" --target libbare \
+  cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" --target baresdk \
     -- CODE_SIGNING_ALLOWED=NO
 
   # Locate and copy the merged archive
   local LIB
-  LIB="$(find "${BUILD_DIR}" -name "libbare.a" | head -1)"
+  LIB="$(find "${BUILD_DIR}" -name "baresdk.a" | head -1)"
   mkdir -p "${DIST}/${NAME}"
-  cp "${LIB}" "${DIST}/${NAME}/libbare.a"
+  cp "${LIB}" "${DIST}/${NAME}/baresdk.a"
 
   # Headers (same for both slices — copy only once)
   if [ ! -d "${DIST}/include" ]; then
@@ -68,14 +68,14 @@ build_slice "simulator" "iphonesimulator" "arm64;x86_64"
 # Package as xcframework
 # ---------------------------------------------------------------------------
 echo "=== Creating xcframework ==="
-rm -rf "${DIST}/libbare.xcframework"
+rm -rf "${DIST}/baresdk.xcframework"
 
 xcodebuild -create-xcframework \
-  -library "${DIST}/device/libbare.a"    -headers "${DIST}/include" \
-  -library "${DIST}/simulator/libbare.a" -headers "${DIST}/include" \
-  -output  "${DIST}/libbare.xcframework"
+  -library "${DIST}/device/baresdk.a"    -headers "${DIST}/include" \
+  -library "${DIST}/simulator/baresdk.a" -headers "${DIST}/include" \
+  -output  "${DIST}/baresdk.xcframework"
 
 echo ""
-echo "Done. Output: ${DIST}/libbare.xcframework"
+echo "Done. Output: ${DIST}/baresdk.xcframework"
 echo ""
-plutil -p "${DIST}/libbare.xcframework/Info.plist" | grep -E "(Identifier|library)"
+plutil -p "${DIST}/baresdk.xcframework/Info.plist" | grep -E "(Identifier|library)"

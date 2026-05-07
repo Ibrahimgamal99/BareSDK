@@ -1,19 +1,19 @@
 cmake_minimum_required(VERSION 3.19)
-project(libbare VERSION 1.0.0 LANGUAGES C)
+project(baresdk VERSION 1.0.0 LANGUAGES C)
 
 include(ExternalProject)
 
 # ---------------------------------------------------------------------------
-# Source-only mode — used internally by libbare_core_project ExternalProject.
-# When LIBBARE_SRC_MODE=ON this file compiles only src/*.c + platform/*.c
-# into libbare_core and returns; the outer build then merges it with re + baresip.
+# Source-only mode — used internally by baresdk_core_project ExternalProject.
+# When BARESDK_SRC_MODE=ON this file compiles only src/*.c + platform/*.c
+# into baresdk_core and returns; the outer build then merges it with re + baresip.
 # ---------------------------------------------------------------------------
-option(LIBBARE_SRC_MODE "Compile libbare sources only (internal use)" OFF)
-if(LIBBARE_SRC_MODE)
+option(BARESDK_SRC_MODE "Compile baresdk sources only (internal use)" OFF)
+if(BARESDK_SRC_MODE)
   cmake_minimum_required(VERSION 3.19)
-  project(libbare_core VERSION 1.0.0 LANGUAGES C)
+  project(baresdk_core VERSION 1.0.0 LANGUAGES C)
 
-  set(LIBBARE_SYSROOT "" CACHE PATH "Path to installed re+baresip headers")
+  set(BARESDK_SYSROOT "" CACHE PATH "Path to installed re+baresip headers")
 
   # Platform-specific source files
   if(ANDROID_ABI)
@@ -37,56 +37,56 @@ if(LIBBARE_SRC_MODE)
 
   file(GLOB CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
 
-  add_library(libbare_core STATIC ${CORE_SRCS} ${PLAT_SRCS})
+  add_library(baresdk_core STATIC ${CORE_SRCS} ${PLAT_SRCS})
 
-  target_include_directories(libbare_core PRIVATE
-    "${LIBBARE_SYSROOT}/include"
-    "${LIBBARE_SYSROOT}/include/re"
+  target_include_directories(baresdk_core PRIVATE
+    "${BARESDK_SYSROOT}/include"
+    "${BARESDK_SYSROOT}/include/re"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
   # Propagate the modules profile as a compile definition
-  if(LIBBARE_MODULES_PROFILE STREQUAL "mobile")
-    target_compile_definitions(libbare_core PRIVATE LIBBARE_PROFILE_MOBILE=1)
+  if(BARESDK_MODULES_PROFILE STREQUAL "mobile")
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_PROFILE_MOBILE=1)
   else()
-    target_compile_definitions(libbare_core PRIVATE LIBBARE_PROFILE_DESKTOP=1)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_PROFILE_DESKTOP=1)
   endif()
 
   # Platform audio define so modules_init.c picks the right audio module
   if(ANDROID_ABI)
-    target_compile_definitions(libbare_core PRIVATE LIBBARE_AUDIO_AAUDIO=1)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_AAUDIO=1)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    target_compile_definitions(libbare_core PRIVATE LIBBARE_AUDIO_AUDIOUNIT=1)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_AUDIOUNIT=1)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_compile_definitions(libbare_core PRIVATE LIBBARE_AUDIO_COREAUDIO=1)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_COREAUDIO=1)
   elseif(WIN32)
-    target_compile_definitions(libbare_core PRIVATE LIBBARE_AUDIO_WASAPI=1)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_WASAPI=1)
   else()
-    target_compile_definitions(libbare_core PRIVATE LIBBARE_AUDIO_PULSE=1)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_PULSE=1)
   endif()
 
-  set_target_properties(libbare_core PROPERTIES
+  set_target_properties(baresdk_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     C_STANDARD 11
     C_STANDARD_REQUIRED ON)
 
-  install(TARGETS libbare_core ARCHIVE DESTINATION .)
+  install(TARGETS baresdk_core ARCHIVE DESTINATION .)
   return()
 endif()
 
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
-set(LIBBARE_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
-set(LIBBARE_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
+set(BARESDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
+set(BARESDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
 
-set(LIBBARE_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
+set(BARESDK_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
     CACHE PATH "Path to libre source tree")
-set(LIBBARE_BARESIP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/baresip"
+set(BARESDK_BARESIP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/baresip"
     CACHE PATH "Path to baresip source tree")
-set(LIBBARE_MBEDTLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls"
-    CACHE PATH "Path to mbedTLS source tree (required when LIBBARE_TLS=mbedtls)")
-set(LIBBARE_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist"
+set(BARESDK_MBEDTLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls"
+    CACHE PATH "Path to mbedTLS source tree (required when BARESDK_TLS=mbedtls)")
+set(BARESDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist"
     CACHE PATH "Top-level output directory for built archives")
 
 set(SYSROOT "${CMAKE_BINARY_DIR}/sysroot")
@@ -97,36 +97,36 @@ set(SYSROOT "${CMAKE_BINARY_DIR}/sysroot")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules-mobile.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules-desktop.cmake")
 
-if(LIBBARE_MODULES_PROFILE STREQUAL "mobile")
-  set(LIBBARE_MODULES "${LIBBARE_MOBILE_MODULES_BASE}")
+if(BARESDK_MODULES_PROFILE STREQUAL "mobile")
+  set(BARESDK_MODULES "${BARESDK_MOBILE_MODULES_BASE}")
   # Append platform audio
   if(ANDROID_ABI)
-    set(LIBBARE_MODULES "${LIBBARE_MODULES};opensles;aaudio")
+    set(BARESDK_MODULES "${BARESDK_MODULES};opensles;aaudio")
   elseif(CMAKE_SYSTEM_NAME MATCHES "iOS|Darwin")
-    set(LIBBARE_MODULES "${LIBBARE_MODULES};audiounit;avcapture;coreaudio")
+    set(BARESDK_MODULES "${BARESDK_MODULES};audiounit;avcapture;coreaudio")
   endif()
 else()
-  set(LIBBARE_MODULES "${LIBBARE_DESKTOP_MODULES}")
+  set(BARESDK_MODULES "${BARESDK_DESKTOP_MODULES}")
 endif()
 
 # ---------------------------------------------------------------------------
 # Platform ID for dist/ subdirectory naming
 # ---------------------------------------------------------------------------
 if(ANDROID_ABI)
-  set(LIBBARE_PLATFORM_ID "android/${ANDROID_ABI}")
+  set(BARESDK_PLATFORM_ID "android/${ANDROID_ABI}")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   if(CMAKE_OSX_SYSROOT MATCHES "simulator")
-    set(LIBBARE_PLATFORM_ID "ios/simulator")
+    set(BARESDK_PLATFORM_ID "ios/simulator")
   else()
-    set(LIBBARE_PLATFORM_ID "ios/device")
+    set(BARESDK_PLATFORM_ID "ios/device")
   endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   string(REPLACE ";" "_" _ARCH_SLUG "${CMAKE_OSX_ARCHITECTURES}")
-  set(LIBBARE_PLATFORM_ID "macos/${_ARCH_SLUG}")
+  set(BARESDK_PLATFORM_ID "macos/${_ARCH_SLUG}")
 elseif(WIN32)
-  set(LIBBARE_PLATFORM_ID "windows/x64")
+  set(BARESDK_PLATFORM_ID "windows/x64")
 else()
-  set(LIBBARE_PLATFORM_ID "linux/x86_64")
+  set(BARESDK_PLATFORM_ID "linux/x86_64")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -156,18 +156,18 @@ if(MSVC)
   set(_EXT  ".lib")
   set(_RE_LIB   "re-static.lib")
   set(_BARE_LIB "libbaresip.lib")
-  set(_CORE_LIB "libbare_core.lib")
+  set(_CORE_LIB "baresdk_core.lib")
 else()
   set(_LPFX "lib")
   set(_EXT  ".a")
   set(_RE_LIB   "libre.a")
   set(_BARE_LIB "libbaresip.a")
-  set(_CORE_LIB "liblibbare_core.a")
+  set(_CORE_LIB "libbaresdk_core.a")
 endif()
 
 set(_RE_A   "${SYSROOT}/lib/${_RE_LIB}")
 set(_BARE_A "${SYSROOT}/lib/${_BARE_LIB}")
-set(_CORE_A "${CMAKE_BINARY_DIR}/libbare-core-build/${_CORE_LIB}")
+set(_CORE_A "${CMAKE_BINARY_DIR}/baresdk-core-build/${_CORE_LIB}")
 
 # ---------------------------------------------------------------------------
 # Phase 1 (mobile only): build mbedTLS
@@ -175,11 +175,11 @@ set(_CORE_A "${CMAKE_BINARY_DIR}/libbare-core-build/${_CORE_LIB}")
 set(MBEDTLS_ARGS "")
 set(MBEDTLS_EXTRA_LIBS "")
 
-if(LIBBARE_TLS STREQUAL "mbedtls")
-  if(NOT EXISTS "${LIBBARE_MBEDTLS_SOURCE_DIR}/CMakeLists.txt")
+if(BARESDK_TLS STREQUAL "mbedtls")
+  if(NOT EXISTS "${BARESDK_MBEDTLS_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
-      "LIBBARE_TLS=mbedtls but mbedTLS sources not found at "
-      "${LIBBARE_MBEDTLS_SOURCE_DIR}. "
+      "BARESDK_TLS=mbedtls but mbedTLS sources not found at "
+      "${BARESDK_MBEDTLS_SOURCE_DIR}. "
       "Run: git submodule update --init third_party/mbedtls")
   endif()
 
@@ -188,7 +188,7 @@ if(LIBBARE_TLS STREQUAL "mbedtls")
   set(_MBEDCRYPTO_A "${SYSROOT}/lib/${_LPFX}mbedcrypto${_EXT}")
 
   ExternalProject_Add(mbedtls_project
-    SOURCE_DIR "${LIBBARE_MBEDTLS_SOURCE_DIR}"
+    SOURCE_DIR "${BARESDK_MBEDTLS_SOURCE_DIR}"
     BINARY_DIR "${CMAKE_BINARY_DIR}/mbedtls-build"
     CMAKE_ARGS
       -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
@@ -227,7 +227,7 @@ endif()
 
 ExternalProject_Add(re_project
   DEPENDS ${MBEDTLS_DEPENDS}
-  SOURCE_DIR "${LIBBARE_RE_SOURCE_DIR}"
+  SOURCE_DIR "${BARESDK_RE_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/re-build"
   CMAKE_ARGS
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
@@ -244,11 +244,11 @@ ExternalProject_Add(re_project
 # ---------------------------------------------------------------------------
 # Phase 3: build libbaresip (STATIC=ON links all modules in)
 # ---------------------------------------------------------------------------
-string(REPLACE ";" "|" LIBBARE_MODULES_SEP "${LIBBARE_MODULES}")
+string(REPLACE ";" "|" BARESDK_MODULES_SEP "${BARESDK_MODULES}")
 
 ExternalProject_Add(baresip_project
   DEPENDS re_project
-  SOURCE_DIR "${LIBBARE_BARESIP_SOURCE_DIR}"
+  SOURCE_DIR "${BARESDK_BARESIP_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/baresip-build"
   LIST_SEPARATOR "|"
   CMAKE_ARGS
@@ -261,52 +261,52 @@ ExternalProject_Add(baresip_project
     -DRE_LIBRARIES=${_RE_A}
     -Dre_DIR=${SYSROOT}/lib/cmake/re
     -DSTATIC=ON
-    "-DMODULES=${LIBBARE_MODULES_SEP}"
+    "-DMODULES=${BARESDK_MODULES_SEP}"
     ${CROSS_ARGS}
   BUILD_BYPRODUCTS "${_BARE_A}"
 )
 
 # ---------------------------------------------------------------------------
-# Phase 3.5: compile libbare source layer against installed headers
+# Phase 3.5: compile baresdk source layer against installed headers
 # ---------------------------------------------------------------------------
-ExternalProject_Add(libbare_core_project
+ExternalProject_Add(baresdk_core_project
   DEPENDS baresip_project
   SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
-  BINARY_DIR "${CMAKE_BINARY_DIR}/libbare-core-build"
+  BINARY_DIR "${CMAKE_BINARY_DIR}/baresdk-core-build"
   CMAKE_ARGS
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-    -DLIBBARE_SRC_MODE=ON
-    -DLIBBARE_SYSROOT=${SYSROOT}
-    -DLIBBARE_MODULES_PROFILE=${LIBBARE_MODULES_PROFILE}
+    -DBARESDK_SRC_MODE=ON
+    -DBARESDK_SYSROOT=${SYSROOT}
+    -DBARESDK_MODULES_PROFILE=${BARESDK_MODULES_PROFILE}
     ${CROSS_ARGS}
   BUILD_BYPRODUCTS "${_CORE_A}"
   INSTALL_COMMAND ""
 )
 
 # ---------------------------------------------------------------------------
-# Phase 4: merge archives into single libbare.a / bare.lib
+# Phase 4: merge archives into single baresdk.a / bare.lib
 # ---------------------------------------------------------------------------
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergeStaticLibs.cmake")
 
 if(MSVC)
   set(_OUT "${CMAKE_BINARY_DIR}/bare.lib")
 else()
-  set(_OUT "${CMAKE_BINARY_DIR}/libbare.a")
+  set(_OUT "${CMAKE_BINARY_DIR}/baresdk.a")
 endif()
 
-libbare_merge(
+baresdk_merge(
   OUTPUT   "${_OUT}"
   INPUTS   "${_CORE_A}" "${_RE_A}" "${_BARE_A}" ${MBEDTLS_EXTRA_LIBS}
-  DEPENDS  libbare_core_project
+  DEPENDS  baresdk_core_project
 )
 
 # ---------------------------------------------------------------------------
 # Install merged archive + headers to dist/
 # ---------------------------------------------------------------------------
-set(_DIST "${LIBBARE_DIST_DIR}/${LIBBARE_PLATFORM_ID}")
+set(_DIST "${BARESDK_DIST_DIR}/${BARESDK_PLATFORM_ID}")
 
 install(FILES "${_OUT}" DESTINATION "${_DIST}")
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/libbare.h"
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/baresdk.h"
               DESTINATION "${_DIST}/include")
 install(DIRECTORY "${SYSROOT}/include/re/"  DESTINATION "${_DIST}/include/re")
 install(FILES     "${SYSROOT}/include/baresip.h" DESTINATION "${_DIST}/include")

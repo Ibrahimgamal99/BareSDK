@@ -8,9 +8,9 @@
  * or AEC bypass if baresip's aaudio module proves insufficient.
  */
 
-#include "../../src/libbare_internal.h"
+#include "../../src/baresdk_internal.h"
 
-int bare_platform_audio_init(void)
+int bsdk_platform_audio_init(void)
 {
 	/* baresip's aaudio module (loaded by modules_init) handles Android audio.
 	 * OpenSL ES fallback is also loaded for devices below API 26. */

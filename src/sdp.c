@@ -1,5 +1,5 @@
 /**
- * @file sdp.c  SDP offer/answer capture → LIBBARE_EV_SDP_NEGOTIATION
+ * @file sdp.c  SDP offer/answer capture → BARESDK_EV_SDP_NEGOTIATION
  *
  * Called from event.c for BEVENT_CALL_LOCAL_SDP and BEVENT_CALL_REMOTE_SDP.
  * Tracks when both local and remote SDP have been exchanged, then fires a
@@ -9,15 +9,15 @@
  * another event.
  */
 
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
-void bare_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
+void bsdk_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 {
 	struct call *bc = bevent_get_call(event);
 	if (!bc)
 		return;
 
-	struct libbare_call *lc = bare_call_find(bc);
+	struct baresdk_call *lc = bsdk_call_find(bc);
 	if (!lc)
 		return;
 
@@ -44,18 +44,18 @@ void bare_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 
 	/* Determine crypto from global config */
 	const char *crypto;
-	switch (g_bare.cfg.media_enc) {
-	case LIBBARE_MEDIA_ENC_SDES:       crypto = "SDES";      break;
-	case LIBBARE_MEDIA_ENC_DTLS_SRTP:  crypto = "DTLS-SRTP"; break;
+	switch (g_bsdk.cfg.media_enc) {
+	case BARESDK_MEDIA_ENC_SDES:       crypto = "SDES";      break;
+	case BARESDK_MEDIA_ENC_DTLS_SRTP:  crypto = "DTLS-SRTP"; break;
 	default:                           crypto = "NONE";       break;
 	}
 
-	struct libbare_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 	if (!qev)
 		return;
 	memset(qev, 0, sizeof(*qev));
 
-	qev->ev.type      = LIBBARE_EV_SDP_NEGOTIATION;
+	qev->ev.type      = BARESDK_EV_SDP_NEGOTIATION;
 	qev->ev.u.sdp.call = lc;
 
 	/* Pack strings into the inline buffer */
@@ -70,8 +70,8 @@ void bare_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 	str_ncpy(qev->buf + off, crypto, sizeof(qev->buf) - off);
 	qev->ev.u.sdp.negotiated_crypto = qev->buf + off;
 
-	mtx_lock(&g_bare.ev_lock);
-	list_append(&g_bare.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bare.ev_cond);
-	mtx_unlock(&g_bare.ev_lock);
+	mtx_lock(&g_bsdk.ev_lock);
+	list_append(&g_bsdk.ev_queue, &qev->le, qev);
+	cnd_signal(&g_bsdk.ev_cond);
+	mtx_unlock(&g_bsdk.ev_lock);
 }

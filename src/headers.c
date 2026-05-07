@@ -1,20 +1,20 @@
 /**
  * @file headers.c  Custom SIP header injection
  *
- * Per-account headers: libbare_account_add_header() — applies to all
+ * Per-account headers: baresdk_account_add_header() — applies to all
  * outgoing requests for the account. Headers are stored in the account's
  * custom_hdrs list and also applied via baresip's ua_add_custom_hdr().
  *
- * Per-dialog headers: libbare_call_add_header() (in call.c) — applies to
+ * Per-dialog headers: baresdk_call_add_header() (in call.c) — applies to
  * a specific call/dialog via call_add_custom_hdr(). Stored in the call's
  * custom_hdrs list.
  */
 
 #include <string.h>
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 typedef struct {
-	struct libbare_account *acct;
+	struct baresdk_account *acct;
 	const char             *name;
 	const char             *value;
 	int                     result;
@@ -22,7 +22,7 @@ typedef struct {
 
 static void custom_hdr_destructor(void *data)
 {
-	struct bare_custom_hdr *hdr = data;
+	struct bsdk_custom_hdr *hdr = data;
 	mem_deref(hdr->name);
 	mem_deref(hdr->value);
 }
@@ -39,11 +39,11 @@ static void add_hdr_fn(void *arg)
 	if (ctx->result)
 		return;
 
-	struct bare_custom_hdr *ch = mem_alloc(sizeof(*ch),
+	struct bsdk_custom_hdr *ch = mem_alloc(sizeof(*ch),
 	                                       custom_hdr_destructor);
 	if (!ch) return;
-	ch->name  = bare_strdup(ctx->name);
-	ch->value = bare_strdup(ctx->value);
+	ch->name  = bsdk_strdup(ctx->name);
+	ch->value = bsdk_strdup(ctx->value);
 	if (!ch->name || !ch->value) {
 		mem_deref(ch);
 		return;
@@ -51,11 +51,11 @@ static void add_hdr_fn(void *arg)
 	list_append(&ctx->acct->custom_hdrs, &ch->le, ch);
 }
 
-int libbare_account_add_header(libbare_account_handle_t acct,
+int baresdk_account_add_header(baresdk_account_handle_t acct,
                                 const char *name, const char *value)
 {
-	if (!acct || !name || !value) return LIBBARE_ERR_INVAL;
+	if (!acct || !name || !value) return BARESDK_ERR_INVAL;
 	hdr_ctx_t ctx = {.acct = acct, .name = name, .value = value, .result = 0};
-	int err = bare_dispatch_sync(add_hdr_fn, &ctx);
+	int err = bsdk_dispatch_sync(add_hdr_fn, &ctx);
 	return err ? err : ctx.result;
 }

@@ -9,7 +9,7 @@
  * (controlled by cmake/modules-desktop.cmake or modules-mobile.cmake).
  */
 
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* Common modules present in both desktop and mobile profiles */
 static const char *COMMON_MODULES[] = {
@@ -42,15 +42,15 @@ static const char *DESKTOP_EXTRA[] = {
 };
 
 /* Platform audio module selected at compile time */
-#if defined(LIBBARE_AUDIO_AAUDIO)
+#if defined(BARESDK_AUDIO_AAUDIO)
 static const char *PLATFORM_AUDIO[] = { "aaudio", NULL };
-#elif defined(LIBBARE_AUDIO_AUDIOUNIT)
+#elif defined(BARESDK_AUDIO_AUDIOUNIT)
 static const char *PLATFORM_AUDIO[] = { "audiounit", "avcapture", "coreaudio", NULL };
-#elif defined(LIBBARE_AUDIO_COREAUDIO)
+#elif defined(BARESDK_AUDIO_COREAUDIO)
 static const char *PLATFORM_AUDIO[] = { "coreaudio", NULL };
-#elif defined(LIBBARE_AUDIO_WASAPI)
+#elif defined(BARESDK_AUDIO_WASAPI)
 static const char *PLATFORM_AUDIO[] = { "wasapi", NULL };
-#elif defined(LIBBARE_AUDIO_PULSE)
+#elif defined(BARESDK_AUDIO_PULSE)
 static const char *PLATFORM_AUDIO[] = { "pulse", NULL };
 #else
 static const char *PLATFORM_AUDIO[] = { NULL };
@@ -63,7 +63,7 @@ static void load_list(const char **list)
 	for (int i = 0; list[i]; i++) {
 		int err = module_load(".", list[i]);
 		if (err && err != EALREADY)
-			warning("libbare: module '%s': %m\n", list[i], err);
+			warning("baresdk: module '%s': %m\n", list[i], err);
 	}
 }
 
@@ -71,7 +71,7 @@ int modules_init(void)
 {
 	load_list(COMMON_MODULES);
 
-#if defined(LIBBARE_PROFILE_DESKTOP)
+#if defined(BARESDK_PROFILE_DESKTOP)
 	load_list(DESKTOP_EXTRA);
 #endif
 

@@ -1,5 +1,5 @@
 /**
- * @file timers.c  Map libbare_config_t timer/TOS/TLS fields → conf_config()
+ * @file timers.c  Map baresdk_config_t timer/TOS/TLS fields → conf_config()
  *
  * Called from core.c after baresip_init() and before ua_init().
  * Only fields that baresip exposes in struct config are set here.
@@ -7,9 +7,9 @@
  * and are not runtime-configurable via the baresip config struct.
  */
 
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
-void bare_timers_configure(const libbare_config_t *cfg)
+void bsdk_timers_configure(const baresdk_config_t *cfg)
 {
 	struct config *c = conf_config();
 

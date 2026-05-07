@@ -1,20 +1,20 @@
 /**
  * @file dispatch.c  Consumer thread → re_main bridge
  *
- * All state-mutating public API calls go through bare_dispatch() or
- * bare_dispatch_sync(). These use re_thread_async_main() to post work to
+ * All state-mutating public API calls go through bsdk_dispatch() or
+ * bsdk_dispatch_sync(). These use re_thread_async_main() to post work to
  * the re_main event loop, ensuring SIP state is only mutated from re_main.
  *
- * bare_dispatch()      — fire-and-forget; returns immediately.
- * bare_dispatch_sync() — posts and blocks until work completes.
+ * bsdk_dispatch()      — fire-and-forget; returns immediately.
+ * bsdk_dispatch_sync() — posts and blocks until work completes.
  */
 
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── Async (fire-and-forget) ─────────────────────────────────────────────── */
 
 typedef struct {
-	bare_main_fn fn;
+	bsdk_main_fn fn;
 	void        *arg;
 } dispatch_ctx_t;
 
@@ -27,16 +27,16 @@ static int dispatch_work(void *arg)
 	return 0;
 }
 
-int bare_dispatch(bare_main_fn fn, void *arg)
+int bsdk_dispatch(bsdk_main_fn fn, void *arg)
 {
 	dispatch_ctx_t *ctx;
 
-	if (!g_bare.initialized)
-		return LIBBARE_ERR_STATE;
+	if (!g_bsdk.initialized)
+		return BARESDK_ERR_STATE;
 
 	ctx = mem_alloc(sizeof(*ctx), NULL);
 	if (!ctx)
-		return LIBBARE_ERR_NOMEM;
+		return BARESDK_ERR_NOMEM;
 
 	ctx->fn  = fn;
 	ctx->arg = arg;
@@ -51,7 +51,7 @@ int bare_dispatch(bare_main_fn fn, void *arg)
 /* ── Synchronous ─────────────────────────────────────────────────────────── */
 
 typedef struct {
-	bare_main_fn fn;
+	bsdk_main_fn fn;
 	void        *arg;
 	mtx_t        lock;
 	cnd_t        done;
@@ -70,13 +70,13 @@ static int sync_work(void *arg)
 	return 0;
 }
 
-int bare_dispatch_sync(bare_main_fn fn, void *arg)
+int bsdk_dispatch_sync(bsdk_main_fn fn, void *arg)
 {
 	sync_ctx_t ctx;
 	int err;
 
-	if (!g_bare.initialized)
-		return LIBBARE_ERR_STATE;
+	if (!g_bsdk.initialized)
+		return BARESDK_ERR_STATE;
 
 	ctx.fn       = fn;
 	ctx.arg      = arg;

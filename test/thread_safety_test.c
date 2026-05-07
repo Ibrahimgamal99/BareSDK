@@ -2,9 +2,9 @@
  * @file thread_safety_test.c  N-thread concurrent API hammer test
  *
  * Spawns NTHREADS threads. Each thread repeatedly calls:
- *   - libbare_call_invite() + libbare_call_hangup()
- *   - libbare_audio_mute() toggle
- *   - libbare_call_get_stats()
+ *   - baresdk_call_invite() + baresdk_call_hangup()
+ *   - baresdk_audio_mute() toggle
+ *   - baresdk_call_get_stats()
  *
  * Build with: -fsanitize=thread
  * Pass: no crash, no TSan output, exit 0.
@@ -20,15 +20,15 @@
 #include <stdatomic.h>
 #include <threads.h>
 #include <time.h>
-#include "../include/libbare.h"
+#include "../include/baresdk.h"
 
 #define NTHREADS  8
 #define RUN_MS    1000  /* 1 second per thread */
 
-static libbare_account_handle_t g_acct = NULL;
+static baresdk_account_handle_t g_acct = NULL;
 static atomic_int g_stop = 0;
 
-static void event_handler(const libbare_event_t *ev, void *ud)
+static void event_handler(const baresdk_event_t *ev, void *ud)
 {
 	(void)ev; (void)ud;
 }
@@ -50,19 +50,19 @@ static int worker(void *arg)
 			break;
 
 		/* Invite (will fail — server not present, that's fine) */
-		libbare_call_handle_t call = NULL;
-		libbare_call_invite(g_acct, "sip:test@127.0.0.1", &call);
+		baresdk_call_handle_t call = NULL;
+		baresdk_call_invite(g_acct, "sip:test@127.0.0.1", &call);
 
 		if (call) {
 			/* Toggle mute */
-			libbare_audio_mute(call, true);
-			libbare_audio_mute(call, false);
+			baresdk_audio_mute(call, true);
+			baresdk_audio_mute(call, false);
 
 			/* Get stats (will return error — call not established) */
-			libbare_ev_media_stats_t stats;
-			libbare_call_get_stats(call, &stats);
+			baresdk_ev_media_stats_t stats;
+			baresdk_call_get_stats(call, &stats);
 
-			libbare_call_hangup(call);
+			baresdk_call_hangup(call);
 		}
 
 		/* Tiny sleep to avoid spinning */
@@ -75,25 +75,25 @@ static int worker(void *arg)
 
 int main(void)
 {
-	libbare_config_t cfg;
-	libbare_config_init(&cfg);
+	baresdk_config_t cfg;
+	baresdk_config_init(&cfg);
 	cfg.event_cb  = event_handler;
 	cfg.log_level = -1; /* suppress all */
 
-	int err = libbare_init(&cfg);
+	int err = baresdk_init(&cfg);
 	if (err) {
-		fprintf(stderr, "libbare_init failed: %d\n", err);
+		fprintf(stderr, "baresdk_init failed: %d\n", err);
 		return 1;
 	}
 
-	libbare_account_config_t acfg = {
+	baresdk_account_config_t acfg = {
 		.aor       = "sip:test@127.0.0.1",
 		.auth_pass = "test",
 	};
-	err = libbare_account_create(&acfg, &g_acct);
+	err = baresdk_account_create(&acfg, &g_acct);
 	if (err) {
 		fprintf(stderr, "account_create failed: %d\n", err);
-		libbare_shutdown();
+		baresdk_shutdown();
 		return 1;
 	}
 
@@ -106,7 +106,7 @@ int main(void)
 	for (int i = 0; i < NTHREADS; i++)
 		thrd_join(threads[i], NULL);
 
-	libbare_shutdown();
+	baresdk_shutdown();
 	printf("Thread safety test passed\n");
 	return 0;
 }

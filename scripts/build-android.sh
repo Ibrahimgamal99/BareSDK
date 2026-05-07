@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build libbare for Android (arm64-v8a, armeabi-v7a, x86_64).
-# Output: dist/android/<abi>/libbare.a  +  dist/android/<abi>/include/
+# Build baresdk for Android (arm64-v8a, armeabi-v7a, x86_64).
+# Output: dist/android/<abi>/baresdk.a  +  dist/android/<abi>/include/
 #
 # Prerequisites:
 #   - Android NDK (set ANDROID_NDK or detected from ANDROID_NDK_ROOT /
@@ -38,15 +38,15 @@ for ABI in ${ABIS}; do
     -DANDROID_ABI="${ABI}" \
     -DANDROID_PLATFORM="${API}" \
     -DANDROID_STL=c++_static \
-    -DLIBBARE_TLS=mbedtls \
-    -DLIBBARE_MODULES_PROFILE=mobile
+    -DBARESDK_TLS=mbedtls \
+    -DBARESDK_MODULES_PROFILE=mobile
 
-  cmake --build "${BUILD_DIR}" --target libbare -j"$(nproc)"
+  cmake --build "${BUILD_DIR}" --target baresdk -j"$(nproc)"
   cmake --install "${BUILD_DIR}"
 
-  echo "  -> dist/android/${ABI}/libbare.a"
+  echo "  -> dist/android/${ABI}/baresdk.a"
 done
 
 echo ""
 echo "Done. Outputs:"
-find "${ROOT}/dist/android" -name "libbare.a" -exec ls -lh {} \;
+find "${ROOT}/dist/android" -name "baresdk.a" -exec ls -lh {} \;

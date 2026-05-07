@@ -6,7 +6,7 @@
 # Crypto:  srtp = SDES-SRTP, dtls_srtp = DTLS-SRTP (RFC 5764).
 # NAT:     stun/turn/ice = RFC 5389/5766/8445.
 
-set(LIBBARE_DESKTOP_MODULES
+set(BARESDK_DESKTOP_MODULES
   # Audio codecs
   "opus"
   "g711"
@@ -35,4 +35,4 @@ set(LIBBARE_DESKTOP_MODULES
   "uuid"
   "info"
 )
-list(JOIN LIBBARE_DESKTOP_MODULES ";" LIBBARE_DESKTOP_MODULES)
+list(JOIN BARESDK_DESKTOP_MODULES ";" BARESDK_DESKTOP_MODULES)

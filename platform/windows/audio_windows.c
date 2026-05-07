@@ -8,9 +8,9 @@
  * default-device-change notifications (headphone plug/unplug events).
  */
 
-#include "../../src/libbare_internal.h"
+#include "../../src/baresdk_internal.h"
 
-int bare_platform_audio_init(void)
+int bsdk_platform_audio_init(void)
 {
 	/* baresip's wasapi module (loaded by modules_init) handles Windows audio */
 	return 0;

@@ -7,15 +7,15 @@
  * pcap global header: magic 0xa1b2c3d4, version 2.4, link_type=RAW(101)
  * Per-packet: pcap_pkthdr + IPv4 header (proto=UDP) + UDP header + SIP payload
  *
- * All writes are serialized under g_bare.pcap_lock (called from re_main thread
- * only in practice, but the lock guards against libbare_pcap_start/stop races).
+ * All writes are serialized under g_bsdk.pcap_lock (called from re_main thread
+ * only in practice, but the lock guards against baresdk_pcap_start/stop races).
  */
 
 #include <stdint.h>
 #include <string.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── pcap format constants ───────────────────────────────────────────────── */
 
@@ -110,47 +110,47 @@ static void sa_to_bytes(const struct sa *addr, uint8_t out[4], uint16_t *port)
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-int bare_pcap_open(const char *path)
+int bsdk_pcap_open(const char *path)
 {
 	if (!path)
 		return 0;
 
-	mtx_lock(&g_bare.pcap_lock);
-	if (g_bare.pcap_file) {
-		mtx_unlock(&g_bare.pcap_lock);
+	mtx_lock(&g_bsdk.pcap_lock);
+	if (g_bsdk.pcap_file) {
+		mtx_unlock(&g_bsdk.pcap_lock);
 		return EALREADY;
 	}
-	g_bare.pcap_file = fopen(path, "wb");
-	if (!g_bare.pcap_file) {
-		mtx_unlock(&g_bare.pcap_lock);
+	g_bsdk.pcap_file = fopen(path, "wb");
+	if (!g_bsdk.pcap_file) {
+		mtx_unlock(&g_bsdk.pcap_lock);
 		return errno ? errno : EIO;
 	}
-	write_global_header(g_bare.pcap_file);
-	fflush(g_bare.pcap_file);
-	mtx_unlock(&g_bare.pcap_lock);
+	write_global_header(g_bsdk.pcap_file);
+	fflush(g_bsdk.pcap_file);
+	mtx_unlock(&g_bsdk.pcap_lock);
 	return 0;
 }
 
-void bare_pcap_close(void)
+void bsdk_pcap_close(void)
 {
-	mtx_lock(&g_bare.pcap_lock);
-	if (g_bare.pcap_file) {
-		fclose(g_bare.pcap_file);
-		g_bare.pcap_file = NULL;
+	mtx_lock(&g_bsdk.pcap_lock);
+	if (g_bsdk.pcap_file) {
+		fclose(g_bsdk.pcap_file);
+		g_bsdk.pcap_file = NULL;
 	}
-	mtx_unlock(&g_bare.pcap_lock);
+	mtx_unlock(&g_bsdk.pcap_lock);
 }
 
-void bare_pcap_write_sip(const char *data, size_t len,
+void bsdk_pcap_write_sip(const char *data, size_t len,
                            const struct sa *src, const struct sa *dst,
                            bool is_udp)
 {
 	if (!data || !len)
 		return;
 
-	mtx_lock(&g_bare.pcap_lock);
-	if (!g_bare.pcap_file) {
-		mtx_unlock(&g_bare.pcap_lock);
+	mtx_lock(&g_bsdk.pcap_lock);
+	if (!g_bsdk.pcap_file) {
+		mtx_unlock(&g_bsdk.pcap_lock);
 		return;
 	}
 
@@ -201,10 +201,10 @@ void bare_pcap_write_sip(const char *data, size_t len,
 			.checksum = 0,
 		};
 
-		fwrite(&ph,  sizeof(ph),  1, g_bare.pcap_file);
-		fwrite(&ip,  sizeof(ip),  1, g_bare.pcap_file);
-		fwrite(&udp, sizeof(udp), 1, g_bare.pcap_file);
-		fwrite(data, 1, len,         g_bare.pcap_file);
+		fwrite(&ph,  sizeof(ph),  1, g_bsdk.pcap_file);
+		fwrite(&ip,  sizeof(ip),  1, g_bsdk.pcap_file);
+		fwrite(&udp, sizeof(udp), 1, g_bsdk.pcap_file);
+		fwrite(data, 1, len,         g_bsdk.pcap_file);
 	} else {
 		ip_proto = IP_PROTO_TCP;
 		l4_total = (uint16_t)(TCP_HDR_LEN + len);
@@ -241,14 +241,14 @@ void bare_pcap_write_sip(const char *data, size_t len,
 			.urgent_ptr        = 0,
 		};
 
-		fwrite(&ph,  sizeof(ph),  1, g_bare.pcap_file);
-		fwrite(&ip,  sizeof(ip),  1, g_bare.pcap_file);
-		fwrite(&tcp, sizeof(tcp), 1, g_bare.pcap_file);
-		fwrite(data, 1, len,          g_bare.pcap_file);
+		fwrite(&ph,  sizeof(ph),  1, g_bsdk.pcap_file);
+		fwrite(&ip,  sizeof(ip),  1, g_bsdk.pcap_file);
+		fwrite(&tcp, sizeof(tcp), 1, g_bsdk.pcap_file);
+		fwrite(data, 1, len,          g_bsdk.pcap_file);
 	}
 
-	fflush(g_bare.pcap_file);
-	mtx_unlock(&g_bare.pcap_lock);
+	fflush(g_bsdk.pcap_file);
+	mtx_unlock(&g_bsdk.pcap_lock);
 }
 
 	(void)is_udp; /* always write as UDP framing for SIP */
@@ -295,25 +295,25 @@ void bare_pcap_write_sip(const char *data, size_t len,
 		.checksum = 0,
 	};
 
-	fwrite(&ph,  sizeof(ph),  1, g_bare.pcap_file);
-	fwrite(&ip,  sizeof(ip),  1, g_bare.pcap_file);
-	fwrite(&udp, sizeof(udp), 1, g_bare.pcap_file);
-	fwrite(data, 1, len,         g_bare.pcap_file);
-	fflush(g_bare.pcap_file);
+	fwrite(&ph,  sizeof(ph),  1, g_bsdk.pcap_file);
+	fwrite(&ip,  sizeof(ip),  1, g_bsdk.pcap_file);
+	fwrite(&udp, sizeof(udp), 1, g_bsdk.pcap_file);
+	fwrite(data, 1, len,         g_bsdk.pcap_file);
+	fflush(g_bsdk.pcap_file);
 
-	mtx_unlock(&g_bare.pcap_lock);
+	mtx_unlock(&g_bsdk.pcap_lock);
 }
 
 /* ── Public control API ──────────────────────────────────────────────────── */
 
-int libbare_pcap_start(const char *path)
+int baresdk_pcap_start(const char *path)
 {
-	if (!path) return LIBBARE_ERR_INVAL;
-	return bare_pcap_open(path);
+	if (!path) return BARESDK_ERR_INVAL;
+	return bsdk_pcap_open(path);
 }
 
-int libbare_pcap_stop(void)
+int baresdk_pcap_stop(void)
 {
-	bare_pcap_close();
-	return LIBBARE_OK;
+	bsdk_pcap_close();
+	return BARESDK_OK;
 }

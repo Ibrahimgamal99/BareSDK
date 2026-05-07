@@ -1,8 +1,8 @@
-# libbare
+# baresdk
 
 A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/baresip/baresip) and [libre](https://github.com/baresip/re), delivered as a single static archive per platform.
 
-`libbare.h` is the only header you need. The baresip/libre internals are an implementation detail.
+`baresdk.h` is the only header you need. The baresip/libre internals are an implementation detail.
 
 ## Features
 
@@ -27,13 +27,13 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 
 | Platform | Output | TLS backend |
 |---|---|---|
-| Linux x86_64 | `dist/linux/x86_64/libbare.a` | OpenSSL (system) |
-| Android arm64-v8a | `dist/android/arm64-v8a/libbare.a` | mbedTLS (bundled) |
-| Android armeabi-v7a | `dist/android/armeabi-v7a/libbare.a` | mbedTLS (bundled) |
-| Android x86_64 | `dist/android/x86_64/libbare.a` | mbedTLS (bundled) |
-| iOS device | `dist/ios/libbare.xcframework` | mbedTLS (bundled) |
+| Linux x86_64 | `dist/linux/x86_64/baresdk.a` | OpenSSL (system) |
+| Android arm64-v8a | `dist/android/arm64-v8a/baresdk.a` | mbedTLS (bundled) |
+| Android armeabi-v7a | `dist/android/armeabi-v7a/baresdk.a` | mbedTLS (bundled) |
+| Android x86_64 | `dist/android/x86_64/baresdk.a` | mbedTLS (bundled) |
+| iOS device | `dist/ios/baresdk.xcframework` | mbedTLS (bundled) |
 | iOS simulator | (included in xcframework) | mbedTLS (bundled) |
-| macOS universal | `dist/macos/universal/libbare.a` | OpenSSL (system) |
+| macOS universal | `dist/macos/universal/baresdk.a` | OpenSSL (system) |
 | Windows x64 | `dist/windows/x64/bare.lib` | OpenSSL (vcpkg) |
 
 ---
@@ -41,11 +41,11 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 ## Quick start
 
 ```bash
-git clone --recurse-submodules https://github.com/your-org/libbare
-cd libbare
+git clone --recurse-submodules https://github.com/your-org/baresdk
+cd baresdk
 
 ./scripts/build-linux.sh
-./tools/verify.sh dist/linux/x86_64/libbare.a link
+./tools/verify.sh dist/linux/x86_64/baresdk.a link
 ```
 
 If you cloned without `--recurse-submodules`:
@@ -63,63 +63,63 @@ git submodule update --init --recursive third_party/mbedtls
 ### Lifecycle
 
 ```c
-void libbare_config_init(libbare_config_t *cfg);   // zero-fill + set defaults
-int  libbare_init(const libbare_config_t *cfg);    // start stack (once per process)
-void libbare_shutdown(void);                        // graceful teardown
-const char *libbare_version(void);
+void baresdk_config_init(baresdk_config_t *cfg);   // zero-fill + set defaults
+int  baresdk_init(const baresdk_config_t *cfg);    // start stack (once per process)
+void baresdk_shutdown(void);                        // graceful teardown
+const char *baresdk_version(void);
 ```
 
 ### Accounts
 
 ```c
-int  libbare_account_create(const libbare_account_config_t *cfg,
-                             libbare_account_handle_t *out);
-void libbare_account_destroy(libbare_account_handle_t acct);
-int  libbare_account_register(libbare_account_handle_t acct);
-int  libbare_account_unregister(libbare_account_handle_t acct);
-int  libbare_account_add_header(libbare_account_handle_t acct,
+int  baresdk_account_create(const baresdk_account_config_t *cfg,
+                             baresdk_account_handle_t *out);
+void baresdk_account_destroy(baresdk_account_handle_t acct);
+int  baresdk_account_register(baresdk_account_handle_t acct);
+int  baresdk_account_unregister(baresdk_account_handle_t acct);
+int  baresdk_account_add_header(baresdk_account_handle_t acct,
                                  const char *name, const char *value);
-int  libbare_account_publish_presence(libbare_account_handle_t acct,
-                                       libbare_presence_status_t status);
-int  libbare_account_set_100rel(libbare_account_handle_t acct,
-                                 libbare_100rel_mode_t mode);
-int  libbare_account_subscribe_presence(libbare_account_handle_t acct,
+int  baresdk_account_publish_presence(baresdk_account_handle_t acct,
+                                       baresdk_presence_status_t status);
+int  baresdk_account_set_100rel(baresdk_account_handle_t acct,
+                                 baresdk_100rel_mode_t mode);
+int  baresdk_account_subscribe_presence(baresdk_account_handle_t acct,
                                          const char *target_uri);
-int  libbare_account_unsubscribe_presence(libbare_account_handle_t acct,
+int  baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
                                            const char *target_uri);
 ```
 
 ### Calls
 
 ```c
-int  libbare_call_invite(libbare_account_handle_t acct,
-                          const char *uri, libbare_call_handle_t *out);
-int  libbare_call_answer(libbare_call_handle_t call);
-int  libbare_call_hangup(libbare_call_handle_t call);
-int  libbare_call_hold(libbare_call_handle_t call);
-int  libbare_call_resume(libbare_call_handle_t call);
-int  libbare_call_send_dtmf(libbare_call_handle_t call, char digit);
-int  libbare_call_transfer(libbare_call_handle_t call, const char *uri);
-int  libbare_call_attended_transfer(libbare_call_handle_t call_a,
-                                     libbare_call_handle_t call_b);
-int  libbare_call_add_header(libbare_call_handle_t call,
+int  baresdk_call_invite(baresdk_account_handle_t acct,
+                          const char *uri, baresdk_call_handle_t *out);
+int  baresdk_call_answer(baresdk_call_handle_t call);
+int  baresdk_call_hangup(baresdk_call_handle_t call);
+int  baresdk_call_hold(baresdk_call_handle_t call);
+int  baresdk_call_resume(baresdk_call_handle_t call);
+int  baresdk_call_send_dtmf(baresdk_call_handle_t call, char digit);
+int  baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
+int  baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
+                                     baresdk_call_handle_t call_b);
+int  baresdk_call_add_header(baresdk_call_handle_t call,
                               const char *name, const char *value);
 ```
 
 ### Audio
 
 ```c
-int  libbare_audio_mute(libbare_call_handle_t call, bool mute);
-int  libbare_audio_set_input_device(const char *name);
-int  libbare_audio_set_output_device(const char *name);
-int  libbare_call_set_media_tap(libbare_call_handle_t call,
-                                 libbare_media_tap_cb_t cb, void *userdata);
+int  baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
+int  baresdk_audio_set_input_device(const char *name);
+int  baresdk_audio_set_output_device(const char *name);
+int  baresdk_call_set_media_tap(baresdk_call_handle_t call,
+                                 baresdk_media_tap_cb_t cb, void *userdata);
 ```
 
 ### Messaging & presence
 
 ```c
-int  libbare_message_send(libbare_account_handle_t acct,
+int  baresdk_message_send(baresdk_account_handle_t acct,
                            const char *to_uri, const char *body,
                            const char *content_type);
 ```
@@ -127,43 +127,43 @@ int  libbare_message_send(libbare_account_handle_t acct,
 ### Observability
 
 ```c
-int  libbare_call_get_stats(libbare_call_handle_t call,
-                             libbare_ev_media_stats_t *out);
-int  libbare_pcap_start(const char *path);
-int  libbare_pcap_stop(void);
+int  baresdk_call_get_stats(baresdk_call_handle_t call,
+                             baresdk_ev_media_stats_t *out);
+int  baresdk_pcap_start(const char *path);
+int  baresdk_pcap_stop(void);
 ```
 
 ### Events
 
-All events arrive on a dedicated dispatch thread (never on `re_main`). The callback is set in `libbare_config_t.event_cb`.
+All events arrive on a dedicated dispatch thread (never on `re_main`). The callback is set in `baresdk_config_t.event_cb`.
 
-**Thread-safety note:** Calling most libbare APIs from inside the event callback is safe — the dispatch thread is deliberately separate from `re_main` to allow this. The one exception is calling a blocking or long-running operation that itself waits for another event (e.g., synchronously waiting for a call to end inside `LIBBARE_EV_INCOMING_CALL`). For complex flows, post work to your own thread and call libbare APIs from there.
+**Thread-safety note:** Calling most baresdk APIs from inside the event callback is safe — the dispatch thread is deliberately separate from `re_main` to allow this. The one exception is calling a blocking or long-running operation that itself waits for another event (e.g., synchronously waiting for a call to end inside `BARESDK_EV_INCOMING_CALL`). For complex flows, post work to your own thread and call baresdk APIs from there.
 
 | Event type | Payload field | Fired when |
 |---|---|---|
-| `LIBBARE_EV_LOG` | `.log` | baresip log message |
-| `LIBBARE_EV_REG_STATE` | `.reg` | registration state change |
-| `LIBBARE_EV_INCOMING_CALL` | `.incoming` | INVITE received |
-| `LIBBARE_EV_CALL_STATE` | `.call_state` | call FSM transition |
-| `LIBBARE_EV_CALL_DTMF` | `.dtmf` | DTMF digit received |
-| `LIBBARE_EV_SDP_NEGOTIATION` | `.sdp` | offer/answer complete |
-| `LIBBARE_EV_SIP_TRACE` | `.sip_trace` | raw SIP message |
-| `LIBBARE_EV_MEDIA_STATS` | `.stats` | RTCP/MOS stats tick |
-| `LIBBARE_EV_TRANSFER_REQUEST` | `.transfer_req` | incoming REFER |
-| `LIBBARE_EV_MWI` | `.mwi` | voicemail NOTIFY |
-| `LIBBARE_EV_MESSAGE` | `.msg` | SIP MESSAGE received |
-| `LIBBARE_EV_PRESENCE_STATE` | `.presence` | buddy state changed |
+| `BARESDK_EV_LOG` | `.log` | baresip log message |
+| `BARESDK_EV_REG_STATE` | `.reg` | registration state change |
+| `BARESDK_EV_INCOMING_CALL` | `.incoming` | INVITE received |
+| `BARESDK_EV_CALL_STATE` | `.call_state` | call FSM transition |
+| `BARESDK_EV_CALL_DTMF` | `.dtmf` | DTMF digit received |
+| `BARESDK_EV_SDP_NEGOTIATION` | `.sdp` | offer/answer complete |
+| `BARESDK_EV_SIP_TRACE` | `.sip_trace` | raw SIP message |
+| `BARESDK_EV_MEDIA_STATS` | `.stats` | RTCP/MOS stats tick |
+| `BARESDK_EV_TRANSFER_REQUEST` | `.transfer_req` | incoming REFER |
+| `BARESDK_EV_MWI` | `.mwi` | voicemail NOTIFY |
+| `BARESDK_EV_MESSAGE` | `.msg` | SIP MESSAGE received |
+| `BARESDK_EV_PRESENCE_STATE` | `.presence` | buddy state changed |
 
 ---
 
 ## Config reference (selected fields)
 
 ```c
-libbare_config_t cfg;
-libbare_config_init(&cfg);          // always call this first
+baresdk_config_t cfg;
+baresdk_config_init(&cfg);          // always call this first
 
-// All string fields are deep-copied by libbare_init().
-// You can free/overwrite your strings immediately after calling libbare_init().
+// All string fields are deep-copied by baresdk_init().
+// You can free/overwrite your strings immediately after calling baresdk_init().
 
 // Transport — use server_url OR server_host, not both.
 // server_url takes precedence if both are set.
@@ -171,7 +171,7 @@ libbare_config_init(&cfg);          // always call this first
 // Use server_host + transport for plain UDP/TCP/TLS.
 cfg.server_url  = "wss://pbx:8089/ws";  // full URL — required for WS/WSS
 cfg.server_host = "pbx.example.com";    // simple form (UDP/TCP/TLS)
-cfg.transport   = LIBBARE_TRANSPORT_TLS;
+cfg.transport   = BARESDK_TRANSPORT_TLS;
 
 // TLS
 cfg.ca_cert_path    = "/etc/ssl/certs/ca-certificates.crt";
@@ -182,8 +182,8 @@ cfg.ice_enabled = true;
 cfg.stun_server = "stun:stun.example.com";
 
 // Media
-cfg.media_enc          = LIBBARE_MEDIA_ENC_DTLS_SRTP;
-cfg.audio_codecs[0]    = LIBBARE_CODEC_OPUS;
+cfg.media_enc          = BARESDK_MEDIA_ENC_DTLS_SRTP;
+cfg.audio_codecs[0]    = BARESDK_CODEC_OPUS;
 cfg.audio_codec_count  = 1;
 
 // Observability
@@ -201,7 +201,7 @@ cfg.reg_retry_backoff     = 2.0f;
 
 ## WebSocket connectivity
 
-libbare speaks SIP-over-WebSocket ([RFC 7118](https://tools.ietf.org/html/rfc7118)) — the same protocol used by browser clients like SIP.js and JsSIP.
+baresdk speaks SIP-over-WebSocket ([RFC 7118](https://tools.ietf.org/html/rfc7118)) — the same protocol used by browser clients like SIP.js and JsSIP.
 
 ### Direct WSS (SIP.js-style)
 
@@ -250,7 +250,7 @@ cfg.ws_extra_headers = extra;
 
 ---
 
-## Consuming libbare
+## Consuming baresdk
 
 ### CMake
 
@@ -259,7 +259,7 @@ add_executable(my_app main.c)
 target_include_directories(my_app PRIVATE
     path/to/dist/linux/x86_64/include)
 target_link_libraries(my_app
-    path/to/dist/linux/x86_64/libbare.a
+    path/to/dist/linux/x86_64/baresdk.a
     pthread ssl crypto m dl resolv)
 ```
 
@@ -268,18 +268,18 @@ target_link_libraries(my_app
 ```yaml
 # ffigen.yaml
 name: LibBareBindings
-output: lib/src/libbare_bindings.dart
+output: lib/src/baresdk_bindings.dart
 headers:
   entry-points:
-    - dist/linux/x86_64/include/libbare.h
+    - dist/linux/x86_64/include/baresdk.h
 ```
 
 ### Kotlin Multiplatform (cinterop)
 
 ```def
-# libbare.def
-headers = libbare.h
-staticLibraries = libbare.a
+# baresdk.def
+headers = baresdk.h
+staticLibraries = baresdk.a
 libraryPaths = dist/android/arm64-v8a
 includePaths = dist/android/arm64-v8a/include
 ```
@@ -288,8 +288,8 @@ includePaths = dist/android/arm64-v8a/include
 
 ```swift
 // Package.swift
-.binaryTarget(name: "libbare",
-              path: "dist/ios/libbare.xcframework")
+.binaryTarget(name: "baresdk",
+              path: "dist/ios/baresdk.xcframework")
 ```
 
 ### Rust (bindgen)
@@ -297,18 +297,18 @@ includePaths = dist/android/arm64-v8a/include
 ```rust
 // build.rs
 bindgen::Builder::default()
-    .header("dist/linux/x86_64/include/libbare.h")
+    .header("dist/linux/x86_64/include/baresdk.h")
     .generate().unwrap()
     .write_to_file("src/bindings.rs").unwrap();
 ```
 
 ### Python (cffi)
 
-libbare is a static archive, so cffi cannot `dlopen` it directly. First build a thin shared wrapper:
+baresdk is a static archive, so cffi cannot `dlopen` it directly. First build a thin shared wrapper:
 
 ```bash
-gcc -shared -fPIC -o libbare_shared.so \
-    -Wl,--whole-archive dist/linux/x86_64/libbare.a -Wl,--no-whole-archive \
+gcc -shared -fPIC -o baresdk_shared.so \
+    -Wl,--whole-archive dist/linux/x86_64/baresdk.a -Wl,--no-whole-archive \
     -lpthread -lssl -lcrypto -lm -ldl -lresolv
 ```
 
@@ -317,16 +317,16 @@ Then load the shared wrapper from Python:
 ```python
 from cffi import FFI
 ffi = FFI()
-ffi.cdef(open("dist/linux/x86_64/include/libbare.h").read())
-lib = ffi.dlopen("./libbare_shared.so")
+ffi.cdef(open("dist/linux/x86_64/include/baresdk.h").read())
+lib = ffi.dlopen("./baresdk_shared.so")
 ```
 
 ### Go (cgo)
 
 ```go
 // #cgo CFLAGS: -I/path/to/dist/linux/x86_64/include
-// #cgo LDFLAGS: /path/to/dist/linux/x86_64/libbare.a -lpthread -lssl -lcrypto -lm -ldl
-// #include <libbare.h>
+// #cgo LDFLAGS: /path/to/dist/linux/x86_64/baresdk.a -lpthread -lssl -lcrypto -lm -ldl
+// #include <baresdk.h>
 import "C"
 ```
 
@@ -357,25 +357,25 @@ import "C"
 
 | Option | Default | Description |
 |---|---|---|
-| `LIBBARE_TLS` | `openssl` | TLS backend: `openssl` or `mbedtls` |
-| `LIBBARE_MODULES_PROFILE` | `desktop` | `desktop` or `mobile` |
-| `LIBBARE_RE_SOURCE_DIR` | `third_party/re` | libre source path |
-| `LIBBARE_BARESIP_SOURCE_DIR` | `third_party/baresip` | baresip source path |
-| `LIBBARE_MBEDTLS_SOURCE_DIR` | `third_party/mbedtls` | mbedTLS source (mobile) |
-| `LIBBARE_DIST_DIR` | `dist/` | output root |
+| `BARESDK_TLS` | `openssl` | TLS backend: `openssl` or `mbedtls` |
+| `BARESDK_MODULES_PROFILE` | `desktop` | `desktop` or `mobile` |
+| `BARESDK_RE_SOURCE_DIR` | `third_party/re` | libre source path |
+| `BARESDK_BARESIP_SOURCE_DIR` | `third_party/baresip` | baresip source path |
+| `BARESDK_MBEDTLS_SOURCE_DIR` | `third_party/mbedtls` | mbedTLS source (mobile) |
+| `BARESDK_DIST_DIR` | `dist/` | output root |
 
 ---
 
 ## Repository layout
 
 ```
-libbare/
+baresdk/
 ├── include/
-│   └── libbare.h               # sole public header
+│   └── baresdk.h               # sole public header
 ├── src/
 │   ├── core.c                  # singleton lifecycle
 │   ├── dispatch.c              # consumer-thread → re_main bridge
-│   ├── event.c                 # bevent → libbare_event_t queue
+│   ├── event.c                 # bevent → baresdk_event_t queue
 │   ├── account.c               # multi-account registration + retry
 │   ├── call.c                  # INVITE FSM, hold, DTMF, transfer
 │   ├── audio.c                 # mute, device selection

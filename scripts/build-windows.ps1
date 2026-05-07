@@ -1,4 +1,4 @@
-# Build libbare for Windows x64.
+# Build baresdk for Windows x64.
 # Output: dist\windows\x64\bare.lib  +  dist\windows\x64\include\
 #
 # Prerequisites:
@@ -35,11 +35,11 @@ cmake -S $Root -B $BuildDir `
     -G "Visual Studio 17 2022" -A x64 `
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" `
     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
-    -DLIBBARE_TLS=openssl `
-    -DLIBBARE_MODULES_PROFILE=desktop
+    -DBARESDK_TLS=openssl `
+    -DBARESDK_MODULES_PROFILE=desktop
 
 Write-Host "=== Building ==="
-cmake --build $BuildDir --config $BuildType --target libbare
+cmake --build $BuildDir --config $BuildType --target baresdk
 
 Write-Host "=== Installing ==="
 cmake --install $BuildDir --config $BuildType

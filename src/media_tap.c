@@ -9,7 +9,7 @@
  * internal format, the frame is skipped (this is logged as a warning once).
  */
 
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── Filter state ────────────────────────────────────────────────────────── */
 
@@ -54,16 +54,16 @@ static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 	struct tap_enc_st *ts = (struct tap_enc_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
-	struct libbare_call *lc = bare_call_find(ts->bc);
+	struct baresdk_call *lc = bsdk_call_find(ts->bc);
 	if (!lc) return 0;
 
 	mtx_lock(&lc->tap_lock);
-	libbare_media_tap_cb_t cb = lc->tap_cb;
+	baresdk_media_tap_cb_t cb = lc->tap_cb;
 	void *ud = lc->tap_userdata;
 	mtx_unlock(&lc->tap_lock);
 
 	if (cb) {
-		cb(lc, LIBBARE_MEDIA_DIR_TX,
+		cb(lc, BARESDK_MEDIA_DIR_TX,
 		   (const int16_t *)af->sampv,
 		   af->sampc, af->srate, af->ch,
 		   af->timestamp, ud);
@@ -76,16 +76,16 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 	struct tap_dec_st *ts = (struct tap_dec_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
-	struct libbare_call *lc = bare_call_find(ts->bc);
+	struct baresdk_call *lc = bsdk_call_find(ts->bc);
 	if (!lc) return 0;
 
 	mtx_lock(&lc->tap_lock);
-	libbare_media_tap_cb_t cb = lc->tap_cb;
+	baresdk_media_tap_cb_t cb = lc->tap_cb;
 	void *ud = lc->tap_userdata;
 	mtx_unlock(&lc->tap_lock);
 
 	if (cb) {
-		cb(lc, LIBBARE_MEDIA_DIR_RX,
+		cb(lc, BARESDK_MEDIA_DIR_RX,
 		   (const int16_t *)af->sampv,
 		   af->sampc, af->srate, af->ch,
 		   af->timestamp, ud);
@@ -96,7 +96,7 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 /* ── Filter registration ─────────────────────────────────────────────────── */
 
 static struct aufilt s_tap_filter = {
-	.name     = "libbare_tap",
+	.name     = "baresdk_tap",
 	.encupdh  = tap_encupd,
 	.ench     = tap_encode,
 	.decupdh  = tap_decupd,
@@ -112,7 +112,7 @@ static void ensure_tap_registered(void)
 	s_tap_registered = true;
 }
 
-void bare_tap_global_reset(void)
+void bsdk_tap_global_reset(void)
 {
 	if (s_tap_registered) {
 		aufilt_unregister(baresip_aufiltl(), &s_tap_filter);
@@ -123,8 +123,8 @@ void bare_tap_global_reset(void)
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct libbare_call    *lc;
-	libbare_media_tap_cb_t  cb;
+	struct baresdk_call    *lc;
+	baresdk_media_tap_cb_t  cb;
 	void                   *userdata;
 } set_tap_ctx_t;
 
@@ -139,11 +139,11 @@ static void set_tap_fn(void *arg)
 	mtx_unlock(&ctx->lc->tap_lock);
 }
 
-int libbare_call_set_media_tap(libbare_call_handle_t call,
-                                libbare_media_tap_cb_t cb,
+int baresdk_call_set_media_tap(baresdk_call_handle_t call,
+                                baresdk_media_tap_cb_t cb,
                                 void *userdata)
 {
-	if (!call) return LIBBARE_ERR_INVAL;
+	if (!call) return BARESDK_ERR_INVAL;
 	set_tap_ctx_t ctx = {.lc = call, .cb = cb, .userdata = userdata};
-	return bare_dispatch_sync(set_tap_fn, &ctx);
+	return bsdk_dispatch_sync(set_tap_fn, &ctx);
 }

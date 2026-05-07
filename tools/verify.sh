@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Verify a built libbare.a archive.
+# Verify a built baresdk.a archive.
 # Usage:
-#   ./tools/verify.sh <path/to/libbare.a> [link]
+#   ./tools/verify.sh <path/to/baresdk.a> [link]
 #
 # Without "link": checks symbol presence only.
 # With "link":    also compiles and runs a linkability smoke-test
@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-ARCHIVE="${1:?Usage: verify.sh <path/to/libbare.a> [link]}"
+ARCHIVE="${1:?Usage: verify.sh <path/to/baresdk.a> [link]}"
 MODE="${2:-check}"
 
 if [ ! -f "${ARCHIVE}" ]; then
@@ -46,35 +46,35 @@ check_sym() {
 
 MISSING_SYMS=0
 
-# libbare public API
-check_sym "libbare_init"
-check_sym "libbare_shutdown"
-check_sym "libbare_config_init"
-check_sym "libbare_account_create"
-check_sym "libbare_account_destroy"
-check_sym "libbare_account_register"
-check_sym "libbare_account_unregister"
-check_sym "libbare_call_invite"
-check_sym "libbare_call_answer"
-check_sym "libbare_call_hangup"
-check_sym "libbare_call_hold"
-check_sym "libbare_call_resume"
-check_sym "libbare_call_send_dtmf"
-check_sym "libbare_call_transfer"
-check_sym "libbare_call_set_media_tap"
-check_sym "libbare_call_get_stats"
-check_sym "libbare_audio_mute"
-check_sym "libbare_audio_set_input_device"
-check_sym "libbare_audio_set_output_device"
-check_sym "libbare_pcap_start"
-check_sym "libbare_pcap_stop"
-check_sym "libbare_version"
+# baresdk public API
+check_sym "baresdk_init"
+check_sym "baresdk_shutdown"
+check_sym "baresdk_config_init"
+check_sym "baresdk_account_create"
+check_sym "baresdk_account_destroy"
+check_sym "baresdk_account_register"
+check_sym "baresdk_account_unregister"
+check_sym "baresdk_call_invite"
+check_sym "baresdk_call_answer"
+check_sym "baresdk_call_hangup"
+check_sym "baresdk_call_hold"
+check_sym "baresdk_call_resume"
+check_sym "baresdk_call_send_dtmf"
+check_sym "baresdk_call_transfer"
+check_sym "baresdk_call_set_media_tap"
+check_sym "baresdk_call_get_stats"
+check_sym "baresdk_audio_mute"
+check_sym "baresdk_audio_set_input_device"
+check_sym "baresdk_audio_set_output_device"
+check_sym "baresdk_pcap_start"
+check_sym "baresdk_pcap_stop"
+check_sym "baresdk_version"
 
 # Phase 2
-check_sym "libbare_call_attended_transfer"
-check_sym "libbare_message_send"
-check_sym "libbare_account_publish_presence"
-check_sym "libbare_account_set_100rel"
+check_sym "baresdk_call_attended_transfer"
+check_sym "baresdk_message_send"
+check_sym "baresdk_account_publish_presence"
+check_sym "baresdk_account_set_100rel"
 
 # Underlying baresip/libre internals (should still be in the merged archive)
 check_sym "baresip_init"
@@ -130,24 +130,24 @@ if [ "${MODE}" = "link" ]; then
   SMOKETEST_BIN="${ROOT}/tools/_smoketest"
 
   cat > "${SMOKETEST_C}" <<'CSRC'
-/* libbare linkability smoke-test */
-#include "libbare.h"
+/* baresdk linkability smoke-test */
+#include "baresdk.h"
 #include <stdio.h>
 
-static void evt(const libbare_event_t *ev, void *ud) { (void)ev; (void)ud; }
+static void evt(const baresdk_event_t *ev, void *ud) { (void)ev; (void)ud; }
 
 int main(void)
 {
-    libbare_config_t cfg;
-    libbare_config_init(&cfg);
+    baresdk_config_t cfg;
+    baresdk_config_init(&cfg);
     cfg.event_cb = evt;
 
-    int err = libbare_init(&cfg);
-    if (err) { fprintf(stderr, "libbare_init: %d\n", err); return 1; }
+    int err = baresdk_init(&cfg);
+    if (err) { fprintf(stderr, "baresdk_init: %d\n", err); return 1; }
 
-    printf("libbare_init OK — version %s\n", libbare_version());
+    printf("baresdk_init OK — version %s\n", baresdk_version());
 
-    libbare_shutdown();
+    baresdk_shutdown();
     printf("smoketest PASSED\n");
     return 0;
 }

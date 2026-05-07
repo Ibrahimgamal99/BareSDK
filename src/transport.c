@@ -7,25 +7,25 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
-const char *bare_transport_str(libbare_transport_t t)
+const char *bsdk_transport_str(baresdk_transport_t t)
 {
 	switch (t) {
-	case LIBBARE_TRANSPORT_UDP: return "udp";
-	case LIBBARE_TRANSPORT_TCP: return "tcp";
-	case LIBBARE_TRANSPORT_TLS: return "tls";
-	case LIBBARE_TRANSPORT_WS:  return "ws";
-	case LIBBARE_TRANSPORT_WSS: return "wss";
+	case BARESDK_TRANSPORT_UDP: return "udp";
+	case BARESDK_TRANSPORT_TCP: return "tcp";
+	case BARESDK_TRANSPORT_TLS: return "tls";
+	case BARESDK_TRANSPORT_WS:  return "ws";
+	case BARESDK_TRANSPORT_WSS: return "wss";
 	default:                    return "udp";
 	}
 }
 
-const char *bare_mediaenc_str(libbare_media_enc_t enc)
+const char *bsdk_mediaenc_str(baresdk_media_enc_t enc)
 {
 	switch (enc) {
-	case LIBBARE_MEDIA_ENC_SDES:      return "srtp";
-	case LIBBARE_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
+	case BARESDK_MEDIA_ENC_SDES:      return "srtp";
+	case BARESDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
 	default:                          return NULL;
 	}
 }
@@ -49,8 +49,8 @@ const char *bare_mediaenc_str(libbare_media_enc_t enc)
  *   "sip:xpbx.site:443;transport=wss"        → WSS, host=xpbx.site,        443, ""
  *   "sip:xpbx.site;transport=tls"            → TLS, host=xpbx.site,       5061, ""
  */
-int bare_parse_server_url(const char *url,
-                           libbare_transport_t *out_transport,
+int bsdk_parse_server_url(const char *url,
+                           baresdk_transport_t *out_transport,
                            char *host, size_t host_sz,
                            uint16_t *port,
                            char *path, size_t path_sz)
@@ -62,30 +62,30 @@ int bare_parse_server_url(const char *url,
 	path[0] = '\0';
 	*port   = 0;
 
-	libbare_transport_t transport;
+	baresdk_transport_t transport;
 	uint16_t default_port;
 	const char *rest;
 
 	if (strncmp(url, "wss://", 6) == 0) {
-		transport    = LIBBARE_TRANSPORT_WSS;
+		transport    = BARESDK_TRANSPORT_WSS;
 		default_port = 8089;
 		rest         = url + 6;
 	} else if (strncmp(url, "ws://", 5) == 0) {
-		transport    = LIBBARE_TRANSPORT_WS;
+		transport    = BARESDK_TRANSPORT_WS;
 		default_port = 8088;
 		rest         = url + 5;
 	} else if (strncmp(url, "sips:", 5) == 0) {
-		transport    = LIBBARE_TRANSPORT_TLS;
+		transport    = BARESDK_TRANSPORT_TLS;
 		default_port = 5061;
 		rest         = url + 5;
 		if (rest[0] == '/' && rest[1] == '/') rest += 2;
 	} else if (strncmp(url, "sip:", 4) == 0) {
-		transport    = LIBBARE_TRANSPORT_UDP;
+		transport    = BARESDK_TRANSPORT_UDP;
 		default_port = 5060;
 		rest         = url + 4;
 		if (rest[0] == '/' && rest[1] == '/') rest += 2;
 	} else {
-		transport    = LIBBARE_TRANSPORT_UDP;
+		transport    = BARESDK_TRANSPORT_UDP;
 		default_port = 5060;
 		rest         = url;
 	}
@@ -95,19 +95,19 @@ int bare_parse_server_url(const char *url,
 	if (tp) {
 		const char *tv = tp + 11;
 		if (strncasecmp(tv, "wss", 3) == 0) {
-			transport    = LIBBARE_TRANSPORT_WSS;
+			transport    = BARESDK_TRANSPORT_WSS;
 			default_port = 8089;
 		} else if (strncasecmp(tv, "ws", 2) == 0) {
-			transport    = LIBBARE_TRANSPORT_WS;
+			transport    = BARESDK_TRANSPORT_WS;
 			default_port = 8088;
 		} else if (strncasecmp(tv, "tls", 3) == 0) {
-			transport    = LIBBARE_TRANSPORT_TLS;
+			transport    = BARESDK_TRANSPORT_TLS;
 			default_port = 5061;
 		} else if (strncasecmp(tv, "tcp", 3) == 0) {
-			transport    = LIBBARE_TRANSPORT_TCP;
+			transport    = BARESDK_TRANSPORT_TCP;
 			default_port = 5060;
 		} else if (strncasecmp(tv, "udp", 3) == 0) {
-			transport    = LIBBARE_TRANSPORT_UDP;
+			transport    = BARESDK_TRANSPORT_UDP;
 			default_port = 5060;
 		}
 	}
@@ -151,7 +151,7 @@ int bare_parse_server_url(const char *url,
 }
 
 /**
- * Build the baresip outbound proxy string from libbare config.
+ * Build the baresip outbound proxy string from baresdk config.
  *
  * For WS/WSS with a path:
  *   <sip:host:port;transport=wss>;ob;ws-path=/ws
@@ -159,16 +159,16 @@ int bare_parse_server_url(const char *url,
  * For UDP/TCP/TLS:
  *   <sip:host:port;transport=udp>;ob
  */
-int bare_build_outbound(const libbare_config_t *cfg,
+int bsdk_build_outbound(const baresdk_config_t *cfg,
                          char *buf, size_t buf_sz)
 {
 	char host[256] = {0};
 	char path[256] = {0};
 	uint16_t port  = 0;
-	libbare_transport_t transport = cfg->transport;
+	baresdk_transport_t transport = cfg->transport;
 
 	if (cfg->server_url) {
-		bare_parse_server_url(cfg->server_url, &transport,
+		bsdk_parse_server_url(cfg->server_url, &transport,
 		                      host, sizeof(host),
 		                      &port, path, sizeof(path));
 	} else {
@@ -177,21 +177,21 @@ int bare_build_outbound(const libbare_config_t *cfg,
 		port = cfg->server_port;
 		if (!port) {
 			switch (cfg->transport) {
-			case LIBBARE_TRANSPORT_TLS: port = 5061; break;
-			case LIBBARE_TRANSPORT_WS:  port = 8088; break;
-			case LIBBARE_TRANSPORT_WSS: port = 8089; break;
+			case BARESDK_TRANSPORT_TLS: port = 5061; break;
+			case BARESDK_TRANSPORT_WS:  port = 8088; break;
+			case BARESDK_TRANSPORT_WSS: port = 8089; break;
 			default:                    port = 5060; break;
 			}
 		}
 	}
 
-	if (path[0] && (transport == LIBBARE_TRANSPORT_WS ||
-	                transport == LIBBARE_TRANSPORT_WSS)) {
+	if (path[0] && (transport == BARESDK_TRANSPORT_WS ||
+	                transport == BARESDK_TRANSPORT_WSS)) {
 		re_snprintf(buf, buf_sz, "<sip:%s:%u;transport=%s>;ob;ws-path=%s",
-		            host, port, bare_transport_str(transport), path);
+		            host, port, bsdk_transport_str(transport), path);
 	} else {
 		re_snprintf(buf, buf_sz, "<sip:%s:%u;transport=%s>;ob",
-		            host, port, bare_transport_str(transport));
+		            host, port, bsdk_transport_str(transport));
 	}
 	return 0;
 }

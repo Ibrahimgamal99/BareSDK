@@ -9,7 +9,7 @@
  * re_main() to exit. That is our shutdown signal.
  */
 
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 static int re_main_thread_fn(void *arg)
 {
@@ -18,20 +18,20 @@ static int re_main_thread_fn(void *arg)
 	return 0;
 }
 
-int bare_re_loop_start(void)
+int bsdk_re_loop_start(void)
 {
-	int rc = thrd_create(&g_bare.re_thread, re_main_thread_fn, NULL);
+	int rc = thrd_create(&g_bsdk.re_thread, re_main_thread_fn, NULL);
 	if (rc != thrd_success)
 		return ENOMEM;
-	g_bare.re_thread_running = true;
+	g_bsdk.re_thread_running = true;
 	return 0;
 }
 
-void bare_re_loop_stop(void)
+void bsdk_re_loop_stop(void)
 {
-	if (!g_bare.re_thread_running)
+	if (!g_bsdk.re_thread_running)
 		return;
 	re_cancel();
-	thrd_join(g_bare.re_thread, NULL);
-	g_bare.re_thread_running = false;
+	thrd_join(g_bsdk.re_thread, NULL);
+	g_bsdk.re_thread_running = false;
 }

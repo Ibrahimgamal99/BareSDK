@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build libbare for macOS: arm64 + x86_64, then lipo into a universal archive.
-# Output: dist/macos/universal/libbare.a  +  dist/macos/universal/include/
+# Build baresdk for macOS: arm64 + x86_64, then lipo into a universal archive.
+# Output: dist/macos/universal/baresdk.a  +  dist/macos/universal/include/
 #
 # Prerequisites (macOS only):
 #   - Xcode or Command Line Tools (for lipo, libtool)
@@ -26,11 +26,11 @@ build_arch() {
   cmake -S "${ROOT}" -B "${BUILD_DIR}" -GNinja \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
-    -DLIBBARE_TLS=openssl \
-    -DLIBBARE_MODULES_PROFILE=desktop \
+    -DBARESDK_TLS=openssl \
+    -DBARESDK_MODULES_PROFILE=desktop \
     ${OPENSSL_ROOT:+-DOPENSSL_ROOT_DIR="${OPENSSL_ROOT}"}
 
-  cmake --build "${BUILD_DIR}" --target libbare -j"$(sysctl -n hw.logicalcpu)"
+  cmake --build "${BUILD_DIR}" --target baresdk -j"$(sysctl -n hw.logicalcpu)"
   cmake --install "${BUILD_DIR}"
 }
 
@@ -43,14 +43,14 @@ build_arch x86_64
 echo "=== Creating universal binary with lipo ==="
 mkdir -p "${DIST}/universal"
 lipo -create \
-  "${DIST}/arm64/libbare.a" \
-  "${DIST}/x86_64/libbare.a" \
-  -output "${DIST}/universal/libbare.a"
+  "${DIST}/arm64/baresdk.a" \
+  "${DIST}/x86_64/baresdk.a" \
+  -output "${DIST}/universal/baresdk.a"
 
 # Copy headers from one of the slices
 cp -r "${DIST}/arm64/include" "${DIST}/universal/"
 
 echo ""
 echo "Done. Output:"
-ls -lh "${DIST}/universal/libbare.a"
-lipo -info "${DIST}/universal/libbare.a"
+ls -lh "${DIST}/universal/baresdk.a"
+lipo -info "${DIST}/universal/baresdk.a"

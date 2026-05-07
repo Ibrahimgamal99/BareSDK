@@ -12,14 +12,14 @@
  * All callbacks and the done_h handler fire on the re_main thread.
  *
  * Caller contract:
- *   bare_dns_init()   — call after baresip_init() in core.c
- *   bare_dns_resolve() — call from re_main thread only
- *   bare_dns_close()  — call before baresip_close() in core.c
+ *   bsdk_dns_init()   — call after baresip_init() in core.c
+ *   bsdk_dns_resolve() — call from re_main thread only
+ *   bsdk_dns_close()  — call before baresip_close() in core.c
  */
 
 #include <string.h>
 #include <stdlib.h>
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── DNS client ────────────────────────────────────────────────────────── */
 
@@ -32,85 +32,85 @@ static struct dnsc *g_dnsc;   /* borrowed from baresip network — not owned */
 
 /* ── Internal types ────────────────────────────────────────────────────── */
 
-struct bare_dns_target {
-	libbare_transport_t transport;
+struct bsdk_dns_target {
+	baresdk_transport_t transport;
 	char                host[256];
 	uint16_t            port;
 	uint16_t            priority;
 	uint16_t            weight;
 };
 
-struct bare_dns_result {
-	struct bare_dns_target targets[MAX_TARGETS];
+struct bsdk_dns_result {
+	struct bsdk_dns_target targets[MAX_TARGETS];
 	size_t                  count;
 	int                     err;
 };
 
 struct srv_slot {
 	char                name[256];   /* SRV qname, e.g. _sip._udp.example.com */
-	libbare_transport_t transport;
+	baresdk_transport_t transport;
 };
 
 struct dns_lookup {
 	char                domain[256];
-	libbare_transport_t transport_hint;
+	baresdk_transport_t transport_hint;
 	uint16_t            port_hint;   /* 0 = no explicit port in URI */
 
 	int                 pending;     /* in-flight DNS queries */
 	bool                done;
 
-	struct bare_dns_result result;
+	struct bsdk_dns_result result;
 
 	struct srv_slot     srv[MAX_SRV];
 	int                 srv_count;
 
-	bare_dns_done_h    *done_h;
+	bsdk_dns_done_h    *done_h;
 	void               *done_arg;
 };
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
-static libbare_transport_t transport_from_naptr_service(const char *svc)
+static baresdk_transport_t transport_from_naptr_service(const char *svc)
 {
 	if (!svc)
-		return (libbare_transport_t)-1;
+		return (baresdk_transport_t)-1;
 	/* RFC 3263 §4.1 service field values */
-	if (!str_casecmp(svc, "SIPS+D2T")) return LIBBARE_TRANSPORT_TLS;
-	if (!str_casecmp(svc, "SIP+D2T"))  return LIBBARE_TRANSPORT_TCP;
-	if (!str_casecmp(svc, "SIP+D2U"))  return LIBBARE_TRANSPORT_UDP;
-	if (!str_casecmp(svc, "SIPS+D2W")) return LIBBARE_TRANSPORT_WSS;
-	if (!str_casecmp(svc, "SIP+D2W"))  return LIBBARE_TRANSPORT_WS;
-	return (libbare_transport_t)-1;
+	if (!str_casecmp(svc, "SIPS+D2T")) return BARESDK_TRANSPORT_TLS;
+	if (!str_casecmp(svc, "SIP+D2T"))  return BARESDK_TRANSPORT_TCP;
+	if (!str_casecmp(svc, "SIP+D2U"))  return BARESDK_TRANSPORT_UDP;
+	if (!str_casecmp(svc, "SIPS+D2W")) return BARESDK_TRANSPORT_WSS;
+	if (!str_casecmp(svc, "SIP+D2W"))  return BARESDK_TRANSPORT_WS;
+	return (baresdk_transport_t)-1;
 }
 
-static uint16_t default_port_for_transport(libbare_transport_t t)
+static uint16_t default_port_for_transport(baresdk_transport_t t)
 {
 	switch (t) {
-	case LIBBARE_TRANSPORT_TLS: return 5061;
-	case LIBBARE_TRANSPORT_WS:  return 8088;
-	case LIBBARE_TRANSPORT_WSS: return 8089;
+	case BARESDK_TRANSPORT_TLS: return 5061;
+	case BARESDK_TRANSPORT_WS:  return 8088;
+	case BARESDK_TRANSPORT_WSS: return 8089;
 	default:                    return 5060;
 	}
 }
 
-static const char *srv_prefix_for_transport(libbare_transport_t t)
+static const char *srv_prefix_for_transport(baresdk_transport_t t)
 {
 	switch (t) {
-	case LIBBARE_TRANSPORT_TLS: return "_sips._tcp.";
-	case LIBBARE_TRANSPORT_TCP: return "_sip._tcp.";
-	case LIBBARE_TRANSPORT_WS:  return "_sip._tcp.";
-	case LIBBARE_TRANSPORT_WSS: return "_sips._tcp.";
+	case BARESDK_TRANSPORT_TLS: return "_sips._tcp.";
+	case BARESDK_TRANSPORT_TCP: return "_sip._tcp.";
+	case BARESDK_TRANSPORT_WS:  return "_sip._tcp.";
+	case BARESDK_TRANSPORT_WSS: return "_sips._tcp.";
 	default:                    return "_sip._udp.";
 	}
 }
 
-static void add_result(struct dns_lookup *lk, libbare_transport_t t,
+static void add_result(struct dns_lookup *lk, baresdk_transport_t t,
                         const char *host, uint16_t port,
                         uint16_t pri, uint16_t weight)
 {
 	if (lk->result.count >= MAX_TARGETS)
 		return;
-	struct bare_dns_target *tgt = &lk->result.targets[lk->result.count++];
+	struct bsdk_dns_target *tgt = &lk->result.targets[lk->result.count++];
 	tgt->transport = t;
 	str_ncpy(tgt->host, host, sizeof(tgt->host));
 	tgt->port     = port;
@@ -133,14 +133,14 @@ static void lookup_finish(struct dns_lookup *lk)
 
 struct srv_ctx {
 	struct dns_lookup  *lk;
-	libbare_transport_t transport;
+	baresdk_transport_t transport;
 };
 
 static void srv_handler(int err, const struct dnsmsg *msg, void *arg)
 {
 	struct srv_ctx    *sc = arg;
 	struct dns_lookup *lk = sc->lk;
-	libbare_transport_t t = sc->transport;
+	baresdk_transport_t t = sc->transport;
 	bool found = false;
 
 	if (!err && msg) {
@@ -192,7 +192,7 @@ static void naptr_handler(int err, const struct dnsmsg *msg, void *arg)
 			    str_casecmp(rr->rr.naptr.flags, "S") != 0)
 				continue;
 
-			libbare_transport_t t =
+			baresdk_transport_t t =
 				transport_from_naptr_service(rr->rr.naptr.services);
 			if ((int)t == -1)
 				continue;
@@ -265,19 +265,19 @@ static void start_srv_queries(struct dns_lookup *lk)
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-int bare_dns_init(void)
+int bsdk_dns_init(void)
 {
 	/* Reuse the DNS client that baresip configured from the system resolver.
 	 * We borrow this pointer — it is owned and freed by baresip. */
 	g_dnsc = net_dnsc(baresip_network());
 	if (!g_dnsc) {
-		warning("libbare/dns: no DNS client available from baresip network\n");
+		warning("baresdk/dns: no DNS client available from baresip network\n");
 		return ENOENT;
 	}
 	return 0;
 }
 
-void bare_dns_close(void)
+void bsdk_dns_close(void)
 {
 	g_dnsc = NULL;
 }
@@ -285,7 +285,7 @@ void bare_dns_close(void)
 /**
  * Resolve a SIP domain using RFC 3263 NAPTR→SRV chain.
  *
- * Runs on re_main thread (must be called from re_main or via bare_dispatch).
+ * Runs on re_main thread (must be called from re_main or via bsdk_dispatch).
  *
  * @param domain          Hostname to resolve (must not be a numeric IP)
  * @param transport_hint  Preferred transport, used when NAPTR is absent
@@ -298,10 +298,10 @@ void bare_dns_close(void)
  *
  * @return 0 on success (done_h will fire), or errno on immediate failure
  */
-int bare_dns_resolve(const char *domain,
-                     libbare_transport_t transport_hint,
+int bsdk_dns_resolve(const char *domain,
+                     baresdk_transport_t transport_hint,
                      uint16_t port_hint,
-                     bare_dns_done_h *done_h, void *arg)
+                     bsdk_dns_done_h *done_h, void *arg)
 {
 	if (!domain || !done_h)
 		return EINVAL;

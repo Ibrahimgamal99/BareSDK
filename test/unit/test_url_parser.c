@@ -1,7 +1,7 @@
 /**
  * @file test_url_parser.c  Unit tests for URL parsing (transport.c)
  *
- * Tests bare_parse_server_url with various URL forms.
+ * Tests bsdk_parse_server_url with various URL forms.
  * This file reimplements the parser logic for standalone testing.
  * When built with baresip headers, link against the actual implementation.
  */

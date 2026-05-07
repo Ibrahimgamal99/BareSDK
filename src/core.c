@@ -1,19 +1,19 @@
 /**
- * @file core.c  Singleton lifecycle — libbare_init / libbare_shutdown
+ * @file core.c  Singleton lifecycle — baresdk_init / baresdk_shutdown
  */
 
 #include <string.h>
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── Global singleton ────────────────────────────────────────────────────── */
 
-struct bare_ctx g_bare;
+struct bsdk_ctx g_bsdk;
 
-#define LIBBARE_EV_QUEUE_MAX 4096
+#define BARESDK_EV_QUEUE_MAX 4096
 
 /* ── Deep-copy helpers ───────────────────────────────────────────────────── */
 
-char *bare_strdup(const char *s)
+char *bsdk_strdup(const char *s)
 {
 	if (!s) return NULL;
 	size_t len = strlen(s);
@@ -24,13 +24,13 @@ char *bare_strdup(const char *s)
 	return dup;
 }
 
-static char *bare_strdup_arr_elem(char **arr, const char *s)
+static char *bsdk_strdup_arr_elem(char **arr, const char *s)
 {
 	(void)arr;
-	return bare_strdup(s);
+	return bsdk_strdup(s);
 }
 
-static char **bare_strdup_strv(const char * const *src)
+static char **bsdk_strdup_strv(const char * const *src)
 {
 	if (!src) return NULL;
 	size_t count = 0;
@@ -38,7 +38,7 @@ static char **bare_strdup_strv(const char * const *src)
 	char **dst = mem_alloc((count + 1) * sizeof(char *), NULL);
 	if (!dst) return NULL;
 	for (size_t i = 0; i < count; i++) {
-		dst[i] = bare_strdup(src[i]);
+		dst[i] = bsdk_strdup(src[i]);
 		if (!dst[i]) {
 			for (size_t j = 0; j < i; j++) mem_deref(dst[j]);
 			mem_deref(dst);
@@ -49,7 +49,7 @@ static char **bare_strdup_strv(const char * const *src)
 	return dst;
 }
 
-static void bare_free_strv(char **arr)
+static void bsdk_free_strv(char **arr)
 {
 	if (!arr) return;
 	for (size_t i = 0; arr[i]; i++)
@@ -57,28 +57,28 @@ static void bare_free_strv(char **arr)
 	mem_deref(arr);
 }
 
-void bare_cfg_deep_copy(libbare_config_t *dst, const libbare_config_t *src,
-                         struct bare_ctx *ctx)
+void bsdk_cfg_deep_copy(baresdk_config_t *dst, const baresdk_config_t *src,
+                         struct bsdk_ctx *ctx)
 {
 	memcpy(dst, src, sizeof(*src));
 
-	ctx->cfg_local_ip         = bare_strdup(src->local_ip);
-	ctx->cfg_sip_domain       = bare_strdup(src->sip_domain);
-	ctx->cfg_server_url       = bare_strdup(src->server_url);
-	ctx->cfg_server_host      = bare_strdup(src->server_host);
-	ctx->cfg_outbound_proxy   = bare_strdup(src->outbound_proxy);
-	ctx->cfg_ca_cert_path     = bare_strdup(src->ca_cert_path);
-	ctx->cfg_client_cert      = bare_strdup(src->client_cert);
-	ctx->cfg_client_key       = bare_strdup(src->client_key);
-	ctx->cfg_sni_hostname     = bare_strdup(src->sni_hostname);
-	ctx->cfg_user_agent       = bare_strdup(src->user_agent);
-	ctx->cfg_ws_origin        = bare_strdup(src->ws_origin);
-	ctx->cfg_ws_extra_headers = bare_strdup_strv(src->ws_extra_headers);
-	ctx->cfg_stun_server      = bare_strdup(src->stun_server);
-	ctx->cfg_turn_server      = bare_strdup(src->turn_server);
-	ctx->cfg_turn_user        = bare_strdup(src->turn_user);
-	ctx->cfg_turn_pass        = bare_strdup(src->turn_pass);
-	ctx->cfg_pcap_path        = bare_strdup(src->pcap_path);
+	ctx->cfg_local_ip         = bsdk_strdup(src->local_ip);
+	ctx->cfg_sip_domain       = bsdk_strdup(src->sip_domain);
+	ctx->cfg_server_url       = bsdk_strdup(src->server_url);
+	ctx->cfg_server_host      = bsdk_strdup(src->server_host);
+	ctx->cfg_outbound_proxy   = bsdk_strdup(src->outbound_proxy);
+	ctx->cfg_ca_cert_path     = bsdk_strdup(src->ca_cert_path);
+	ctx->cfg_client_cert      = bsdk_strdup(src->client_cert);
+	ctx->cfg_client_key       = bsdk_strdup(src->client_key);
+	ctx->cfg_sni_hostname     = bsdk_strdup(src->sni_hostname);
+	ctx->cfg_user_agent       = bsdk_strdup(src->user_agent);
+	ctx->cfg_ws_origin        = bsdk_strdup(src->ws_origin);
+	ctx->cfg_ws_extra_headers = bsdk_strdup_strv(src->ws_extra_headers);
+	ctx->cfg_stun_server      = bsdk_strdup(src->stun_server);
+	ctx->cfg_turn_server      = bsdk_strdup(src->turn_server);
+	ctx->cfg_turn_user        = bsdk_strdup(src->turn_user);
+	ctx->cfg_turn_pass        = bsdk_strdup(src->turn_pass);
+	ctx->cfg_pcap_path        = bsdk_strdup(src->pcap_path);
 
 	dst->local_ip         = ctx->cfg_local_ip;
 	dst->sip_domain       = ctx->cfg_sip_domain;
@@ -99,7 +99,7 @@ void bare_cfg_deep_copy(libbare_config_t *dst, const libbare_config_t *src,
 	dst->pcap_path        = ctx->cfg_pcap_path;
 }
 
-void bare_cfg_deep_free(struct bare_ctx *ctx)
+void bsdk_cfg_deep_free(struct bsdk_ctx *ctx)
 {
 	mem_deref(ctx->cfg_local_ip);         ctx->cfg_local_ip = NULL;
 	mem_deref(ctx->cfg_sip_domain);       ctx->cfg_sip_domain = NULL;
@@ -112,7 +112,7 @@ void bare_cfg_deep_free(struct bare_ctx *ctx)
 	mem_deref(ctx->cfg_sni_hostname);     ctx->cfg_sni_hostname = NULL;
 	mem_deref(ctx->cfg_user_agent);       ctx->cfg_user_agent = NULL;
 	mem_deref(ctx->cfg_ws_origin);        ctx->cfg_ws_origin = NULL;
-	bare_free_strv(ctx->cfg_ws_extra_headers); ctx->cfg_ws_extra_headers = NULL;
+	bsdk_free_strv(ctx->cfg_ws_extra_headers); ctx->cfg_ws_extra_headers = NULL;
 	mem_deref(ctx->cfg_stun_server);      ctx->cfg_stun_server = NULL;
 	mem_deref(ctx->cfg_turn_server);      ctx->cfg_turn_server = NULL;
 	mem_deref(ctx->cfg_turn_user);        ctx->cfg_turn_user = NULL;
@@ -120,17 +120,17 @@ void bare_cfg_deep_free(struct bare_ctx *ctx)
 	mem_deref(ctx->cfg_pcap_path);        ctx->cfg_pcap_path = NULL;
 }
 
-/* ── libbare_config_init ─────────────────────────────────────────────────── */
+/* ── baresdk_config_init ─────────────────────────────────────────────────── */
 
-void libbare_config_init(libbare_config_t *cfg)
+void baresdk_config_init(baresdk_config_t *cfg)
 {
 	if (!cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
-	cfg->version     = LIBBARE_CONFIG_VERSION;
-	cfg->struct_size = sizeof(libbare_config_t);
+	cfg->version     = BARESDK_CONFIG_VERSION;
+	cfg->struct_size = sizeof(baresdk_config_t);
 
-	cfg->transport             = LIBBARE_TRANSPORT_UDP;
+	cfg->transport             = BARESDK_TRANSPORT_UDP;
 	cfg->verify_server         = true;
 	cfg->reg_expires           = 3600;
 	cfg->reg_refresh_pct       = 75;
@@ -145,50 +145,50 @@ void libbare_config_init(libbare_config_t *cfg)
 	cfg->session_timer_enabled = true;
 	cfg->session_expires_s     = 1800;
 	cfg->session_min_se_s      = 90;
-	cfg->mos_method            = LIBBARE_MOS_EMODEL;
+	cfg->mos_method            = BARESDK_MOS_EMODEL;
 	cfg->log_level             = 1;
 }
 
-/* ── libbare_init ────────────────────────────────────────────────────────── */
+/* ── baresdk_init ────────────────────────────────────────────────────────── */
 
-int libbare_init(const libbare_config_t *cfg)
+int baresdk_init(const baresdk_config_t *cfg)
 {
 	int err;
 
 	if (!cfg || !cfg->event_cb)
-		return LIBBARE_ERR_INVAL;
-	if (cfg->version != LIBBARE_CONFIG_VERSION)
-		return LIBBARE_ERR_INVAL;
-	if (cfg->struct_size != sizeof(libbare_config_t))
-		return LIBBARE_ERR_INVAL;
+		return BARESDK_ERR_INVAL;
+	if (cfg->version != BARESDK_CONFIG_VERSION)
+		return BARESDK_ERR_INVAL;
+	if (cfg->struct_size != sizeof(baresdk_config_t))
+		return BARESDK_ERR_INVAL;
 	if (cfg->audio_codec_count < 0 || cfg->audio_codec_count > 8)
-		return LIBBARE_ERR_INVAL;
+		return BARESDK_ERR_INVAL;
 
 	static bool once = false;
 	if (!once) {
 		once = true;
-		mtx_init(&g_bare.lock, mtx_plain);
+		mtx_init(&g_bsdk.lock, mtx_plain);
 	}
 
-	mtx_lock(&g_bare.lock);
+	mtx_lock(&g_bsdk.lock);
 
-	if (g_bare.initialized) {
-		mtx_unlock(&g_bare.lock);
-		return LIBBARE_ERR_ALREADY;
+	if (g_bsdk.initialized) {
+		mtx_unlock(&g_bsdk.lock);
+		return BARESDK_ERR_ALREADY;
 	}
 
-	bare_cfg_deep_copy(&g_bare.cfg, cfg, &g_bare);
+	bsdk_cfg_deep_copy(&g_bsdk.cfg, cfg, &g_bsdk);
 
-	list_init(&g_bare.ev_queue);
-	list_init(&g_bare.accounts);
-	g_bare.ev_queue_max = LIBBARE_EV_QUEUE_MAX;
-	g_bare.ev_queue_len = 0;
-	mtx_init(&g_bare.ev_lock, mtx_plain);
-	cnd_init(&g_bare.ev_cond);
-	mtx_init(&g_bare.acct_lock, mtx_plain);
-	mtx_init(&g_bare.pcap_lock, mtx_plain);
+	list_init(&g_bsdk.ev_queue);
+	list_init(&g_bsdk.accounts);
+	g_bsdk.ev_queue_max = BARESDK_EV_QUEUE_MAX;
+	g_bsdk.ev_queue_len = 0;
+	mtx_init(&g_bsdk.ev_lock, mtx_plain);
+	cnd_init(&g_bsdk.ev_cond);
+	mtx_init(&g_bsdk.acct_lock, mtx_plain);
+	mtx_init(&g_bsdk.pcap_lock, mtx_plain);
 
-	err = bare_log_init();
+	err = bsdk_log_init();
 	if (err)
 		goto fail;
 
@@ -200,26 +200,26 @@ int libbare_init(const libbare_config_t *cfg)
 	if (err)
 		goto fail;
 
-	err = bare_dns_init();
+	err = bsdk_dns_init();
 	if (err)
 		goto fail;
 
-	bare_timers_configure(&g_bare.cfg);
+	bsdk_timers_configure(&g_bsdk.cfg);
 
 	{
-		const char *sw = g_bare.cfg.user_agent ? g_bare.cfg.user_agent
-		                                       : "libbare/1.0";
+		const char *sw = g_bsdk.cfg.user_agent ? g_bsdk.cfg.user_agent
+		                                       : "baresdk/1.0";
 		err = ua_init(sw, true, false, false);
 	}
 	if (err)
 		goto fail;
 
-	err = bare_event_init();
+	err = bsdk_event_init();
 	if (err)
 		goto fail;
 
-	if (g_bare.cfg.trace_sip) {
-		err = bare_trace_init();
+	if (g_bsdk.cfg.trace_sip) {
+		err = bsdk_trace_init();
 		if (err)
 			goto fail;
 	}
@@ -228,74 +228,74 @@ int libbare_init(const libbare_config_t *cfg)
 	if (err)
 		goto fail;
 
-	err = bare_message_init();
+	err = bsdk_message_init();
 	if (err)
 		goto fail;
 
-	err = bare_presence_init();
+	err = bsdk_presence_init();
 	if (err)
 		goto fail;
 
-	if (g_bare.cfg.pcap_path) {
-		err = bare_pcap_open(g_bare.cfg.pcap_path);
+	if (g_bsdk.cfg.pcap_path) {
+		err = bsdk_pcap_open(g_bsdk.cfg.pcap_path);
 		if (err)
 			goto fail;
 	}
 
-	if (g_bare.cfg.stats_interval_ms > 0) {
-		err = bare_stats_init();
+	if (g_bsdk.cfg.stats_interval_ms > 0) {
+		err = bsdk_stats_init();
 		if (err)
 			goto fail;
 	}
 
-	err = bare_re_loop_start();
+	err = bsdk_re_loop_start();
 	if (err)
 		goto fail;
 
-	g_bare.initialized = true;
-	mtx_unlock(&g_bare.lock);
-	return LIBBARE_OK;
+	g_bsdk.initialized = true;
+	mtx_unlock(&g_bsdk.lock);
+	return BARESDK_OK;
 
 fail:
-	warning("libbare: init failed: %m\n", err);
-	bare_re_loop_stop();
-	bare_stats_close();
-	bare_trace_close();
-	bare_event_close();
+	warning("baresdk: init failed: %m\n", err);
+	bsdk_re_loop_stop();
+	bsdk_stats_close();
+	bsdk_trace_close();
+	bsdk_event_close();
 	ua_close();
-	bare_dns_close();
+	bsdk_dns_close();
 	baresip_close();
 	libre_close();
-	bare_log_close();
-	bare_pcap_close();
-	bare_cfg_deep_free(&g_bare);
-	memset(&g_bare, 0, sizeof(g_bare));
-	mtx_unlock(&g_bare.lock);
-	return err ? err : LIBBARE_ERR_STATE;
+	bsdk_log_close();
+	bsdk_pcap_close();
+	bsdk_cfg_deep_free(&g_bsdk);
+	memset(&g_bsdk, 0, sizeof(g_bsdk));
+	mtx_unlock(&g_bsdk.lock);
+	return err ? err : BARESDK_ERR_STATE;
 }
 
-/* ── libbare_shutdown ────────────────────────────────────────────────────── */
+/* ── baresdk_shutdown ────────────────────────────────────────────────────── */
 
-void libbare_shutdown(void)
+void baresdk_shutdown(void)
 {
-	mtx_lock(&g_bare.lock);
-	if (!g_bare.initialized) {
-		mtx_unlock(&g_bare.lock);
+	mtx_lock(&g_bsdk.lock);
+	if (!g_bsdk.initialized) {
+		mtx_unlock(&g_bsdk.lock);
 		return;
 	}
 
-	bare_event_close();
+	bsdk_event_close();
 
-	bare_re_loop_stop();
+	bsdk_re_loop_stop();
 
-	bare_stats_close();
-	bare_trace_close();
-	bare_message_close();
-	bare_presence_close();
+	bsdk_stats_close();
+	bsdk_trace_close();
+	bsdk_message_close();
+	bsdk_presence_close();
 
 	struct le *le, *le_tmp;
-	LIST_FOREACH_SAFE(&g_bare.accounts, le, le_tmp) {
-		struct libbare_account *acct = le->data;
+	LIST_FOREACH_SAFE(&g_bsdk.accounts, le, le_tmp) {
+		struct baresdk_account *acct = le->data;
 		acct->destroyed = true;
 		tmr_cancel(&acct->retry_tmr);
 		if (acct->ua) {
@@ -303,30 +303,30 @@ void libbare_shutdown(void)
 			mem_deref(acct->ua);
 			acct->ua = NULL;
 		}
-		bare_acct_cfg_deep_free(acct);
+		bsdk_acct_cfg_deep_free(acct);
 		list_unlink(&acct->le);
 		mem_deref(acct);
 	}
 
 	ua_close();
 	module_app_unload();
-	bare_dns_close();
+	bsdk_dns_close();
 	baresip_close();
 	libre_close();
-	bare_log_close();
-	bare_pcap_close();
-	bare_cfg_deep_free(&g_bare);
+	bsdk_log_close();
+	bsdk_pcap_close();
+	bsdk_cfg_deep_free(&g_bsdk);
 
-	bare_call_global_reset();
-	bare_tap_global_reset();
+	bsdk_call_global_reset();
+	bsdk_tap_global_reset();
 
-	g_bare.initialized = false;
-	mtx_unlock(&g_bare.lock);
+	g_bsdk.initialized = false;
+	mtx_unlock(&g_bsdk.lock);
 }
 
-/* ── libbare_version ─────────────────────────────────────────────────────── */
+/* ── baresdk_version ─────────────────────────────────────────────────────── */
 
-const char *libbare_version(void)
+const char *baresdk_version(void)
 {
 	return "1.0.0";
 }

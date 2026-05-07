@@ -1,20 +1,20 @@
 /**
  * @file message.c  SIP MESSAGE — send and receive
  *
- * Send: libbare_message_send() → bare_dispatch_sync → message_send()
+ * Send: baresdk_message_send() → bsdk_dispatch_sync → message_send()
  *       baresip's message_send() supports text/plain only; content_type
  *       parameter is accepted for API consistency but currently ignored.
  *
  * Receive: message_listen() registers a handler on the baresip message
- *          subsystem. Each incoming SIP MESSAGE fires LIBBARE_EV_MESSAGE
+ *          subsystem. Each incoming SIP MESSAGE fires BARESDK_EV_MESSAGE
  *          via the event queue.
  *
- * Lifecycle: bare_message_init() is called from core.c after ua_init().
- *            bare_message_close() is called from libbare_shutdown().
+ * Lifecycle: bsdk_message_init() is called from core.c after ua_init().
+ *            bsdk_message_close() is called from baresdk_shutdown().
  */
 
 #include <string.h>
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── Incoming MESSAGE handler ────────────────────────────────────────────── */
 
@@ -24,15 +24,15 @@ static void message_recv_handler(struct ua *ua, const struct pl *peer,
 {
 	(void)arg;
 
-	struct libbare_account *acct = bare_account_find_by_ua(ua);
+	struct baresdk_account *acct = bsdk_account_find_by_ua(ua);
 
-	struct libbare_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 	if (!qev)
 		return;
 	memset(qev, 0, sizeof(*qev));
 
-	qev->ev.type = LIBBARE_EV_MESSAGE;
-	libbare_ev_message_t *m = &qev->ev.u.msg;
+	qev->ev.type = BARESDK_EV_MESSAGE;
+	baresdk_ev_message_t *m = &qev->ev.u.msg;
 	m->account = acct;
 
 	/* Pack strings into buf: peer\0ctype\0body\0 */
@@ -63,16 +63,16 @@ static void message_recv_handler(struct ua *ua, const struct pl *peer,
 		m->body = qev->buf + off;
 	}
 
-	mtx_lock(&g_bare.ev_lock);
-	list_append(&g_bare.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bare.ev_cond);
-	mtx_unlock(&g_bare.ev_lock);
+	mtx_lock(&g_bsdk.ev_lock);
+	list_append(&g_bsdk.ev_queue, &qev->le, qev);
+	cnd_signal(&g_bsdk.ev_cond);
+	mtx_unlock(&g_bsdk.ev_lock);
 }
 
 /* ── Send ────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct libbare_account *acct;
+	struct baresdk_account *acct;
 	const char             *to_uri;
 	const char             *body;
 	int                     result;
@@ -83,32 +83,32 @@ static void send_msg_fn(void *arg)
 	send_msg_ctx_t *ctx = arg;
 	if (!ctx->acct->ua) { ctx->result = ENOENT; return; }
 	/* baresip message_send uses text/plain; custom content_type via
-	 * libbare_message_send() is accepted for future use */
+	 * baresdk_message_send() is accepted for future use */
 	ctx->result = message_send(ctx->acct->ua, ctx->to_uri,
 	                           ctx->body, NULL, NULL);
 }
 
-int libbare_message_send(libbare_account_handle_t account,
+int baresdk_message_send(baresdk_account_handle_t account,
                           const char *to_uri,
                           const char *body,
                           const char *content_type)
 {
-	if (!account || !to_uri || !body) return LIBBARE_ERR_INVAL;
+	if (!account || !to_uri || !body) return BARESDK_ERR_INVAL;
 	(void)content_type; /* currently always text/plain */
 	send_msg_ctx_t ctx = {.acct = account, .to_uri = to_uri,
 	                       .body = body, .result = 0};
-	int err = bare_dispatch_sync(send_msg_fn, &ctx);
+	int err = bsdk_dispatch_sync(send_msg_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bare_message_init(void)
+int bsdk_message_init(void)
 {
 	return message_listen(baresip_message(), message_recv_handler, NULL);
 }
 
-void bare_message_close(void)
+void bsdk_message_close(void)
 {
 	message_unlisten(baresip_message(), message_recv_handler);
 }

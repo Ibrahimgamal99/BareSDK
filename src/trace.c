@@ -1,15 +1,15 @@
 /**
- * @file trace.c  SIP message trace hook → LIBBARE_EV_SIP_TRACE
+ * @file trace.c  SIP message trace hook → BARESDK_EV_SIP_TRACE
  *
  * Registers a sip_trace_h with the libre SIP stack via uag_sip().
  * Each raw SIP message is forwarded to:
- *   1. The consumer as LIBBARE_EV_SIP_TRACE (via event queue)
- *   2. bare_pcap_write_sip() if pcap recording is active
+ *   1. The consumer as BARESDK_EV_SIP_TRACE (via event queue)
+ *   2. bsdk_pcap_write_sip() if pcap recording is active
  *
  * The handler fires on the re_main thread; we enqueue and return immediately.
  */
 
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── Transport name helper ───────────────────────────────────────────────── */
 
@@ -34,13 +34,13 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 	(void)arg;
 
 	/* Write to pcap if enabled */
-	if (g_bare.pcap_file)
-		bare_pcap_write_sip((const char *)pkt, len,
+	if (g_bsdk.pcap_file)
+		bsdk_pcap_write_sip((const char *)pkt, len,
 		                    tx ? NULL : src,
 		                    tx ? dst  : NULL,
 		                    tp == SIP_TRANSP_UDP);
 
-	if (!g_bare.cfg.trace_sip || !g_bare.cfg.event_cb)
+	if (!g_bsdk.cfg.trace_sip || !g_bsdk.cfg.event_cb)
 		return;
 
 	/* Build remote address string: "host:port" */
@@ -49,12 +49,12 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 	if (peer)
 		re_snprintf(remote, sizeof(remote), "%H", sa_print_addr, peer);
 
-	struct libbare_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 	if (!qev)
 		return;
 	memset(qev, 0, sizeof(*qev));
 
-	qev->ev.type = LIBBARE_EV_SIP_TRACE;
+	qev->ev.type = BARESDK_EV_SIP_TRACE;
 	qev->ev.u.sip_trace.timestamp_us = tmr_jiffies() * 1000ULL;
 
 	/* Pack strings into buf: transport\0remote_addr\0raw_message\0 */
@@ -79,17 +79,17 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 	/* tx/rx stored separately — reuse transport field prefix */
 	/* (direction is implicit: TX = sent, RX = received) */
 
-	mtx_lock(&g_bare.ev_lock);
-	list_append(&g_bare.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bare.ev_cond);
-	mtx_unlock(&g_bare.ev_lock);
+	mtx_lock(&g_bsdk.ev_lock);
+	list_append(&g_bsdk.ev_queue, &qev->le, qev);
+	cnd_signal(&g_bsdk.ev_cond);
+	mtx_unlock(&g_bsdk.ev_lock);
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bare_trace_init(void)
+int bsdk_trace_init(void)
 {
-	if (!g_bare.cfg.trace_sip && !g_bare.cfg.pcap_path)
+	if (!g_bsdk.cfg.trace_sip && !g_bsdk.cfg.pcap_path)
 		return 0;
 
 	struct sip *sip = uag_sip();
@@ -100,7 +100,7 @@ int bare_trace_init(void)
 	return 0;
 }
 
-void bare_trace_close(void)
+void bsdk_trace_close(void)
 {
 	struct sip *sip = uag_sip();
 	if (sip)

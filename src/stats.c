@@ -2,7 +2,7 @@
  * @file stats.c  RTCP stats polling timer + MOS calculation
  *
  * A tmr fires on re_main every cfg->stats_interval_ms. For each active call
- * it reads RTCP stats from the audio stream and posts LIBBARE_EV_MEDIA_STATS.
+ * it reads RTCP stats from the audio stream and posts BARESDK_EV_MEDIA_STATS.
  *
  * E-model MOS (ITU-T G.107):
  *   R  = 93.2 - Id - Ie
@@ -15,7 +15,7 @@
  */
 
 #include <math.h>
-#include "libbare_internal.h"
+#include "baresdk_internal.h"
 
 /* ── MOS calculations ───────────────────────────────────────────────────── */
 
@@ -43,9 +43,9 @@ static float mos_simplified(float loss_pct, float jitter_ms, float rtt_ms)
 }
 
 static float calc_mos(float loss_pct, float jitter_ms, float rtt_ms,
-                       libbare_mos_method_t method)
+                       baresdk_mos_method_t method)
 {
-	if (method == LIBBARE_MOS_SIMPLIFIED)
+	if (method == BARESDK_MOS_SIMPLIFIED)
 		return mos_simplified(loss_pct, jitter_ms, rtt_ms);
 	return mos_emodel(loss_pct, jitter_ms, rtt_ms);
 }
@@ -62,7 +62,7 @@ static float calc_mos_cq(float mos_lq, float rtt_ms)
 
 /* ── Per-call stats collection ───────────────────────────────────────────── */
 
-static void collect_call_stats(struct libbare_call *lc)
+static void collect_call_stats(struct baresdk_call *lc)
 {
 	if (!lc->bc)
 		return;
@@ -94,7 +94,7 @@ static void collect_call_stats(struct libbare_call *lc)
 	if (loss_pct < 0.f) loss_pct = 0.f;
 
 	float mos = calc_mos(loss_pct, jitter_ms, rtt_ms,
-	                      g_bare.cfg.mos_method);
+	                      g_bsdk.cfg.mos_method);
 	float mos_cq_val = calc_mos_cq(mos, rtt_ms);
 
 	/* Get codec name */
@@ -103,13 +103,13 @@ static void collect_call_stats(struct libbare_call *lc)
 	if (ac)
 		codec_name = ac->name;
 
-	struct libbare_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 	if (!qev)
 		return;
 	memset(qev, 0, sizeof(*qev));
 
-	libbare_ev_media_stats_t *s = &qev->ev.u.stats;
-	qev->ev.type         = LIBBARE_EV_MEDIA_STATS;
+	baresdk_ev_media_stats_t *s = &qev->ev.u.stats;
+	qev->ev.type         = BARESDK_EV_MEDIA_STATS;
 	s->call              = lc;
 	s->packets_sent      = pkts_tx;
 	s->packets_received  = pkts_rx;
@@ -119,7 +119,7 @@ static void collect_call_stats(struct libbare_call *lc)
 	s->rtt_ms            = rtt_ms;
 	s->mos_lq            = mos;
 	s->mos_cq            = mos_cq_val;
-	s->mos_method        = g_bare.cfg.mos_method;
+	s->mos_method        = g_bsdk.cfg.mos_method;
 	s->bandwidth_kbps_tx = bw_tx;
 	s->bandwidth_kbps_rx = bw_rx;
 
@@ -129,59 +129,59 @@ static void collect_call_stats(struct libbare_call *lc)
 		s->codec_clock_rate = ac ? ac->crate : 0;
 	}
 
-	mtx_lock(&g_bare.ev_lock);
-	list_append(&g_bare.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bare.ev_cond);
-	mtx_unlock(&g_bare.ev_lock);
+	mtx_lock(&g_bsdk.ev_lock);
+	list_append(&g_bsdk.ev_queue, &qev->le, qev);
+	cnd_signal(&g_bsdk.ev_cond);
+	mtx_unlock(&g_bsdk.ev_lock);
 }
 
 /* ── Timer handler (re_main thread) ─────────────────────────────────────── */
 
-static void stats_visit(struct libbare_call *lc, void *arg)
+static void stats_visit(struct baresdk_call *lc, void *arg)
 {
 	(void)arg;
-	if (lc->state == LIBBARE_CALL_ESTABLISHED)
+	if (lc->state == BARESDK_CALL_ESTABLISHED)
 		collect_call_stats(lc);
 }
 
 static void stats_timer_handler(void *arg)
 {
 	(void)arg;
-	bare_call_foreach(stats_visit, NULL);
-	tmr_start(&g_bare.stats_tmr, g_bare.cfg.stats_interval_ms,
+	bsdk_call_foreach(stats_visit, NULL);
+	tmr_start(&g_bsdk.stats_tmr, g_bsdk.cfg.stats_interval_ms,
 	          stats_timer_handler, NULL);
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bare_stats_init(void)
+int bsdk_stats_init(void)
 {
-	if (!g_bare.cfg.stats_interval_ms)
+	if (!g_bsdk.cfg.stats_interval_ms)
 		return 0;
 
-	tmr_init(&g_bare.stats_tmr);
-	tmr_start(&g_bare.stats_tmr, g_bare.cfg.stats_interval_ms,
+	tmr_init(&g_bsdk.stats_tmr);
+	tmr_start(&g_bsdk.stats_tmr, g_bsdk.cfg.stats_interval_ms,
 	          stats_timer_handler, NULL);
 	return 0;
 }
 
-void bare_stats_close(void)
+void bsdk_stats_close(void)
 {
-	tmr_cancel(&g_bare.stats_tmr);
+	tmr_cancel(&g_bsdk.stats_tmr);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct libbare_call      *lc;
-	libbare_ev_media_stats_t *out;
+	struct baresdk_call      *lc;
+	baresdk_ev_media_stats_t *out;
 	int                       result;
 } getstats_ctx_t;
 
 static void getstats_fn(void *arg)
 {
 	getstats_ctx_t *ctx = arg;
-	struct libbare_call *lc = ctx->lc;
+	struct baresdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = ENOENT; return; }
 
 	struct audio *au = call_audio(lc->bc);
@@ -193,7 +193,7 @@ static void getstats_fn(void *arg)
 	const struct rtcp_stats *rs = stream_rtcp_stats(strm);
 	if (!rs) { ctx->result = ENOENT; return; }
 
-	libbare_ev_media_stats_t *s = ctx->out;
+	baresdk_ev_media_stats_t *s = ctx->out;
 	memset(s, 0, sizeof(*s));
 
 	s->call             = lc;
@@ -209,9 +209,9 @@ static void getstats_fn(void *arg)
 	             : 0.f;
 
 	s->mos_lq     = calc_mos(s->loss_pct, s->jitter_ms, s->rtt_ms,
-	                         g_bare.cfg.mos_method);
+	                         g_bsdk.cfg.mos_method);
 	s->mos_cq     = calc_mos_cq(s->mos_lq, s->rtt_ms);
-	s->mos_method = g_bare.cfg.mos_method;
+	s->mos_method = g_bsdk.cfg.mos_method;
 
 	s->bandwidth_kbps_tx = stream_metric_get_tx_bitrate(strm) / 1000;
 	s->bandwidth_kbps_rx = stream_metric_get_rx_bitrate(strm) / 1000;
@@ -225,11 +225,11 @@ static void getstats_fn(void *arg)
 	ctx->result = 0;
 }
 
-int libbare_call_get_stats(libbare_call_handle_t call,
-                            libbare_ev_media_stats_t *out)
+int baresdk_call_get_stats(baresdk_call_handle_t call,
+                            baresdk_ev_media_stats_t *out)
 {
-	if (!call || !out) return LIBBARE_ERR_INVAL;
+	if (!call || !out) return BARESDK_ERR_INVAL;
 	getstats_ctx_t ctx = {.lc = call, .out = out, .result = 0};
-	int err = bare_dispatch_sync(getstats_fn, &ctx);
+	int err = bsdk_dispatch_sync(getstats_fn, &ctx);
 	return err ? err : ctx.result;
 }
