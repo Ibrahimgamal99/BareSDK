@@ -76,11 +76,16 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 	qev->buf[off + copy_len] = '\0';
 	qev->ev.u.sip_trace.raw_message = qev->buf + off;
 
-	/* tx/rx stored separately — reuse transport field prefix */
-	/* (direction is implicit: TX = sent, RX = received) */
+	qev->ev.u.sip_trace.dir = tx ? BARESDK_MEDIA_DIR_TX : BARESDK_MEDIA_DIR_RX;
 
 	mtx_lock(&g_bsdk.ev_lock);
+	if (g_bsdk.ev_queue_len >= g_bsdk.ev_queue_max) {
+		mtx_unlock(&g_bsdk.ev_lock);
+		mem_deref(qev);
+		return;
+	}
 	list_append(&g_bsdk.ev_queue, &qev->le, qev);
+	g_bsdk.ev_queue_len++;
 	cnd_signal(&g_bsdk.ev_cond);
 	mtx_unlock(&g_bsdk.ev_lock);
 }

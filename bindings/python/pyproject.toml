@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "cffi>=1.15"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "baresdk"
+version = "1.0.0"
+description = "Python binding for baresdk — SIP/WebRTC/NAT SDK"
+readme = "../../README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["cffi>=1.15"]
+
+[project.urls]
+Homepage = https://github.com/Ibrahimgamal99/BareSDK.git"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["baresdk*"]
+
+[tool.setuptools.package-data]
+baresdk = ["baresdk.so", "baresdk.dylib", "baresdk.dll", "_baresdk_clean.h"]

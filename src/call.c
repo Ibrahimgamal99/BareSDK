@@ -10,40 +10,31 @@
 
 static struct list s_calls;
 static mtx_t       s_calls_lock;
-static bool        s_calls_initialized = false;
 
-static void ensure_calls_init(void)
+/* Called once from baresdk_init before any call API is reachable. */
+void bsdk_call_global_init(void)
 {
-	mtx_lock(&s_calls_lock);
-	if (!s_calls_initialized) {
-		mtx_init(&s_calls_lock, mtx_plain);
-		list_init(&s_calls);
-		s_calls_initialized = true;
-	}
-	mtx_unlock(&s_calls_lock);
+	mtx_init(&s_calls_lock, mtx_plain);
+	list_init(&s_calls);
 }
 
 void bsdk_call_global_reset(void)
 {
 	mtx_lock(&s_calls_lock);
-	if (s_calls_initialized) {
-		struct le *le, *le_tmp;
-		LIST_FOREACH_SAFE(&s_calls, le, le_tmp) {
-			struct baresdk_call *lc = le->data;
-			list_unlink(&lc->le);
-			mem_deref(lc);
-		}
-		mtx_destroy(&s_calls_lock);
-		s_calls_initialized = false;
+	struct le *le, *le_tmp;
+	LIST_FOREACH_SAFE(&s_calls, le, le_tmp) {
+		struct baresdk_call *lc = le->data;
+		list_unlink(&lc->le);
+		mem_deref(lc);
 	}
 	mtx_unlock(&s_calls_lock);
+	mtx_destroy(&s_calls_lock);
 }
 
 /* ── Call lookup ─────────────────────────────────────────────────────────── */
 
 struct baresdk_call *bsdk_call_find(const struct call *bc)
 {
-	ensure_calls_init();
 	struct le *le;
 	mtx_lock(&s_calls_lock);
 	LIST_FOREACH(&s_calls, le) {
@@ -59,7 +50,6 @@ struct baresdk_call *bsdk_call_find(const struct call *bc)
 
 void bsdk_call_register(struct baresdk_call *lc)
 {
-	ensure_calls_init();
 	mtx_lock(&s_calls_lock);
 	list_append(&s_calls, &lc->le, lc);
 	mtx_unlock(&s_calls_lock);
@@ -67,7 +57,6 @@ void bsdk_call_register(struct baresdk_call *lc)
 
 void bsdk_call_unregister(struct baresdk_call *lc)
 {
-	ensure_calls_init();
 	mtx_lock(&s_calls_lock);
 	list_unlink(&lc->le);
 	mtx_unlock(&s_calls_lock);
@@ -75,7 +64,6 @@ void bsdk_call_unregister(struct baresdk_call *lc)
 
 void bsdk_call_foreach(void (*fn)(struct baresdk_call *, void *), void *arg)
 {
-	ensure_calls_init();
 	mtx_lock(&s_calls_lock);
 	struct le *le;
 	LIST_FOREACH(&s_calls, le) {
@@ -94,7 +82,7 @@ static void custom_hdr_destructor(void *data)
 	mem_deref(hdr->value);
 }
 
-static void call_destructor(void *data)
+void bsdk_call_destructor(void *data)
 {
 	struct baresdk_call *lc = data;
 	struct le *le, *le_tmp;
@@ -125,8 +113,12 @@ static void invite_fn(void *arg)
 	if (ctx->result || !bc)
 		return;
 
-	struct baresdk_call *lc = mem_alloc(sizeof(*lc), call_destructor);
-	if (!lc) { ctx->result = ENOMEM; return; }
+	struct baresdk_call *lc = mem_alloc(sizeof(*lc), bsdk_call_destructor);
+	if (!lc) {
+		ua_hangup(ctx->acct->ua, bc, 500, "Out of Memory");
+		ctx->result = ENOMEM;
+		return;
+	}
 	memset(lc, 0, sizeof(*lc));
 	mtx_init(&lc->tap_lock, mtx_plain);
 	list_init(&lc->custom_hdrs);
@@ -161,7 +153,12 @@ int baresdk_call_invite(baresdk_account_handle_t acct,
 		return BARESDK_ERR_INVAL;
 
 	invite_ctx_t ctx = {.acct = acct, .out = out, .result = 0};
-	str_ncpy(ctx.uri, uri, sizeof(ctx.uri));
+	if (strncasecmp(uri, "sip:", 4) == 0 ||
+	    strncasecmp(uri, "sips:", 5) == 0) {
+		str_ncpy(ctx.uri, uri, sizeof(ctx.uri));
+	} else {
+		re_snprintf(ctx.uri, sizeof(ctx.uri), "sip:%s", uri);
+	}
 
 	int err = bsdk_dispatch_sync(invite_fn, &ctx);
 	return err ? err : ctx.result;

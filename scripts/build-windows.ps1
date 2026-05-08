@@ -44,11 +44,32 @@ cmake --build $BuildDir --config $BuildType --target baresdk
 Write-Host "=== Installing ==="
 cmake --install $BuildDir --config $BuildType
 
-$Output = Join-Path $Root "dist\windows\x64\bare.lib"
-if (Test-Path $Output) {
-    $size = (Get-Item $Output).Length / 1MB
+$StaticLib = Join-Path $Root "dist\windows\x64\bare.lib"
+if (Test-Path $StaticLib) {
+    $size = (Get-Item $StaticLib).Length / 1MB
     Write-Host ""
-    Write-Host "Done. Output: $Output ($([math]::Round($size,1)) MB)"
+    Write-Host "Static lib: $StaticLib ($([math]::Round($size,1)) MB)"
 } else {
     Write-Host "Build complete. Check dist\windows\x64\ for output."
 }
+
+# ── Link shared library (DLL, zero extra runtime deps) ───────────────────────
+# vcpkg x64-windows-static-md builds OpenSSL and zlib as static .lib files,
+# so we link them directly — no OpenSSL DLLs needed at runtime.
+$VcpkgLibs  = Join-Path $VcpkgRoot "installed\x64-windows-static-md\lib"
+$SslLib     = Join-Path $VcpkgLibs "libssl.lib"
+$CryptoLib  = Join-Path $VcpkgLibs "libcrypto.lib"
+$ZlibLib    = Join-Path $VcpkgLibs "zlib.lib"
+
+$DllPath = Join-Path $Root "dist\windows\x64\baresdk.dll"
+Write-Host ""
+Write-Host "=== Linking $DllPath ==="
+link.exe /DLL /NOLOGO `
+    /OUT:$DllPath `
+    /WHOLEARCHIVE:$StaticLib `
+    $SslLib $CryptoLib $ZlibLib `
+    ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib
+
+Write-Host ""
+Write-Host "Done. Output:"
+Get-Item $StaticLib, $DllPath | Select-Object Name, @{N="MB";E={[math]::Round($_.Length/1MB,1)}}

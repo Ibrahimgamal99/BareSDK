@@ -51,15 +51,33 @@ static void parse_account_uri(const char *uri,
 	const char *semi = strchr(hp, ';');
 	size_t hp_len = semi ? (size_t)(semi - hp) : strlen(hp);
 
-	const char *colon = memchr(hp, ':', hp_len);
-	if (colon) {
-		size_t hlen = (size_t)(colon - hp);
-		if (hlen >= host_sz) hlen = host_sz - 1;
-		memcpy(host, hp, hlen); host[hlen] = '\0';
-		*port = (uint16_t)strtoul(colon + 1, NULL, 10);
+	if (hp[0] == '[') {
+		/* IPv6 literal — find closing bracket */
+		const char *cbracket = memchr(hp, ']', hp_len);
+		if (cbracket) {
+			size_t hlen = (size_t)(cbracket - hp - 1);
+			if (hlen >= host_sz) hlen = host_sz - 1;
+			memcpy(host, hp + 1, hlen);
+			host[hlen] = '\0';
+			/* Optional port after ']' */
+			if (cbracket + 1 < hp + hp_len && cbracket[1] == ':')
+				*port = (uint16_t)strtoul(cbracket + 2, NULL, 10);
+		} else {
+			/* Malformed bracket — copy as-is */
+			if (hp_len >= host_sz) hp_len = host_sz - 1;
+			memcpy(host, hp, hp_len); host[hp_len] = '\0';
+		}
 	} else {
-		if (hp_len >= host_sz) hp_len = host_sz - 1;
-		memcpy(host, hp, hp_len); host[hp_len] = '\0';
+		const char *colon = memchr(hp, ':', hp_len);
+		if (colon) {
+			size_t hlen = (size_t)(colon - hp);
+			if (hlen >= host_sz) hlen = host_sz - 1;
+			memcpy(host, hp, hlen); host[hlen] = '\0';
+			*port = (uint16_t)strtoul(colon + 1, NULL, 10);
+		} else {
+			if (hp_len >= host_sz) hp_len = host_sz - 1;
+			memcpy(host, hp, hp_len); host[hp_len] = '\0';
+		}
 	}
 }
 
@@ -197,8 +215,13 @@ static void configure_baresip_account(struct baresdk_account *acct)
 		                 ? acct->cfg.turn_user   : cfg->turn_user;
 		const char *tp   = acct->cfg.turn_pass
 		                 ? acct->cfg.turn_pass   : cfg->turn_pass;
-		if (stun) account_set_stun_uri(ba,  stun);
-		if (turn) account_set_stun_uri(ba,  turn);
+		/* TURN includes relay functionality; prefer it over bare STUN.
+		 * baresip's account has a single NAT server slot — TURN takes it
+		 * when both are set, as TURN servers also respond to STUN requests. */
+		if (turn)
+			account_set_stun_uri(ba, turn);
+		else if (stun)
+			account_set_stun_uri(ba, stun);
 		if (tu)   account_set_stun_user(ba, tu);
 		if (tp)   account_set_stun_pass(ba, tp);
 	}
@@ -346,11 +369,23 @@ static void create_fn(void *arg)
 	}
 	acct->parsed_transport = tp;
 
-	/* Build AOR: sip:user@host;transport=proto */
+	/* Build AOR: sip:user@host[:port];transport=proto
+	 * IPv6 literals must be wrapped in brackets per RFC 3261. */
 	char aor[512];
-	re_snprintf(aor, sizeof(aor), "sip:%s@%s;transport=%s",
-	            acct->parsed_user, acct->parsed_host,
-	            bsdk_transport_str(tp));
+	bool ipv6 = strchr(acct->parsed_host, ':') != NULL;
+	if (acct->parsed_port) {
+		re_snprintf(aor, sizeof(aor),
+		            ipv6 ? "sip:%s@[%s]:%u;transport=%s"
+		                 : "sip:%s@%s:%u;transport=%s",
+		            acct->parsed_user, acct->parsed_host,
+		            (unsigned)acct->parsed_port, bsdk_transport_str(tp));
+	} else {
+		re_snprintf(aor, sizeof(aor),
+		            ipv6 ? "sip:%s@[%s];transport=%s"
+		                 : "sip:%s@%s;transport=%s",
+		            acct->parsed_user, acct->parsed_host,
+		            bsdk_transport_str(tp));
+	}
 
 	err = ua_alloc(&acct->ua, aor);
 	if (err) { mem_deref(acct); ctx->result = err; return; }

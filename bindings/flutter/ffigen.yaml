@@ -1,0 +1,34 @@
+# ffigen configuration for baresdk
+# Run: dart run ffigen --config ffigen.yaml
+# Output: lib/src/ffi_bindings.dart
+
+name: BareSDKBindings
+description: 'Auto-generated Dart FFI bindings for baresdk.'
+output: 'lib/src/ffi_bindings.dart'
+
+headers:
+  entry-points:
+    - '../../include/baresdk.h'
+
+compiler-opts:
+  - '-I../../include'
+
+# Only include the baresdk public API
+include:
+  symbols:
+    - 'baresdk_.*'
+    - 'BARESDK_.*'
+
+typedef-map:
+  'size_t': 'IntPtr'
+  'uint8_t': 'Uint8'
+  'uint16_t': 'Uint16'
+  'uint32_t': 'Uint32'
+  'uint64_t': 'Uint64'
+  'int16_t': 'Int16'
+  'int32_t': 'Int32'
+  'bool': 'Bool'
+
+comments:
+  style: any
+  length: full

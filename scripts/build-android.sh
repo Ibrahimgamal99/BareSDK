@@ -44,9 +44,28 @@ for ABI in ${ABIS}; do
   cmake --build "${BUILD_DIR}" --target baresdk -j"$(nproc)"
   cmake --install "${BUILD_DIR}"
 
+  # ── Link shared library ───────────────────────────────────────────────────
+  DIST_DIR="${ROOT}/dist/android/${ABI}"
+  SO="${DIST_DIR}/baresdk.so"
+  NDK_HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+  API_LEVEL="${API#android-}"
+  case "${ABI}" in
+    arm64-v8a)   NDK_TRIPLE="aarch64-linux-android" ;;
+    armeabi-v7a) NDK_TRIPLE="armv7a-linux-androideabi" ;;
+    x86_64)      NDK_TRIPLE="x86_64-linux-android" ;;
+    x86)         NDK_TRIPLE="i686-linux-android" ;;
+  esac
+  NDK_CC="${NDK}/toolchains/llvm/prebuilt/${NDK_HOST_TAG}/bin/${NDK_TRIPLE}${API_LEVEL}-clang"
+  echo "  === Linking ${SO} ==="
+  "${NDK_CC}" -shared \
+    -Wl,--whole-archive "${DIST_DIR}/baresdk.a" -Wl,--no-whole-archive \
+    -llog -lOpenSLES -landroid -lm \
+    -o "${SO}"
+
   echo "  -> dist/android/${ABI}/baresdk.a"
+  echo "  -> dist/android/${ABI}/baresdk.so"
 done
 
 echo ""
 echo "Done. Outputs:"
-find "${ROOT}/dist/android" -name "baresdk.a" -exec ls -lh {} \;
+find "${ROOT}/dist/android" \( -name "baresdk.a" -o -name "baresdk.so" \) -exec ls -lh {} \;

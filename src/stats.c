@@ -129,10 +129,7 @@ static void collect_call_stats(struct baresdk_call *lc)
 		s->codec_clock_rate = ac ? ac->crate : 0;
 	}
 
-	mtx_lock(&g_bsdk.ev_lock);
-	list_append(&g_bsdk.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+	bsdk_event_post_qev(qev);
 }
 
 /* ── Timer handler (re_main thread) ─────────────────────────────────────── */

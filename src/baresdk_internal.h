@@ -125,10 +125,13 @@ struct baresdk_call {
 /* ── Event queue entry ─────────────────────────────────────────────────── */
 
 struct baresdk_queued_event {
-	struct le         le;
-	baresdk_event_t   ev;
+	struct le            le;
+	baresdk_event_t      ev;
 	/* Inline string storage — pointers in ev.u may point into buf. */
-	char              buf[4096];
+	char                 buf[4096];
+	/* If set, mem_deref'd on the event thread after the app callback returns.
+	 * Used to defer call-wrapper cleanup until after CALL_ENDED is delivered. */
+	struct baresdk_call *deref_after_deliver;
 };
 
 /* ── dispatch.c ────────────────────────────────────────────────────────── */
@@ -146,6 +149,8 @@ int bsdk_dispatch_sync(bsdk_main_fn fn, void *arg);
 int  bsdk_event_init(void);
 void bsdk_event_close(void);
 void bsdk_event_post(const baresdk_event_t *ev);
+/* Takes ownership of qev; frees it if queue is full. Returns true on success. */
+bool bsdk_event_post_qev(struct baresdk_queued_event *qev);
 
 /* ── log.c ─────────────────────────────────────────────────────────────── */
 
@@ -168,6 +173,7 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct);
 
 /* ── call.c ────────────────────────────────────────────────────────────── */
 
+void bsdk_call_destructor(void *data);  /* mem_alloc destructor for call wrappers */
 struct baresdk_call *bsdk_call_find(const struct call *bc);
 void bsdk_call_register(struct baresdk_call *lc);
 void bsdk_call_unregister(struct baresdk_call *lc);
@@ -276,7 +282,8 @@ void bsdk_acct_cfg_deep_free(struct baresdk_account *acct);
 
 /* ── Global state reset (call from shutdown) ───────────────────────────── */
 
-void bsdk_call_global_reset(void);
+void bsdk_call_global_init(void);   /* call once from baresdk_init */
+void bsdk_call_global_reset(void);  /* call from baresdk_shutdown / fail path */
 void bsdk_tap_global_reset(void);
 
 #endif /* BARESDK_INTERNAL_H */

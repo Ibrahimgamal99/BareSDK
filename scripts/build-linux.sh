@@ -18,7 +18,20 @@ cmake -S "${ROOT}" -B "${BUILD_DIR}" -GNinja \
 cmake --build "${BUILD_DIR}" --target baresdk -j"$(nproc)"
 cmake --install "${BUILD_DIR}"
 
+# ── Link shared library ───────────────────────────────────────────────────────
+DIST_DIR="${ROOT}/dist/linux/x86_64"
+SO="${DIST_DIR}/baresdk.so"
+echo ""
+echo "=== Linking ${SO} ==="
+# All deps linked dynamically — glibc's libm/libresolv.a are not PIC so cannot
+# be embedded in a .so, and openssl-static no longer ships on modern distros.
+# All of these are present on every Linux system.
+gcc -shared \
+  -Wl,--whole-archive "${DIST_DIR}/baresdk.a" -Wl,--no-whole-archive \
+  -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl \
+  -lpulse -lopus \
+  -o "${SO}"
+
 echo ""
 echo "Done. Output:"
-ls -lh "${ROOT}/dist/linux/x86_64/baresdk.a" 2>/dev/null || \
-  find "${ROOT}/dist/linux" -name "baresdk.a" -exec ls -lh {} \;
+ls -lh "${DIST_DIR}/baresdk.a" "${SO}"

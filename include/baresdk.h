@@ -17,6 +17,19 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+/* ── DLL export macros (Windows shared library build) ──────────────────── */
+#ifdef _WIN32
+#  ifdef BARESDK_SHARED_BUILD
+#    define BARESDK_EXPORT __declspec(dllexport)
+#  elif defined(BARESDK_SHARED)
+#    define BARESDK_EXPORT __declspec(dllimport)
+#  else
+#    define BARESDK_EXPORT
+#  endif
+#else
+#  define BARESDK_EXPORT __attribute__((visibility("default")))
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,7 +40,7 @@ extern "C" {
 #define BARESDK_VERSION_MINOR 0
 #define BARESDK_VERSION_PATCH 0
 
-const char *baresdk_version(void);
+BARESDK_EXPORT const char *baresdk_version(void);
 
 /* ── Opaque handles ───────────────────────────────────────────────────────── */
 
@@ -475,20 +488,20 @@ typedef struct {
 /* ── Lifecycle ────────────────────────────────────────────────────────────── */
 
 /** Zero-fill cfg and set version/struct_size correctly. Call before populating. */
-void baresdk_config_init(baresdk_config_t *cfg);
+BARESDK_EXPORT void baresdk_config_init(baresdk_config_t *cfg);
 
 /**
  * Initialize the baresdk stack. Call once per process before any other API.
  * Spawns re_main thread and event dispatch thread internally.
  * Returns BARESDK_OK or a negative BARESDK_ERR_* code.
  */
-int baresdk_init(const baresdk_config_t *cfg);
+BARESDK_EXPORT int baresdk_init(const baresdk_config_t *cfg);
 
 /**
  * Tear down the stack. Blocks until all internal threads have exited.
  * All active accounts and calls are forcibly terminated first.
  */
-void baresdk_shutdown(void);
+BARESDK_EXPORT void baresdk_shutdown(void);
 
 /* ── Accounts ─────────────────────────────────────────────────────────────── */
 
@@ -496,24 +509,24 @@ void baresdk_shutdown(void);
  * Create a SIP account. Does NOT register — call baresdk_account_register().
  * Thread-safe; may be called from any thread after baresdk_init().
  */
-int baresdk_account_create(const baresdk_account_config_t *cfg,
-                            baresdk_account_handle_t *out);
+BARESDK_EXPORT int baresdk_account_create(const baresdk_account_config_t *cfg,
+                             baresdk_account_handle_t *out);
 
 /** Destroy account and all associated calls. Unregisters first if registered. */
-void baresdk_account_destroy(baresdk_account_handle_t acct);
+BARESDK_EXPORT void baresdk_account_destroy(baresdk_account_handle_t acct);
 
 /** Begin registration. Fires BARESDK_EV_REG_STATE events on state changes. */
-int baresdk_account_register(baresdk_account_handle_t acct);
+BARESDK_EXPORT int baresdk_account_register(baresdk_account_handle_t acct);
 
 /** Unregister (sends REGISTER with Expires: 0). */
-int baresdk_account_unregister(baresdk_account_handle_t acct);
+BARESDK_EXPORT int baresdk_account_unregister(baresdk_account_handle_t acct);
 
 /**
  * Add a custom SIP header to all outgoing requests for this account.
  * @param name   Header field name  (e.g. "X-Tenant-Id")
  * @param value  Header field value (e.g. "12345")
  */
-int baresdk_account_add_header(baresdk_account_handle_t acct,
+BARESDK_EXPORT int baresdk_account_add_header(baresdk_account_handle_t acct,
                                 const char *name, const char *value);
 
 /**
@@ -522,7 +535,7 @@ int baresdk_account_add_header(baresdk_account_handle_t acct,
  * @param target_uri  SIP URI of the contact to subscribe to
  * @return BARESDK_OK on success, or negative error code
  */
-int baresdk_account_subscribe_presence(baresdk_account_handle_t acct,
+BARESDK_EXPORT int baresdk_account_subscribe_presence(baresdk_account_handle_t acct,
                                         const char *target_uri);
 
 /**
@@ -530,7 +543,7 @@ int baresdk_account_subscribe_presence(baresdk_account_handle_t acct,
  * @param target_uri  SIP URI of the contact to unsubscribe from
  * @return BARESDK_OK on success, or negative error code
  */
-int baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
+BARESDK_EXPORT int baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
                                           const char *target_uri);
 
 /* ── Calls ────────────────────────────────────────────────────────────────── */
@@ -539,27 +552,27 @@ int baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
  * Initiate an outgoing call. Returns immediately; fires BARESDK_EV_CALL_STATE
  * CALLING, then RINGING, then ESTABLISHED (or FAILED).
  */
-int baresdk_call_invite(baresdk_account_handle_t acct,
+BARESDK_EXPORT int baresdk_call_invite(baresdk_account_handle_t acct,
                          const char *uri,
                          baresdk_call_handle_t *out);
 
 /** Answer an incoming call (received via BARESDK_EV_INCOMING_CALL). */
-int baresdk_call_answer(baresdk_call_handle_t call);
+BARESDK_EXPORT int baresdk_call_answer(baresdk_call_handle_t call);
 
 /** Terminate a call with BYE. */
-int baresdk_call_hangup(baresdk_call_handle_t call);
+BARESDK_EXPORT int baresdk_call_hangup(baresdk_call_handle_t call);
 
 /** Put call on hold (re-INVITE with sendonly). */
-int baresdk_call_hold(baresdk_call_handle_t call);
+BARESDK_EXPORT int baresdk_call_hold(baresdk_call_handle_t call);
 
 /** Resume a held call (re-INVITE with sendrecv). */
-int baresdk_call_resume(baresdk_call_handle_t call);
+BARESDK_EXPORT int baresdk_call_resume(baresdk_call_handle_t call);
 
 /** Send DTMF digit via RFC 4733 RTP events. digit: '0'-'9', '*', '#', 'A'-'D'. */
-int baresdk_call_send_dtmf(baresdk_call_handle_t call, char digit);
+BARESDK_EXPORT int baresdk_call_send_dtmf(baresdk_call_handle_t call, char digit);
 
 /** Blind transfer via REFER. */
-int baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
+BARESDK_EXPORT int baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
 
 /**
  * Add a custom SIP header to a specific call/dialog.
@@ -568,7 +581,7 @@ int baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
  * @param name   Header field name  (e.g. "X-Call-Id")
  * @param value  Header field value (e.g. "12345")
  */
-int baresdk_call_add_header(baresdk_call_handle_t call,
+BARESDK_EXPORT int baresdk_call_add_header(baresdk_call_handle_t call,
                              const char *name, const char *value);
 
 /**
@@ -576,7 +589,7 @@ int baresdk_call_add_header(baresdk_call_handle_t call,
  * call_a is the call to transfer away; call_b is the already-established
  * consultation call whose dialog info is embedded in Replaces.
  */
-int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
+BARESDK_EXPORT int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
                                     baresdk_call_handle_t call_b);
 
 /* ── SIP MESSAGE ─────────────────────────────────────────────────────────── */
@@ -586,7 +599,7 @@ int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
  * content_type defaults to "text/plain" if NULL.
  * Fires BARESDK_EV_MESSAGE on the remote end when received.
  */
-int baresdk_message_send(baresdk_account_handle_t account,
+BARESDK_EXPORT int baresdk_message_send(baresdk_account_handle_t account,
                           const char *to_uri,
                           const char *body,
                           const char *content_type);
@@ -597,7 +610,7 @@ int baresdk_message_send(baresdk_account_handle_t account,
  * Publish presence status for the account (PUBLISH request).
  * Fires BARESDK_EV_PRESENCE_STATE on subscribed watchers.
  */
-int baresdk_account_publish_presence(baresdk_account_handle_t account,
+BARESDK_EXPORT int baresdk_account_publish_presence(baresdk_account_handle_t account,
                                       baresdk_presence_status_t status);
 
 /* ── 100rel / PRACK ──────────────────────────────────────────────────────── */
@@ -606,19 +619,19 @@ int baresdk_account_publish_presence(baresdk_account_handle_t account,
  * Set the RFC 3262 100rel mode for an account.
  * Must be called before baresdk_call_invite / baresdk_call_answer.
  */
-int baresdk_account_set_100rel(baresdk_account_handle_t account,
+BARESDK_EXPORT int baresdk_account_set_100rel(baresdk_account_handle_t account,
                                 baresdk_100rel_mode_t mode);
 
 /* ── Audio ────────────────────────────────────────────────────────────────── */
 
 /** Mute/unmute the microphone for a call. */
-int baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
+BARESDK_EXPORT int baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
 
 /** Set the system audio input device by name. NULL = platform default. */
-int baresdk_audio_set_input_device(const char *name);
+BARESDK_EXPORT int baresdk_audio_set_input_device(const char *name);
 
 /** Set the system audio output device by name. NULL = platform default. */
-int baresdk_audio_set_output_device(const char *name);
+BARESDK_EXPORT int baresdk_audio_set_output_device(const char *name);
 
 /* ── Media tap ────────────────────────────────────────────────────────────── */
 
@@ -628,7 +641,7 @@ int baresdk_audio_set_output_device(const char *name);
  * directions. Must be non-blocking — heavy work must go to your own thread.
  * Pass NULL cb to remove the tap.
  */
-int baresdk_call_set_media_tap(baresdk_call_handle_t   call,
+BARESDK_EXPORT int baresdk_call_set_media_tap(baresdk_call_handle_t   call,
                                 baresdk_media_tap_cb_t  cb,
                                 void                   *userdata);
 
@@ -639,7 +652,7 @@ int baresdk_call_set_media_tap(baresdk_call_handle_t   call,
  * Also delivered automatically via BARESDK_EV_MEDIA_STATS if
  * cfg.stats_interval_ms > 0.
  */
-int baresdk_call_get_stats(baresdk_call_handle_t     call,
+BARESDK_EXPORT int baresdk_call_get_stats(baresdk_call_handle_t     call,
                             baresdk_ev_media_stats_t *out);
 
 /* ── pcap ─────────────────────────────────────────────────────────────────── */
@@ -648,10 +661,10 @@ int baresdk_call_get_stats(baresdk_call_handle_t     call,
  * Start capturing SIP + RTP to a Wireshark-compatible pcap file.
  * Writes synthetic Ethernet/IP/UDP headers around each SIP message.
  */
-int baresdk_pcap_start(const char *path);
+BARESDK_EXPORT int baresdk_pcap_start(const char *path);
 
 /** Stop capture and flush/close the pcap file. */
-int baresdk_pcap_stop(void);
+BARESDK_EXPORT int baresdk_pcap_stop(void);
 
 #ifdef __cplusplus
 }

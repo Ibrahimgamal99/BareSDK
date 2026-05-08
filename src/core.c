@@ -187,6 +187,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 	cnd_init(&g_bsdk.ev_cond);
 	mtx_init(&g_bsdk.acct_lock, mtx_plain);
 	mtx_init(&g_bsdk.pcap_lock, mtx_plain);
+	bsdk_call_global_init();
 
 	err = bsdk_log_init();
 	if (err)
@@ -209,6 +210,8 @@ int baresdk_init(const baresdk_config_t *cfg)
 	/* baresip_init tries to re-read the (missing) config path and may replace
 	 * conf_cur() with NULL. Re-seed so modules_init never sees a NULL conf. */
 	conf_configure_buf((const uint8_t *)"#\n", 2);
+
+	conf_config()->call.accept = true;
 
 	err = bsdk_dns_init();
 	if (err)
@@ -283,6 +286,7 @@ fail:
 	bsdk_trace_close();
 	bsdk_event_close();
 	ua_close();
+	bsdk_call_global_reset();
 	bsdk_dns_close();
 	baresip_close();
 	libre_close();

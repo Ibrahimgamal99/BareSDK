@@ -12,6 +12,7 @@
  */
 
 #include <string.h>
+#include <stdlib.h>
 #include "baresdk_internal.h"
 
 /* ── Event thread ────────────────────────────────────────────────────────── */
@@ -38,6 +39,10 @@ static int event_thread_fn(void *arg)
 			if (g_bsdk.cfg.event_cb)
 				g_bsdk.cfg.event_cb(&qev->ev,
 				                    g_bsdk.cfg.event_userdata);
+			/* Deref the call wrapper only after the app callback has
+			 * returned so the handle remains valid during delivery. */
+			if (qev->deref_after_deliver)
+				mem_deref(qev->deref_after_deliver);
 			mem_deref(qev);
 
 			mtx_lock(&g_bsdk.ev_lock);
@@ -52,6 +57,25 @@ static int event_thread_fn(void *arg)
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 
+/* Takes ownership of qev. Returns true on success, false if queue was full
+ * (qev is freed on failure). Safe to call from re_main or any thread. */
+bool bsdk_event_post_qev(struct baresdk_queued_event *qev)
+{
+	mtx_lock(&g_bsdk.ev_lock);
+	if (g_bsdk.ev_queue_len >= g_bsdk.ev_queue_max) {
+		int type = qev->ev.type;   /* read before deref */
+		mtx_unlock(&g_bsdk.ev_lock);
+		mem_deref(qev);
+		warning("baresdk/event: dropped event type %d (queue full)\n", type);
+		return false;
+	}
+	list_append(&g_bsdk.ev_queue, &qev->le, qev);
+	g_bsdk.ev_queue_len++;
+	cnd_signal(&g_bsdk.ev_cond);
+	mtx_unlock(&g_bsdk.ev_lock);
+	return true;
+}
+
 /* Post a copy of ev to the event queue. Safe to call from re_main. */
 void bsdk_event_post(const baresdk_event_t *ev)
 {
@@ -60,22 +84,21 @@ void bsdk_event_post(const baresdk_event_t *ev)
 		warning("baresdk/event: dropped event type %d (OOM)\n", ev->type);
 		return;
 	}
-
 	memset(qev, 0, sizeof(*qev));
 	memcpy(&qev->ev, ev, sizeof(*ev));
+	bsdk_event_post_qev(qev);  /* warns and frees qev on failure */
+}
 
-	mtx_lock(&g_bsdk.ev_lock);
-	if (g_bsdk.ev_queue_len >= g_bsdk.ev_queue_max) {
-		mtx_unlock(&g_bsdk.ev_lock);
-		mem_deref(qev);
-		warning("baresdk/event: dropped event type %d (queue full)\n",
-		        ev->type);
-		return;
-	}
-	list_append(&g_bsdk.ev_queue, &qev->le, qev);
-	g_bsdk.ev_queue_len++;
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+/* Parse the leading 3-digit SIP status from a reason string like "403 Forbidden".
+ * Returns 0 if the string doesn't start with a valid 3-digit code. */
+static int sip_reason_code(const char *reason)
+{
+	if (!reason) return 0;
+	char *end;
+	long code = strtol(reason, &end, 10);
+	if (end == reason || end - reason != 3 || code < 100 || code > 699)
+		return 0;
+	return (int)code;
 }
 
 /* ── bevent handler (runs on re_main) ────────────────────────────────────── */
@@ -97,6 +120,16 @@ static void bevent_handler(enum bevent_ev bev,
 		bc ? bsdk_call_find(bc) : NULL;
 
 	switch (bev) {
+
+	case BEVENT_SIPSESS_CONN: {
+		const struct sip_msg *msg = bevent_get_msg(event);
+		if (!msg) break;
+		struct ua *found_ua = uag_find_msg(msg);
+		if (found_ua)
+			ua_accept(found_ua, msg);
+		post = false;
+		break;
+	}
 
 	case BEVENT_REGISTERING:
 		ev.type        = BARESDK_EV_REG_STATE;
@@ -121,10 +154,11 @@ static void bevent_handler(enum bevent_ev bev,
 		ev.type            = BARESDK_EV_REG_STATE;
 		ev.u.reg.state     = BARESDK_REG_FAILED;
 		ev.u.reg.account   = acct;
-		/* Classify error — AUTH failures are terminal */
-		if (reason && (strstr(reason, "401") || strstr(reason, "403")))
+		/* Classify error by 3-digit SIP status code */
+		int code = sip_reason_code(reason);
+		if (code == 401 || code == 403 || code == 407)
 			ev.u.reg.error = BARESDK_ERR_AUTH;
-		else if (reason && strstr(reason, "5"))
+		else if (code >= 500 && code < 600)
 			ev.u.reg.error = BARESDK_ERR_SERVER_5XX;
 		else
 			ev.u.reg.error = BARESDK_ERR_TRANSPORT;
@@ -147,16 +181,7 @@ static void bevent_handler(enum bevent_ev bev,
 				if (ev.u.reg.error != BARESDK_ERR_AUTH)
 					bsdk_account_schedule_retry(acct);
 			}
-			mtx_lock(&g_bsdk.ev_lock);
-			if (g_bsdk.ev_queue_len < g_bsdk.ev_queue_max) {
-				list_append(&g_bsdk.ev_queue, &qev->le, qev);
-				g_bsdk.ev_queue_len++;
-				cnd_signal(&g_bsdk.ev_cond);
-			} else {
-				mem_deref(qev);
-				warning("baresdk/event: dropped REGISTER_FAIL (queue full)\n");
-			}
-			mtx_unlock(&g_bsdk.ev_lock);
+			bsdk_event_post_qev(qev);
 		}
 		post = false;
 		break;
@@ -170,7 +195,9 @@ static void bevent_handler(enum bevent_ev bev,
 		break;
 
 	case BEVENT_CALL_INCOMING: {
-		struct baresdk_call *new_lc = mem_alloc(sizeof(*new_lc), NULL);
+		/* Allocate wrapper and event together; only register if both succeed. */
+		struct baresdk_call *new_lc = mem_alloc(sizeof(*new_lc),
+		                                         bsdk_call_destructor);
 		if (!new_lc) { post = false; break; }
 		memset(new_lc, 0, sizeof(*new_lc));
 		new_lc->bc    = bc;
@@ -178,29 +205,27 @@ static void bevent_handler(enum bevent_ev bev,
 		new_lc->state = BARESDK_CALL_RINGING;
 		mtx_init(&new_lc->tap_lock, mtx_plain);
 		list_init(&new_lc->custom_hdrs);
-		bsdk_call_register(new_lc);
 
 		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
-		if (qev) {
-			memset(qev, 0, sizeof(*qev));
-			qev->ev.type = BARESDK_EV_INCOMING_CALL;
-			qev->ev.u.incoming.account = acct;
-			qev->ev.u.incoming.call    = new_lc;
-			const char *peer = call_peeruri(bc);
-			if (peer) {
-				str_ncpy(qev->buf, peer, sizeof(qev->buf));
-				qev->ev.u.incoming.from_uri = qev->buf;
-			}
-			mtx_lock(&g_bsdk.ev_lock);
-			if (g_bsdk.ev_queue_len < g_bsdk.ev_queue_max) {
-				list_append(&g_bsdk.ev_queue, &qev->le, qev);
-				g_bsdk.ev_queue_len++;
-				cnd_signal(&g_bsdk.ev_cond);
-			} else {
-				mem_deref(qev);
-				warning("baresdk/event: dropped INCOMING_CALL (queue full)\n");
-			}
-			mtx_unlock(&g_bsdk.ev_lock);
+		if (!qev) {
+			mem_deref(new_lc);
+			post = false;
+			break;
+		}
+		memset(qev, 0, sizeof(*qev));
+		qev->ev.type = BARESDK_EV_INCOMING_CALL;
+		qev->ev.u.incoming.account = acct;
+		qev->ev.u.incoming.call    = new_lc;
+		const char *peer = call_peeruri(bc);
+		if (peer) {
+			str_ncpy(qev->buf, peer, sizeof(qev->buf));
+			qev->ev.u.incoming.from_uri = qev->buf;
+		}
+		/* Register only after event is ready; unregister+deref on failure. */
+		bsdk_call_register(new_lc);
+		if (!bsdk_event_post_qev(qev)) {
+			bsdk_call_unregister(new_lc);
+			mem_deref(new_lc);
 		}
 		post = false;
 		break;
@@ -228,7 +253,28 @@ static void bevent_handler(enum bevent_ev bev,
 		ev.type = BARESDK_EV_CALL_STATE;
 		ev.u.call_state.call    = lc;
 		ev.u.call_state.account = acct;
-		ev.u.call_state.state   = BARESDK_CALL_ENDED;
+
+		/* Classify by SIP status: 487 → CANCELLED, 4xx/5xx/6xx → FAILED, else → ENDED */
+		int scode = sip_reason_code(reason);
+		if (scode == 487)
+			ev.u.call_state.state = BARESDK_CALL_CANCELLED;
+		else if (scode >= 400)
+			ev.u.call_state.state = BARESDK_CALL_FAILED;
+		else
+			ev.u.call_state.state = BARESDK_CALL_ENDED;
+
+		if (scode == 401 || scode == 403 || scode == 407)
+			ev.u.call_state.error = BARESDK_ERR_AUTH;
+		else if (scode >= 500 && scode < 600)
+			ev.u.call_state.error = BARESDK_ERR_SERVER_5XX;
+		else if (scode >= 400)
+			ev.u.call_state.error = BARESDK_ERR_INVAL;
+
+		if (lc) {
+			lc->state = ev.u.call_state.state;
+			lc->bc    = NULL; /* baresip will free the call */
+			bsdk_call_unregister(lc);
+		}
 
 		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 		if (qev) {
@@ -238,21 +284,9 @@ static void bevent_handler(enum bevent_ev bev,
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
 				qev->ev.u.call_state.reason = qev->buf;
 			}
-			mtx_lock(&g_bsdk.ev_lock);
-			if (g_bsdk.ev_queue_len < g_bsdk.ev_queue_max) {
-				list_append(&g_bsdk.ev_queue, &qev->le, qev);
-				g_bsdk.ev_queue_len++;
-				cnd_signal(&g_bsdk.ev_cond);
-			} else {
-				mem_deref(qev);
-				warning("baresdk/event: dropped CALL_CLOSED (queue full)\n");
-			}
-			mtx_unlock(&g_bsdk.ev_lock);
-		}
-		if (lc) {
-			lc->state = BARESDK_CALL_ENDED;
-			lc->bc    = NULL; /* baresip will free the call */
-			bsdk_call_unregister(lc);
+			/* Transfer ownership of lc to the event; freed after callback. */
+			qev->deref_after_deliver = lc;
+			bsdk_event_post_qev(qev);
 		}
 		post = false;
 		break;
@@ -314,16 +348,7 @@ static void bevent_handler(enum bevent_ev bev,
 				memcpy(&qev->ev, &ev, sizeof(ev));
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
 				qev->ev.u.call_state.reason = qev->buf;
-				mtx_lock(&g_bsdk.ev_lock);
-				if (g_bsdk.ev_queue_len < g_bsdk.ev_queue_max) {
-					list_append(&g_bsdk.ev_queue, &qev->le, qev);
-					g_bsdk.ev_queue_len++;
-					cnd_signal(&g_bsdk.ev_cond);
-				} else {
-					mem_deref(qev);
-					warning("baresdk/event: dropped TRANSFER_FAILED (queue full)\n");
-				}
-				mtx_unlock(&g_bsdk.ev_lock);
+				bsdk_event_post_qev(qev);
 			}
 			post = false;
 		}

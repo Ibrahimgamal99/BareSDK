@@ -79,6 +79,7 @@ endif()
 # ---------------------------------------------------------------------------
 set(BARESDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
 set(BARESDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
+option(BARESDK_SHARED "Also produce a shared library (.so/.dylib/.dll) from the merged archive" OFF)
 
 set(BARESDK_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
     CACHE PATH "Path to libre source tree")
@@ -305,11 +306,68 @@ baresdk_merge(
 )
 
 # ---------------------------------------------------------------------------
+# Phase 4.5 (optional): link a shared library from the merged archive
+# ---------------------------------------------------------------------------
+if(BARESDK_SHARED)
+  if(APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+      set(_SHARED_EXT ".dylib")
+    else()
+      set(_SHARED_EXT ".dylib")
+    endif()
+    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk${_SHARED_EXT}")
+    add_custom_command(
+      OUTPUT  "${_SHARED_OUT}"
+      COMMAND "${CMAKE_C_COMPILER}" -dynamiclib
+              -Wl,-all_load "${_OUT}" -Wl,-noall_load
+              -framework CoreFoundation -framework Security
+              -o "${_SHARED_OUT}"
+      DEPENDS baresdk "${_OUT}"
+      COMMENT "Linking baresdk.dylib"
+      VERBATIM
+    )
+  elseif(MSVC)
+    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk.dll")
+    add_custom_command(
+      OUTPUT  "${_SHARED_OUT}"
+      COMMAND link.exe /DLL /NOLOGO "/OUT:${_SHARED_OUT}"
+              "/WHOLEARCHIVE:${_OUT}"
+              ws2_32.lib iphlpapi.lib crypt32.lib
+      DEPENDS baresdk "${_OUT}"
+      COMMENT "Linking baresdk.dll"
+      VERBATIM
+    )
+  else()
+    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk.so")
+    if(ANDROID_ABI)
+      set(_SHARED_PLATFORM_LIBS -llog -lOpenSLES -landroid)
+    else()
+      set(_SHARED_PLATFORM_LIBS -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv)
+    endif()
+    add_custom_command(
+      OUTPUT  "${_SHARED_OUT}"
+      COMMAND "${CMAKE_C_COMPILER}" -shared
+              -Wl,--whole-archive "${_OUT}" -Wl,--no-whole-archive
+              ${_SHARED_PLATFORM_LIBS}
+              -o "${_SHARED_OUT}"
+      DEPENDS baresdk "${_OUT}"
+      COMMENT "Linking baresdk.so"
+      VERBATIM
+    )
+  endif()
+
+  add_custom_target(baresdk_shared ALL DEPENDS "${_SHARED_OUT}")
+endif()
+
+# ---------------------------------------------------------------------------
 # Install merged archive + headers to dist/
 # ---------------------------------------------------------------------------
 set(_DIST "${BARESDK_DIST_DIR}/${BARESDK_PLATFORM_ID}")
 
 install(FILES "${_OUT}" DESTINATION "${_DIST}")
+if(BARESDK_SHARED AND DEFINED _SHARED_OUT)
+  install(FILES "${_SHARED_OUT}" DESTINATION "${_DIST}")
+endif()
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/baresdk.h"
               DESTINATION "${_DIST}/include")
 install(DIRECTORY "${SYSROOT}/include/re/"  DESTINATION "${_DIST}/include/re")

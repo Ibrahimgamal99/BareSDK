@@ -70,8 +70,5 @@ void bsdk_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 	str_ncpy(qev->buf + off, crypto, sizeof(qev->buf) - off);
 	qev->ev.u.sdp.negotiated_crypto = qev->buf + off;
 
-	mtx_lock(&g_bsdk.ev_lock);
-	list_append(&g_bsdk.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+	bsdk_event_post_qev(qev);
 }

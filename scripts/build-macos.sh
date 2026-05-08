@@ -50,7 +50,24 @@ lipo -create \
 # Copy headers from one of the slices
 cp -r "${DIST}/arm64/include" "${DIST}/universal/"
 
+# ── Link universal shared library (zero extra runtime deps) ──────────────────
+DYLIB="${DIST}/universal/baresdk.dylib"
+echo ""
+echo "=== Linking ${DYLIB} ==="
+# Statically embed OpenSSL so consumers need no brew package at runtime.
+# Apple system frameworks are always present; they stay as -framework.
+clang -dynamiclib \
+  -Wl,-all_load "${DIST}/universal/baresdk.a" -Wl,-noall_load \
+  "${OPENSSL_ROOT}/lib/libssl.a" \
+  "${OPENSSL_ROOT}/lib/libcrypto.a" \
+  -framework CoreFoundation \
+  -framework Security \
+  -framework AudioToolbox \
+  -framework CoreAudio \
+  -framework AVFoundation \
+  -o "${DYLIB}"
+
 echo ""
 echo "Done. Output:"
-ls -lh "${DIST}/universal/baresdk.a"
+ls -lh "${DIST}/universal/baresdk.a" "${DYLIB}"
 lipo -info "${DIST}/universal/baresdk.a"

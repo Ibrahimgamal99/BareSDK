@@ -1,0 +1,585 @@
+/**
+ * baresdk.hpp — header-only C++17 RAII wrapper around the baresdk C API.
+ *
+ * Self-contained: embeds the C declarations from baresdk.h so you only need
+ * this one header + the compiled shared library (baresdk.so / .dll / .dylib).
+ *
+ * If you have already included baresdk.h before this header, the embedded
+ * declarations are skipped automatically.
+ *
+ * Usage:
+ *   #include "baresdk.hpp"
+ *
+ *   baresdk::SDK sdk;
+ *   sdk.config().transport = BARESDK_TRANSPORT_TLS;
+ *   sdk.on_event([](const baresdk_event_t& ev){ ... });
+ *   auto acct = sdk.create_account("alice@pbx.example.com", "secret");
+ *   acct.register_account();
+ */
+
+#pragma once
+
+/* ── Forward-declare or include the C API ────────────────────────────────── */
+#ifndef BARESDK_H
+#include <cstdint>
+#include <cstddef>
+
+#ifdef _WIN32
+#  ifdef BARESDK_SHARED_BUILD
+#    define BARESDK_EXPORT __declspec(dllexport)
+#  elif defined(BARESDK_SHARED)
+#    define BARESDK_EXPORT __declspec(dllimport)
+#  else
+#    define BARESDK_EXPORT
+#  endif
+#else
+#    define BARESDK_EXPORT __attribute__((visibility("default")))
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct baresdk_account  *baresdk_account_handle_t;
+typedef struct baresdk_call     *baresdk_call_handle_t;
+
+typedef enum {
+    BARESDK_TRANSPORT_UDP = 0,
+    BARESDK_TRANSPORT_TCP,
+    BARESDK_TRANSPORT_TLS,
+    BARESDK_TRANSPORT_WS,
+    BARESDK_TRANSPORT_WSS,
+} baresdk_transport_t;
+
+typedef enum {
+    BARESDK_MEDIA_ENC_NONE = 0,
+    BARESDK_MEDIA_ENC_SDES,
+    BARESDK_MEDIA_ENC_DTLS_SRTP,
+} baresdk_media_enc_t;
+
+typedef enum {
+    BARESDK_CODEC_OPUS = 0,
+    BARESDK_CODEC_PCMU,
+    BARESDK_CODEC_PCMA,
+    BARESDK_CODEC_G722,
+} baresdk_codec_t;
+
+typedef enum {
+    BARESDK_MOS_EMODEL = 0,
+    BARESDK_MOS_SIMPLIFIED,
+} baresdk_mos_method_t;
+
+typedef enum {
+    BARESDK_MEDIA_DIR_RX = 0,
+    BARESDK_MEDIA_DIR_TX,
+} baresdk_media_dir_t;
+
+typedef enum {
+    BARESDK_OK                       =  0,
+    BARESDK_ERR_INVAL                = -1,
+    BARESDK_ERR_NOMEM                = -2,
+    BARESDK_ERR_STATE                = -3,
+    BARESDK_ERR_DNS                  = -4,
+    BARESDK_ERR_TRANSPORT            = -5,
+    BARESDK_ERR_AUTH                 = -6,
+    BARESDK_ERR_SERVER_5XX           = -7,
+    BARESDK_ERR_WS_PROTOCOL_REJECTED = -8,
+    BARESDK_ERR_TIMEOUT              = -9,
+    BARESDK_ERR_ALREADY              = -10,
+} baresdk_error_t;
+
+typedef enum {
+    BARESDK_CALL_CALLING = 0,
+    BARESDK_CALL_RINGING,
+    BARESDK_CALL_ESTABLISHED,
+    BARESDK_CALL_HELD,
+    BARESDK_CALL_ENDED,
+    BARESDK_CALL_CANCELLED,
+    BARESDK_CALL_FAILED,
+} baresdk_call_state_t;
+
+typedef enum {
+    BARESDK_REG_UNREGISTERED = 0,
+    BARESDK_REG_REGISTERING,
+    BARESDK_REG_REGISTERED,
+    BARESDK_REG_FAILED,
+    BARESDK_REG_UNREGISTERING,
+} baresdk_reg_state_t;
+
+typedef enum {
+    BARESDK_PRESENCE_UNKNOWN = 0,
+    BARESDK_PRESENCE_OPEN,
+    BARESDK_PRESENCE_CLOSED,
+    BARESDK_PRESENCE_BUSY,
+} baresdk_presence_status_t;
+
+typedef enum {
+    BARESDK_100REL_DISABLED = 0,
+    BARESDK_100REL_ENABLED  = 1,
+    BARESDK_100REL_REQUIRED = 2,
+} baresdk_100rel_mode_t;
+
+typedef enum {
+    BARESDK_EV_LOG = 0,
+    BARESDK_EV_REG_STATE,
+    BARESDK_EV_INCOMING_CALL,
+    BARESDK_EV_CALL_STATE,
+    BARESDK_EV_CALL_DTMF,
+    BARESDK_EV_SDP_NEGOTIATION,
+    BARESDK_EV_SIP_TRACE,
+    BARESDK_EV_MEDIA_STATS,
+    BARESDK_EV_REGISTRAR_WARNING,
+    BARESDK_EV_TRANSFER_REQUEST,
+    BARESDK_EV_MWI,
+    BARESDK_EV_MESSAGE,
+    BARESDK_EV_PRESENCE_STATE,
+} baresdk_event_type_t;
+
+typedef struct {
+    baresdk_account_handle_t account;
+    baresdk_reg_state_t      state;
+    baresdk_error_t          error;
+    uint32_t                 retry_attempt;
+    uint32_t                 retry_delay_ms;
+    const char              *error_str;
+} baresdk_ev_reg_state_t;
+
+typedef struct {
+    baresdk_account_handle_t account;
+    baresdk_call_handle_t    call;
+    const char              *from_uri;
+    const char              *display_name;
+} baresdk_ev_incoming_call_t;
+
+typedef struct {
+    baresdk_account_handle_t account;
+    baresdk_call_handle_t    call;
+    baresdk_call_state_t     state;
+    baresdk_error_t          error;
+    const char              *reason;
+} baresdk_ev_call_state_t;
+
+typedef struct {
+    baresdk_call_handle_t call;
+    char                  digit;
+} baresdk_ev_call_dtmf_t;
+
+typedef struct {
+    baresdk_call_handle_t  call;
+    const char            *local_sdp;
+    const char            *remote_sdp;
+    const char            *negotiated_codec;
+    const char            *negotiated_crypto;
+    const char * const    *rejected_codecs;
+    const char * const    *warnings;
+} baresdk_ev_sdp_negotiation_t;
+
+typedef struct {
+    baresdk_media_dir_t  dir;
+    const char          *transport;
+    const char          *remote_addr;
+    const char          *raw_message;
+    uint64_t             timestamp_us;
+} baresdk_ev_sip_trace_t;
+
+typedef struct {
+    baresdk_call_handle_t call;
+    uint32_t packets_sent;
+    uint32_t packets_received;
+    uint32_t packets_lost;
+    float    loss_pct;
+    float    jitter_ms;
+    float    rtt_ms;
+    float    mos_lq;
+    float    mos_cq;
+    baresdk_mos_method_t mos_method;
+    const char *codec_name;
+    uint32_t    codec_clock_rate;
+    uint32_t bandwidth_kbps_tx;
+    uint32_t bandwidth_kbps_rx;
+} baresdk_ev_media_stats_t;
+
+typedef struct {
+    const char *message;
+} baresdk_ev_log_t;
+
+typedef struct {
+    const char *message;
+} baresdk_ev_registrar_warning_t;
+
+typedef struct {
+    baresdk_account_handle_t account;
+    baresdk_call_handle_t    call;
+    const char              *refer_to_uri;
+    bool                     has_replaces;
+} baresdk_ev_transfer_req_t;
+
+typedef struct {
+    baresdk_account_handle_t account;
+    bool                     messages_waiting;
+    uint32_t                 new_voice;
+    uint32_t                 old_voice;
+    uint32_t                 new_urgent;
+    uint32_t                 old_urgent;
+    const char              *raw_body;
+} baresdk_ev_mwi_t;
+
+typedef struct {
+    baresdk_account_handle_t account;
+    const char              *from_uri;
+    const char              *body;
+    const char              *content_type;
+} baresdk_ev_message_t;
+
+typedef struct {
+    baresdk_account_handle_t  account;
+    const char               *target_uri;
+    baresdk_presence_status_t status;
+} baresdk_ev_presence_state_t;
+
+typedef struct {
+    baresdk_event_type_t type;
+    union {
+        baresdk_ev_log_t               log;
+        baresdk_ev_reg_state_t         reg;
+        baresdk_ev_incoming_call_t     incoming;
+        baresdk_ev_call_state_t        call_state;
+        baresdk_ev_call_dtmf_t         dtmf;
+        baresdk_ev_sdp_negotiation_t   sdp;
+        baresdk_ev_sip_trace_t         sip_trace;
+        baresdk_ev_media_stats_t       stats;
+        baresdk_ev_registrar_warning_t reg_warn;
+        baresdk_ev_transfer_req_t      transfer_req;
+        baresdk_ev_mwi_t               mwi;
+        baresdk_ev_message_t           msg;
+        baresdk_ev_presence_state_t    presence;
+    } u;
+} baresdk_event_t;
+
+typedef void (*baresdk_event_cb_t)(const baresdk_event_t *ev, void *userdata);
+
+typedef void (*baresdk_media_tap_cb_t)(
+    baresdk_call_handle_t  call,
+    baresdk_media_dir_t    direction,
+    const int16_t         *pcm,
+    size_t                 samples,
+    uint32_t               sample_rate,
+    uint8_t                channels,
+    uint64_t               timestamp_us,
+    void                  *userdata);
+
+#define BARESDK_CONFIG_VERSION 1
+
+typedef struct {
+    uint32_t  version;
+    size_t    struct_size;
+    baresdk_transport_t  transport;
+    const char          *local_ip;
+    uint16_t             local_port;
+    const char          *bind_interface;
+    bool                 prefer_ipv6;
+    const char          *sip_domain;
+    const char          *server_url;
+    const char          *server_host;
+    uint16_t             server_port;
+    const char          *outbound_proxy;
+    const char          *ca_cert_path;
+    const char          *client_cert;
+    const char          *client_key;
+    bool                 verify_server;
+    const char          *sni_hostname;
+    const char          *user_agent;
+    const char          *ws_origin;
+    const char         **ws_extra_headers;
+    const char          *stun_server;
+    const char          *turn_server;
+    const char          *turn_user;
+    const char          *turn_pass;
+    bool                 ice_enabled;
+    baresdk_media_enc_t  media_enc;
+    baresdk_codec_t      audio_codecs[8];
+    int                  audio_codec_count;
+    uint8_t              dscp_sip;
+    uint8_t              dscp_rtp;
+    bool                 enable_video;
+    bool  aec;
+    bool  ns;
+    bool  agc;
+    uint32_t  reg_expires;
+    uint32_t  reg_refresh_pct;
+    uint32_t  keepalive_interval;
+    uint32_t  reg_retry_initial_ms;
+    uint32_t  reg_retry_max_ms;
+    float     reg_retry_backoff;
+    uint32_t  reg_retry_max_attempts;
+    uint32_t  sip_t1_ms;
+    uint32_t  sip_t2_ms;
+    uint32_t  sip_timer_b_ms;
+    uint32_t  sip_timer_f_ms;
+    bool      session_timer_enabled;
+    uint32_t  session_expires_s;
+    uint32_t  session_min_se_s;
+    uint32_t              stats_interval_ms;
+    baresdk_mos_method_t  mos_method;
+    bool        trace_sip;
+    bool        trace_sdp_diff;
+    const char *pcap_path;
+    int                 log_level;
+    baresdk_event_cb_t  event_cb;
+    void               *event_userdata;
+} baresdk_config_t;
+
+typedef struct {
+    const char          *uri;
+    const char          *password;
+    baresdk_transport_t  transport;
+    const char          *server_host;
+    uint16_t             server_port;
+    const char          *server_url;
+    const char          *auth_user;
+    const char          *display_name;
+    baresdk_media_enc_t  media_enc;
+    bool                 ice_enabled;
+    const char          *stun_server;
+    const char          *turn_server;
+    const char          *turn_user;
+    const char          *turn_pass;
+    const char          *outbound;
+    bool                 verify_tls;
+} baresdk_account_config_t;
+
+BARESDK_EXPORT const char *baresdk_version(void);
+BARESDK_EXPORT void baresdk_config_init(baresdk_config_t *cfg);
+BARESDK_EXPORT int  baresdk_init(const baresdk_config_t *cfg);
+BARESDK_EXPORT void baresdk_shutdown(void);
+BARESDK_EXPORT int  baresdk_account_create(const baresdk_account_config_t *cfg,
+                                            baresdk_account_handle_t *out);
+BARESDK_EXPORT void baresdk_account_destroy(baresdk_account_handle_t acct);
+BARESDK_EXPORT int  baresdk_account_register(baresdk_account_handle_t acct);
+BARESDK_EXPORT int  baresdk_account_unregister(baresdk_account_handle_t acct);
+BARESDK_EXPORT int  baresdk_account_add_header(baresdk_account_handle_t acct,
+                                                const char *name, const char *value);
+BARESDK_EXPORT int  baresdk_account_subscribe_presence(baresdk_account_handle_t acct,
+                                                        const char *target_uri);
+BARESDK_EXPORT int  baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
+                                                          const char *target_uri);
+BARESDK_EXPORT int  baresdk_call_invite(baresdk_account_handle_t acct,
+                                         const char *uri,
+                                         baresdk_call_handle_t *out);
+BARESDK_EXPORT int  baresdk_call_answer(baresdk_call_handle_t call);
+BARESDK_EXPORT int  baresdk_call_hangup(baresdk_call_handle_t call);
+BARESDK_EXPORT int  baresdk_call_hold(baresdk_call_handle_t call);
+BARESDK_EXPORT int  baresdk_call_resume(baresdk_call_handle_t call);
+BARESDK_EXPORT int  baresdk_call_send_dtmf(baresdk_call_handle_t call, char digit);
+BARESDK_EXPORT int  baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
+BARESDK_EXPORT int  baresdk_call_add_header(baresdk_call_handle_t call,
+                                             const char *name, const char *value);
+BARESDK_EXPORT int  baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
+                                                    baresdk_call_handle_t call_b);
+BARESDK_EXPORT int  baresdk_message_send(baresdk_account_handle_t account,
+                                          const char *to_uri,
+                                          const char *body,
+                                          const char *content_type);
+BARESDK_EXPORT int  baresdk_account_publish_presence(baresdk_account_handle_t account,
+                                                      baresdk_presence_status_t status);
+BARESDK_EXPORT int  baresdk_account_set_100rel(baresdk_account_handle_t account,
+                                                baresdk_100rel_mode_t mode);
+BARESDK_EXPORT int  baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
+BARESDK_EXPORT int  baresdk_audio_set_input_device(const char *name);
+BARESDK_EXPORT int  baresdk_audio_set_output_device(const char *name);
+BARESDK_EXPORT int  baresdk_call_set_media_tap(baresdk_call_handle_t   call,
+                                                baresdk_media_tap_cb_t  cb,
+                                                void                   *userdata);
+BARESDK_EXPORT int  baresdk_call_get_stats(baresdk_call_handle_t     call,
+                                            baresdk_ev_media_stats_t *out);
+BARESDK_EXPORT int  baresdk_pcap_start(const char *path);
+BARESDK_EXPORT int  baresdk_pcap_stop(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* BARESDK_H — embedded C declarations end */
+
+/* ── C++ wrapper ────────────────────────────────────────────────────────── */
+#include <functional>
+#include <memory>
+#include <stdexcept>
+#include <string>
+
+namespace baresdk {
+
+namespace detail {
+inline void check(int rc, const char* what) {
+    if (rc != BARESDK_OK)
+        throw std::runtime_error(std::string(what) + " failed (code " + std::to_string(rc) + ")");
+}
+}
+
+using EventCallback = std::function<void(const baresdk_event_t&)>;
+
+class Call {
+public:
+    Call() = default;
+    explicit Call(baresdk_call_handle_t h) : h_(h) {}
+
+    void answer()                        { detail::check(baresdk_call_answer(h_),    "answer"); }
+    void hangup()                        { baresdk_call_hangup(h_); }
+    void hold()                          { detail::check(baresdk_call_hold(h_),      "hold"); }
+    void resume()                        { detail::check(baresdk_call_resume(h_),    "resume"); }
+    void send_dtmf(char digit)           { baresdk_call_send_dtmf(h_, digit); }
+    void transfer(const std::string& u)  { detail::check(baresdk_call_transfer(h_, u.c_str()), "transfer"); }
+    void mute(bool m)                    { baresdk_audio_mute(h_, m); }
+
+    void add_header(const std::string& name, const std::string& value) {
+        detail::check(baresdk_call_add_header(h_, name.c_str(), value.c_str()), "add_header");
+    }
+
+    baresdk_ev_media_stats_t stats() const {
+        baresdk_ev_media_stats_t s{};
+        baresdk_call_get_stats(h_, &s);
+        return s;
+    }
+
+    void attended_transfer(Call& consult) {
+        detail::check(baresdk_call_attended_transfer(h_, consult.h_), "attended_transfer");
+    }
+
+    void set_media_tap(baresdk_media_tap_cb_t cb, void* userdata = nullptr) {
+        detail::check(baresdk_call_set_media_tap(h_, cb, userdata), "set_media_tap");
+    }
+
+    baresdk_call_handle_t handle() const { return h_; }
+    explicit operator bool()       const { return h_ != nullptr; }
+
+private:
+    baresdk_call_handle_t h_ = nullptr;
+};
+
+class Account {
+public:
+    Account() = default;
+
+    Account(baresdk_account_handle_t h, EventCallback* global_cb)
+        : h_(h), global_cb_(global_cb) {}
+
+    ~Account() { if (h_) baresdk_account_destroy(h_); }
+
+    Account(const Account&)            = delete;
+    Account& operator=(const Account&) = delete;
+    Account(Account&& o) noexcept
+        : h_(o.h_), global_cb_(o.global_cb_) { o.h_ = nullptr; }
+
+    void register_account() {
+        detail::check(baresdk_account_register(h_), "register_account");
+    }
+
+    void unregister() { baresdk_account_unregister(h_); }
+
+    Call call(const std::string& uri) {
+        baresdk_call_handle_t ch = nullptr;
+        detail::check(baresdk_call_invite(h_, uri.c_str(), &ch), "call_invite");
+        return Call(ch);
+    }
+
+    void send_message(const std::string& to, const std::string& body,
+                      const std::string& content_type = "text/plain") {
+        detail::check(
+            baresdk_message_send(h_, to.c_str(), body.c_str(), content_type.c_str()),
+            "message_send");
+    }
+
+    void publish_presence(baresdk_presence_status_t status) {
+        baresdk_account_publish_presence(h_, status);
+    }
+
+    void subscribe_presence(const std::string& target_uri) {
+        detail::check(baresdk_account_subscribe_presence(h_, target_uri.c_str()),
+                      "subscribe_presence");
+    }
+
+    void unsubscribe_presence(const std::string& target_uri) {
+        detail::check(baresdk_account_unsubscribe_presence(h_, target_uri.c_str()),
+                      "unsubscribe_presence");
+    }
+
+    void add_header(const std::string& name, const std::string& value) {
+        detail::check(baresdk_account_add_header(h_, name.c_str(), value.c_str()), "add_header");
+    }
+
+    void set_100rel(baresdk_100rel_mode_t mode) {
+        detail::check(baresdk_account_set_100rel(h_, mode), "set_100rel");
+    }
+
+    baresdk_account_handle_t handle() const { return h_; }
+    explicit operator bool()          const { return h_ != nullptr; }
+
+private:
+    baresdk_account_handle_t h_      = nullptr;
+    EventCallback*           global_cb_ = nullptr;
+};
+
+class SDK {
+public:
+    SDK() { baresdk_config_init(&cfg_); }
+
+    ~SDK() { if (initialized_) baresdk_shutdown(); }
+
+    SDK(const SDK&)            = delete;
+    SDK& operator=(const SDK&) = delete;
+
+    baresdk_config_t& config() { return cfg_; }
+    const baresdk_config_t& config() const { return cfg_; }
+
+    void on_event(EventCallback cb) { event_cb_ = std::move(cb); }
+
+    void init() {
+        cfg_.event_cb       = &SDK::dispatch_;
+        cfg_.event_userdata = this;
+        detail::check(baresdk_init(&cfg_), "baresdk_init");
+        initialized_ = true;
+    }
+
+    Account create_account(const std::string& uri,
+                           const std::string& password,
+                           baresdk_transport_t transport = BARESDK_TRANSPORT_UDP) {
+        if (!initialized_) init();
+
+        baresdk_account_config_t acfg{};
+        acfg.uri       = uri.c_str();
+        acfg.password  = password.c_str();
+        acfg.transport = transport;
+
+        baresdk_account_handle_t h = nullptr;
+        detail::check(baresdk_account_create(&acfg, &h), "account_create");
+        return Account(h, &event_cb_);
+    }
+
+    Account create_account(const baresdk_account_config_t& acfg) {
+        if (!initialized_) init();
+
+        baresdk_account_handle_t h = nullptr;
+        detail::check(baresdk_account_create(&acfg, &h), "account_create");
+        return Account(h, &event_cb_);
+    }
+
+    void pcap_start(const std::string& path) {
+        detail::check(baresdk_pcap_start(path.c_str()), "pcap_start");
+    }
+
+    void pcap_stop() { baresdk_pcap_stop(); }
+
+    const char* version() const { return baresdk_version(); }
+
+private:
+    static void dispatch_(const baresdk_event_t* ev, void* ud) {
+        auto* self = static_cast<SDK*>(ud);
+        if (self->event_cb_) self->event_cb_(*ev);
+    }
+
+    baresdk_config_t cfg_{};
+    EventCallback    event_cb_;
+    bool             initialized_ = false;
+};
+
+} // namespace baresdk
