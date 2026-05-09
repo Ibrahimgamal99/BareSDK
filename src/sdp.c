@@ -42,9 +42,9 @@ void bsdk_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 			codec_name = ac->name;
 	}
 
-	/* Determine crypto from global config */
+	/* Determine crypto from per-account config (accounts may differ) */
 	const char *crypto;
-	switch (g_bsdk.cfg.media_enc) {
+	switch (lc->acct ? lc->acct->cfg.media_enc : g_bsdk.cfg.media_enc) {
 	case BARESDK_MEDIA_ENC_SDES:       crypto = "SDES";      break;
 	case BARESDK_MEDIA_ENC_DTLS_SRTP:  crypto = "DTLS-SRTP"; break;
 	default:                           crypto = "NONE";       break;
@@ -55,10 +55,10 @@ void bsdk_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 		return;
 	memset(qev, 0, sizeof(*qev));
 
-	qev->ev.type      = BARESDK_EV_SDP_NEGOTIATION;
+	qev->ev.type       = BARESDK_EV_SDP_NEGOTIATION;
 	qev->ev.u.sdp.call = lc;
 
-	/* Pack strings into the inline buffer */
+	/* Pack small strings into the inline buffer */
 	size_t off = 0;
 
 	if (codec_name) {
@@ -69,6 +69,13 @@ void bsdk_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 
 	str_ncpy(qev->buf + off, crypto, sizeof(qev->buf) - off);
 	qev->ev.u.sdp.negotiated_crypto = qev->buf + off;
+
+	/* SDP text lives in the call wrapper's stable buffers (valid for the
+	 * lifetime of the call handle, which outlives this event delivery). */
+	if (lc->local_sdp[0])
+		qev->ev.u.sdp.local_sdp = lc->local_sdp;
+	if (lc->remote_sdp[0])
+		qev->ev.u.sdp.remote_sdp = lc->remote_sdp;
 
 	bsdk_event_post_qev(qev);
 }

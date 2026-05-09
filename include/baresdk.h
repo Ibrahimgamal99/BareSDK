@@ -201,23 +201,58 @@ typedef struct {
 
 typedef struct {
 	baresdk_call_handle_t call;
-	/* RTP counters */
+
+	/* ── Packet counters ───────────────────────────────────────────────── */
 	uint32_t packets_sent;
 	uint32_t packets_received;
-	uint32_t packets_lost;
-	float    loss_pct;
-	float    jitter_ms;
-	float    rtt_ms;
-	/* MOS scores */
-	float    mos_lq;  /* listening quality  */
-	float    mos_cq;  /* conversational quality */
+	uint32_t packets_lost;      /* TX-side: packets remote did not receive */
+	uint32_t packets_lost_rx;   /* RX-side: packets we did not receive */
+	uint32_t bytes_sent;        /* total RTP bytes sent */
+	uint32_t bytes_received;    /* total RTP bytes received */
+	uint32_t tx_errors;         /* RTP transmit errors */
+	uint32_t rx_errors;         /* RTP receive errors */
+
+	/* ── Loss ──────────────────────────────────────────────────────────── */
+	float    loss_pct;          /* TX-side loss % */
+	float    loss_pct_rx;       /* RX-side loss % */
+
+	/* ── Delay / jitter ────────────────────────────────────────────────── */
+	float    jitter_ms;         /* RX interarrival jitter (what we observe) */
+	float    tx_jitter_ms;      /* TX interarrival jitter (what remote reports) */
+	float    rtt_ms;            /* round-trip time ms */
+
+	/* ── Jitter buffer ─────────────────────────────────────────────────── */
+	uint32_t jitter_buffer_ms;  /* current adaptive buffer depth (ms) */
+	uint32_t jitter_buffer_load;/* packets currently held in buffer */
+	uint32_t late_packets;      /* packets that arrived too late */
+	uint32_t discarded_packets; /* packets discarded (overflow / flush) */
+
+	/* ── Bandwidth ─────────────────────────────────────────────────────── */
+	uint32_t bandwidth_kbps_tx;     /* current TX bitrate (kbps) */
+	uint32_t bandwidth_kbps_rx;     /* current RX bitrate (kbps) */
+	uint32_t avg_bandwidth_kbps_tx; /* session-average TX bitrate (kbps) */
+	uint32_t avg_bandwidth_kbps_rx; /* session-average RX bitrate (kbps) */
+
+	/* ── MOS scores — zero when RTCP not yet available ─────────────────── */
+	float    mos_lq;            /* listening quality  (1.0–4.5) */
+	float    mos_cq;            /* conversational quality (1.0–4.5) */
 	baresdk_mos_method_t mos_method;
-	/* Codec */
-	const char *codec_name;
-	uint32_t    codec_clock_rate;
-	/* Bandwidth kbps */
-	uint32_t bandwidth_kbps_tx;
-	uint32_t bandwidth_kbps_rx;
+
+	/* ── Codec ─────────────────────────────────────────────────────────── */
+	const char *codec_name;     /* e.g. "opus", "PCMU" */
+	uint32_t    codec_clock_rate; /* RTP clock rate Hz */
+	uint32_t    codec_sample_rate;/* audio sample rate Hz */
+	uint8_t     codec_channels; /* 1=mono, 2=stereo */
+	int         payload_type;   /* RTP payload type number (0-127) */
+
+	/* ── Audio level ───────────────────────────────────────────────────── */
+	float    audio_level_dbov;  /* received audio level dBov (0=max, -127=silent);
+	                               NaN when unavailable */
+
+	/* ── Stream identity ───────────────────────────────────────────────── */
+	uint32_t ssrc_tx;           /* our SSRC */
+	uint32_t ssrc_rx;           /* remote SSRC (0 if not yet received) */
+	char     remote_addr[64];   /* remote RTP address "ip:port\0" */
 } baresdk_ev_media_stats_t;
 
 typedef struct {
@@ -624,8 +659,34 @@ BARESDK_EXPORT int baresdk_account_set_100rel(baresdk_account_handle_t account,
 
 /* ── Audio ────────────────────────────────────────────────────────────────── */
 
-/** Mute/unmute the microphone for a call. */
+/* ── Audio device enumeration ─────────────────────────────────────────────── */
+
+typedef struct {
+	char name[128];         /* device name passed to set_input/output_device */
+	char description[256];  /* human-readable label (may be empty) */
+	bool is_default;        /* true for the platform default device */
+} baresdk_audio_device_t;
+
+/**
+ * Fill devices[] with available audio input devices, up to max_count entries.
+ * Returns the number of entries written (0 if no devices found yet).
+ * Call after baresdk_init(); device lists may be empty until the audio
+ * module has finished async enumeration.
+ */
+BARESDK_EXPORT int baresdk_audio_list_input_devices(baresdk_audio_device_t *devices,
+                                                     int max_count);
+
+/** Same for audio output (speaker/playback) devices. */
+BARESDK_EXPORT int baresdk_audio_list_output_devices(baresdk_audio_device_t *devices,
+                                                      int max_count);
+
+/* ── Audio mute / device control ─────────────────────────────────────────── */
+
+/** Mute/unmute the microphone (TX path) for a call. */
 BARESDK_EXPORT int baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
+
+/** Mute/unmute the speaker (RX path) for a call — silences incoming audio. */
+BARESDK_EXPORT int baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);
 
 /** Set the system audio input device by name. NULL = platform default. */
 BARESDK_EXPORT int baresdk_audio_set_input_device(const char *name);

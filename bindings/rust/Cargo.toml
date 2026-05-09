@@ -1,3 +1,0 @@
-[workspace]
-members = ["baresdk-sys", "baresdk"]
-resolver = "2"

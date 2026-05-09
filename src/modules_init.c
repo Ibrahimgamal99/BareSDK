@@ -80,5 +80,20 @@ int modules_init(void)
 #endif
 
 	load_list(PLATFORM_AUDIO);
+
+	/* Wire the platform audio module name into baresip config so audio_alloc
+	 * can find the right module when opening devices. We use PLATFORM_AUDIO[0]
+	 * directly rather than walking the registered list, which could return an
+	 * earlier-registered module (e.g. aubridge) instead of the platform one. */
+	if (PLATFORM_AUDIO[0]) {
+		struct config *cfg = conf_config();
+		if (cfg->audio.src_mod[0] == '\0')
+			str_ncpy(cfg->audio.src_mod, PLATFORM_AUDIO[0],
+			         sizeof(cfg->audio.src_mod));
+		if (cfg->audio.play_mod[0] == '\0')
+			str_ncpy(cfg->audio.play_mod, PLATFORM_AUDIO[0],
+			         sizeof(cfg->audio.play_mod));
+	}
+
 	return 0;
 }

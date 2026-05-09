@@ -32,9 +32,43 @@ cfg.agc = true;   // automatic gain control (normalises mic volume)
 ## Mute / unmute
 
 ```c
-baresdk_audio_mute(call, true);    // mute microphone
-baresdk_audio_mute(call, false);   // unmute
+baresdk_audio_mute(call, true);     // mute microphone (TX)
+baresdk_audio_mute(call, false);    // unmute microphone
+
+baresdk_audio_mute_rx(call, true);  // silence speaker (RX)
+baresdk_audio_mute_rx(call, false); // unmute speaker
 ```
+
+`baresdk_audio_mute` stops encoding and sending microphone audio.
+`baresdk_audio_mute_rx` disables the RTP receiver — the remote continues to send but audio is not decoded or played.
+
+---
+
+## Audio device enumeration
+
+```c
+baresdk_audio_device_t devs[32];
+
+int n = baresdk_audio_list_input_devices(devs, 32);
+for (int i = 0; i < n; i++)
+    printf("[%d] %s%s\n", i, devs[i].name,
+           devs[i].is_default ? "  *default*" : "");
+
+n = baresdk_audio_list_output_devices(devs, 32);
+for (int i = 0; i < n; i++)
+    printf("[%d] %s%s\n", i, devs[i].name,
+           devs[i].is_default ? "  *default*" : "");
+```
+
+`baresdk_audio_device_t` fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `char[128]` | Device identifier — pass to `set_input/output_device` |
+| `description` | `char[256]` | Human-readable label (may be empty) |
+| `is_default` | `bool` | Platform default device |
+
+Returns the number of entries written (≥ 0). Returns 0 if the audio module has not finished enumeration yet — call again after a short delay or after receiving the first `BARESDK_EV_LOG` message.
 
 ---
 
@@ -46,7 +80,7 @@ baresdk_audio_set_output_device("Plantronics Headset");   // speaker
 baresdk_audio_set_input_device(NULL);                     // platform default
 ```
 
-Devices are identified by name. Use your platform's audio API to enumerate available devices.
+Device names come from `baresdk_audio_list_input/output_devices()`. The change takes effect immediately on all active calls — no re-dial required.
 
 ---
 

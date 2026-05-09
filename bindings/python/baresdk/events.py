@@ -62,18 +62,48 @@ class SipTraceEvent:
 @dataclass
 class MediaStatsEvent:
     call: object
+    # Packet counters
     packets_sent: int
     packets_received: int
-    packets_lost: int
-    loss_pct: float
+    packets_lost: int        # TX-side
+    packets_lost_rx: int     # RX-side
+    bytes_sent: int
+    bytes_received: int
+    tx_errors: int
+    rx_errors: int
+    # Loss
+    loss_pct: float          # TX-side %
+    loss_pct_rx: float       # RX-side %
+    # Delay / jitter
     jitter_ms: float
+    tx_jitter_ms: float
     rtt_ms: float
-    mos_lq: float
-    mos_cq: float
-    codec_name: str
-    codec_clock_rate: int
+    # Jitter buffer
+    jitter_buffer_ms: int
+    jitter_buffer_load: int
+    late_packets: int
+    discarded_packets: int
+    # Bandwidth
     bandwidth_kbps_tx: int
     bandwidth_kbps_rx: int
+    avg_bandwidth_kbps_tx: int
+    avg_bandwidth_kbps_rx: int
+    # MOS
+    mos_lq: float
+    mos_cq: float
+    mos_method: int
+    # Codec
+    codec_name: str
+    codec_clock_rate: int
+    codec_sample_rate: int
+    codec_channels: int
+    payload_type: int
+    # Audio level
+    audio_level_dbov: float  # dBov; NaN when unavailable
+    # Stream identity
+    ssrc_tx: int
+    ssrc_rx: int
+    remote_addr: str
 
 
 @dataclass

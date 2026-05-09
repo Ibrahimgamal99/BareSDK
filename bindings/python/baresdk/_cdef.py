@@ -160,16 +160,36 @@ typedef struct {
     uint32_t packets_sent;
     uint32_t packets_received;
     uint32_t packets_lost;
+    uint32_t packets_lost_rx;
+    uint32_t bytes_sent;
+    uint32_t bytes_received;
+    uint32_t tx_errors;
+    uint32_t rx_errors;
     float    loss_pct;
+    float    loss_pct_rx;
     float    jitter_ms;
+    float    tx_jitter_ms;
     float    rtt_ms;
+    uint32_t jitter_buffer_ms;
+    uint32_t jitter_buffer_load;
+    uint32_t late_packets;
+    uint32_t discarded_packets;
+    uint32_t bandwidth_kbps_tx;
+    uint32_t bandwidth_kbps_rx;
+    uint32_t avg_bandwidth_kbps_tx;
+    uint32_t avg_bandwidth_kbps_rx;
     float    mos_lq;
     float    mos_cq;
     baresdk_mos_method_t mos_method;
     const char *codec_name;
     uint32_t    codec_clock_rate;
-    uint32_t bandwidth_kbps_tx;
-    uint32_t bandwidth_kbps_rx;
+    uint32_t    codec_sample_rate;
+    uint8_t     codec_channels;
+    int         payload_type;
+    float    audio_level_dbov;
+    uint32_t ssrc_tx;
+    uint32_t ssrc_rx;
+    char     remote_addr[64];
 } baresdk_ev_media_stats_t;
 
 typedef struct { const char *message; } baresdk_ev_log_t;
@@ -377,8 +397,18 @@ int  baresdk_message_send(baresdk_account_handle_t account,
                            const char *body,
                            const char *content_type);
 int  baresdk_audio_mute(baresdk_call_handle_t call, int mute);
+int  baresdk_audio_mute_rx(baresdk_call_handle_t call, int mute);
 int  baresdk_audio_set_input_device(const char *name);
 int  baresdk_audio_set_output_device(const char *name);
+
+typedef struct {
+    char name[128];
+    char description[256];
+    int  is_default;
+} baresdk_audio_device_t;
+
+int  baresdk_audio_list_input_devices(baresdk_audio_device_t *devices, int max_count);
+int  baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_count);
 
 /* ── pcap ─────────────────────────────────────────────────────────────────── */
 int  baresdk_pcap_start(const char *path);

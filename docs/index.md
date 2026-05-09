@@ -37,8 +37,6 @@ Each platform build script produces both the static archive (`baresdk.a` / `bare
 |---|---|---|
 | C / C++ | Header-only RAII wrapper | `bindings/cpp/baresdk.hpp` |
 | Python | cffi | `bindings/python/` |
-| Rust | bindgen + safe wrapper | `bindings/rust/` |
-| Node.js | N-API (C++) | `bindings/nodejs/` |
 | Flutter / Dart | dart:ffi + ffigen | `bindings/flutter/` |
 
 ---
@@ -47,8 +45,6 @@ Each platform build script produces both the static archive (`baresdk.a` / `bare
 
 - [C / C++](quickstart/c.md)
 - [Python](quickstart/python.md)
-- [Rust](quickstart/rust.md)
-- [Node.js](quickstart/nodejs.md)
 - [Flutter / Dart](quickstart/flutter.md)
 
 ---

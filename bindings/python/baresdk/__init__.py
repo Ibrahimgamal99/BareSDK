@@ -183,18 +183,39 @@ def _global_event_cb(ev_ptr, _userdata):
             s = ev.u.stats
             obj = MediaStatsEvent(
                 call=None,
-                packets_sent    = s.packets_sent,
-                packets_received= s.packets_received,
-                packets_lost    = s.packets_lost,
-                loss_pct        = s.loss_pct,
-                jitter_ms       = s.jitter_ms,
-                rtt_ms          = s.rtt_ms,
-                mos_lq          = s.mos_lq,
-                mos_cq          = s.mos_cq,
-                codec_name      = _s(s.codec_name) or "",
-                codec_clock_rate= s.codec_clock_rate,
-                bandwidth_kbps_tx=s.bandwidth_kbps_tx,
-                bandwidth_kbps_rx=s.bandwidth_kbps_rx,
+                packets_sent       = s.packets_sent,
+                packets_received   = s.packets_received,
+                packets_lost       = s.packets_lost,
+                packets_lost_rx    = s.packets_lost_rx,
+                bytes_sent         = s.bytes_sent,
+                bytes_received     = s.bytes_received,
+                tx_errors          = s.tx_errors,
+                rx_errors          = s.rx_errors,
+                loss_pct           = s.loss_pct,
+                loss_pct_rx        = s.loss_pct_rx,
+                jitter_ms          = s.jitter_ms,
+                tx_jitter_ms       = s.tx_jitter_ms,
+                rtt_ms             = s.rtt_ms,
+                jitter_buffer_ms   = s.jitter_buffer_ms,
+                jitter_buffer_load = s.jitter_buffer_load,
+                late_packets       = s.late_packets,
+                discarded_packets  = s.discarded_packets,
+                bandwidth_kbps_tx  = s.bandwidth_kbps_tx,
+                bandwidth_kbps_rx  = s.bandwidth_kbps_rx,
+                avg_bandwidth_kbps_tx = s.avg_bandwidth_kbps_tx,
+                avg_bandwidth_kbps_rx = s.avg_bandwidth_kbps_rx,
+                mos_lq             = s.mos_lq,
+                mos_cq             = s.mos_cq,
+                mos_method         = s.mos_method,
+                codec_name         = _s(s.codec_name) or "",
+                codec_clock_rate   = s.codec_clock_rate,
+                codec_sample_rate  = s.codec_sample_rate,
+                codec_channels     = s.codec_channels,
+                payload_type       = s.payload_type,
+                audio_level_dbov   = s.audio_level_dbov,
+                ssrc_tx            = s.ssrc_tx,
+                ssrc_rx            = s.ssrc_rx,
+                remote_addr        = ffi.string(s.remote_addr).decode("utf-8", errors="replace"),
             )
 
         elif typ == 8:  # REGISTRAR_WARNING
@@ -286,6 +307,9 @@ class Call:
     def mute(self, muted: bool = True):
         lib.baresdk_audio_mute(self._h, muted)
 
+    def mute_rx(self, muted: bool = True):
+        lib.baresdk_audio_mute_rx(self._h, muted)
+
     def stats(self):
         s = ffi.new("baresdk_ev_media_stats_t *")
         lib.baresdk_call_get_stats(self._h, s)
@@ -373,6 +397,19 @@ class Account:
         self.destroy()
 
 
+def _list_audio_devices(fn) -> list:
+    buf = ffi.new("baresdk_audio_device_t[32]")
+    n = fn(buf, 32)
+    out = []
+    for i in range(max(n, 0)):
+        out.append({
+            "name":        ffi.string(buf[i].name).decode("utf-8", errors="replace"),
+            "description": ffi.string(buf[i].description).decode("utf-8", errors="replace"),
+            "is_default":  bool(buf[i].is_default),
+        })
+    return out
+
+
 # ── SDK ───────────────────────────────────────────────────────────────────────
 
 class SDK:
@@ -421,6 +458,20 @@ class SDK:
         h = ffi.new("baresdk_account_handle_t *")
         _check(lib.baresdk_account_create(cfg, h), "account_create")
         return Account(h[0])
+
+    def list_input_devices(self):
+        """Return a list of dicts with keys: name, description, is_default."""
+        return _list_audio_devices(lib.baresdk_audio_list_input_devices)
+
+    def list_output_devices(self):
+        """Return a list of dicts with keys: name, description, is_default."""
+        return _list_audio_devices(lib.baresdk_audio_list_output_devices)
+
+    def set_input_device(self, name: str):
+        lib.baresdk_audio_set_input_device(name.encode())
+
+    def set_output_device(self, name: str):
+        lib.baresdk_audio_set_output_device(name.encode())
 
     def pcap_start(self, path: str):
         _check(lib.baresdk_pcap_start(path.encode()), "pcap_start")

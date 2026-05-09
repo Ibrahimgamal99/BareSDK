@@ -119,24 +119,86 @@ Raw SIP message (when `cfg.trace_sip = true`).
 ## BARESDK_EV_MEDIA_STATS
 **`ev->u.stats`** — `baresdk_ev_media_stats_t`
 
-Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchronously by `baresdk_call_get_stats()`.
+Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchronously by `baresdk_call_get_stats()`. All RTCP-dependent fields are zero until the first RTCP exchange — packet counters and bandwidth are available immediately.
+
+**Packet counters**
 
 | Field | Type | Description |
 |---|---|---|
 | `call` | handle | |
-| `packets_sent` | `uint32_t` | |
-| `packets_received` | `uint32_t` | |
-| `packets_lost` | `uint32_t` | |
-| `loss_pct` | `float` | Packet loss % |
-| `jitter_ms` | `float` | Jitter |
-| `rtt_ms` | `float` | Round-trip time |
-| `mos_lq` | `float` | MOS Listening Quality (1–5) |
-| `mos_cq` | `float` | MOS Conversational Quality (1–5) |
+| `packets_sent` | `uint32_t` | RTP packets sent |
+| `packets_received` | `uint32_t` | RTP packets received |
+| `packets_lost` | `uint32_t` | TX-side lost (remote reported we dropped) |
+| `packets_lost_rx` | `uint32_t` | RX-side lost (we didn't receive) |
+| `bytes_sent` | `uint32_t` | Total RTP bytes sent |
+| `bytes_received` | `uint32_t` | Total RTP bytes received |
+| `tx_errors` | `uint32_t` | RTP transmit errors |
+| `rx_errors` | `uint32_t` | RTP receive errors |
+
+**Loss**
+
+| Field | Type | Description |
+|---|---|---|
+| `loss_pct` | `float` | TX-side packet loss % |
+| `loss_pct_rx` | `float` | RX-side packet loss % |
+
+**Delay and jitter**
+
+| Field | Type | Description |
+|---|---|---|
+| `rtt_ms` | `float` | Round-trip time (ms) — zero until first RTCP SR/RR |
+| `jitter_ms` | `float` | RX interarrival jitter we observe (ms) |
+| `tx_jitter_ms` | `float` | TX jitter remote reports back (ms) |
+
+**Jitter buffer**
+
+| Field | Type | Description |
+|---|---|---|
+| `jitter_buffer_ms` | `uint32_t` | Adaptive buffer depth (ms) |
+| `jitter_buffer_load` | `uint32_t` | Packets currently held in buffer |
+| `late_packets` | `uint32_t` | Packets that arrived too late |
+| `discarded_packets` | `uint32_t` | Packets discarded (overflow or flush) |
+
+**Bandwidth**
+
+| Field | Type | Description |
+|---|---|---|
+| `bandwidth_kbps_tx` | `uint32_t` | Current TX bitrate (kbps) |
+| `bandwidth_kbps_rx` | `uint32_t` | Current RX bitrate (kbps) |
+| `avg_bandwidth_kbps_tx` | `uint32_t` | Session-average TX bitrate (kbps) |
+| `avg_bandwidth_kbps_rx` | `uint32_t` | Session-average RX bitrate (kbps) |
+
+**MOS scores** — zero until RTCP available
+
+| Field | Type | Description |
+|---|---|---|
+| `mos_lq` | `float` | MOS Listening Quality (1.0–4.5) |
+| `mos_cq` | `float` | MOS Conversational Quality (1.0–4.5) |
 | `mos_method` | `baresdk_mos_method_t` | `EMODEL` or `SIMPLIFIED` |
-| `codec_name` | `const char *` | e.g. `"opus"` |
-| `codec_clock_rate` | `uint32_t` | e.g. 48000 |
-| `bandwidth_kbps_tx` | `uint32_t` | |
-| `bandwidth_kbps_rx` | `uint32_t` | |
+
+**Codec**
+
+| Field | Type | Description |
+|---|---|---|
+| `codec_name` | `const char *` | e.g. `"opus"`, `"PCMU"` |
+| `codec_clock_rate` | `uint32_t` | RTP clock rate Hz (e.g. 48000) |
+| `codec_sample_rate` | `uint32_t` | Audio sample rate Hz |
+| `codec_channels` | `uint8_t` | 1 = mono, 2 = stereo |
+| `payload_type` | `int` | RTP payload type (0–127) |
+
+**Audio level**
+
+| Field | Type | Description |
+|---|---|---|
+| `audio_level_dbov` | `float` | Received level in dBov (0 = max, –127 = silent); `NaN` if unavailable |
+
+**Stream identity**
+
+| Field | Type | Description |
+|---|---|---|
+| `ssrc_tx` | `uint32_t` | Our SSRC |
+| `ssrc_rx` | `uint32_t` | Remote SSRC (0 if not yet received) |
+| `remote_addr` | `char[64]` | Remote RTP address `"ip:port"` |
 
 ---
 

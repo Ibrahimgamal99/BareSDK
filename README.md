@@ -17,8 +17,8 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 | **Presence** | PUBLISH · SUBSCRIBE/NOTIFY · BLF · MWI |
 | **Reliability** | PRACK / 100rel (RFC 3262) |
 | **Custom Headers** | Per-account + per-dialog (call) custom SIP headers |
-| **Media** | PCM tap (TX/RX) · mute · device select |
-| **Observability** | SIP trace · SDP diff · pcap (UDP + TCP framing) · RTCP/MOS stats (E-model + simplified) |
+| **Media** | PCM tap (TX/RX) · TX mute · RX mute (speaker) · device enumerate + hot-switch |
+| **Observability** | SIP trace · SDP diff · pcap (UDP + TCP framing) · RTCP/MOS stats (E-model + simplified) · jitter buffer · audio level · bandwidth (instant + avg, TX/RX) |
 | **Multi-account** | Yes — any number of accounts per stack |
 | **Thread safety** | Full — call any API from any thread |
 | **Memory safety** | Deep-copied config strings — caller can free immediately after init |
@@ -109,9 +109,19 @@ int  baresdk_call_add_header(baresdk_call_handle_t call,
 ### Audio
 
 ```c
-int  baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
-int  baresdk_audio_set_input_device(const char *name);
+/* Mute / unmute */
+int  baresdk_audio_mute(baresdk_call_handle_t call, bool mute);      // TX (microphone)
+int  baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);   // RX (speaker)
+
+/* Device enumeration */
+int  baresdk_audio_list_input_devices(baresdk_audio_device_t *devices, int max_count);
+int  baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_count);
+
+/* Device selection — takes effect immediately on active calls */
+int  baresdk_audio_set_input_device(const char *name);    // NULL = platform default
 int  baresdk_audio_set_output_device(const char *name);
+
+/* PCM tap */
 int  baresdk_call_set_media_tap(baresdk_call_handle_t call,
                                  baresdk_media_tap_cb_t cb, void *userdata);
 ```
@@ -127,11 +137,14 @@ int  baresdk_message_send(baresdk_account_handle_t acct,
 ### Observability
 
 ```c
+/* Synchronous stats query — safe to call from any thread */
 int  baresdk_call_get_stats(baresdk_call_handle_t call,
                              baresdk_ev_media_stats_t *out);
 int  baresdk_pcap_start(const char *path);
 int  baresdk_pcap_stop(void);
 ```
+
+`baresdk_ev_media_stats_t` covers: packet counters (TX + RX), loss % (TX + RX), RTT, jitter (TX + RX), jitter buffer depth/load/late/discards, bandwidth (instant + session-avg, TX + RX), MOS-LQ + MOS-CQ (E-model or simplified), codec (name/rate/channels/PT), audio level (dBov), SSRC and remote address. All RTCP-dependent fields are zero until the first RTCP exchange; packet counters and bandwidth are always available.
 
 ### Events
 
@@ -304,16 +317,6 @@ includePaths = dist/android/arm64-v8a/include
               path: "dist/ios/baresdk.xcframework")
 ```
 
-### Rust (bindgen)
-
-```rust
-// build.rs
-bindgen::Builder::default()
-    .header("dist/linux/x86_64/include/baresdk.h")
-    .generate().unwrap()
-    .write_to_file("src/bindings.rs").unwrap();
-```
-
 ### Python (cffi)
 
 baresdk is a static archive, so cffi cannot `dlopen` it directly. First build a thin shared wrapper and preprocess the header:
@@ -441,7 +444,8 @@ baresdk/
 │   ├── build-macos.sh
 │   └── build-windows.ps1
 ├── tools/
-│   └── verify.sh               # symbol + linkability checks
+│   ├── verify.sh               # symbol + linkability checks
+│   └── gen_hpp.py              # re-embeds baresdk.h into baresdk.hpp (run after header changes)
 └── third_party/
     ├── re/                     # libre + librem (git submodule)
     ├── baresip/                # baresip (git submodule)

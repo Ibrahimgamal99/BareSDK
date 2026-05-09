@@ -67,17 +67,90 @@ class CallDtmfEvent extends BareSDKEvent {
   CallDtmfEvent(this.call, this.digit);
 }
 
+class AudioDevice {
+  final String name;
+  final String description;
+  final bool isDefault;
+  AudioDevice(this.name, this.description, this.isDefault);
+}
+
 class MediaStatsEvent extends BareSDKEvent {
   final Call call;
-  final double mosLq;
-  final double mosCq;
-  final double rttMs;
+  // Packet counters
+  final int packetsSent;
+  final int packetsReceived;
+  final int packetsLost;
+  final int packetsLostRx;
+  final int bytesSent;
+  final int bytesReceived;
+  // Loss
   final double lossPct;
+  final double lossPctRx;
+  // Delay / jitter
+  final double jitterMs;
+  final double txJitterMs;
+  final double rttMs;
+  // Jitter buffer
+  final int jitterBufferMs;
+  final int jitterBufferLoad;
+  final int latePackets;
+  final int discardedPackets;
+  // Bandwidth
   final int bandwidthTx;
   final int bandwidthRx;
+  final int avgBandwidthTx;
+  final int avgBandwidthRx;
+  // MOS
+  final double mosLq;
+  final double mosCq;
+  final int mosMethod;
+  // Codec
   final String codec;
-  MediaStatsEvent(this.call, this.mosLq, this.mosCq, this.rttMs, this.lossPct,
-      this.bandwidthTx, this.bandwidthRx, this.codec);
+  final int codecClockRate;
+  final int codecSampleRate;
+  final int codecChannels;
+  final int payloadType;
+  // Audio level
+  final double audioLevelDbov;
+  // Stream identity
+  final int ssrcTx;
+  final int ssrcRx;
+  final String remoteAddr;
+
+  MediaStatsEvent({
+    required this.call,
+    required this.packetsSent,
+    required this.packetsReceived,
+    required this.packetsLost,
+    required this.packetsLostRx,
+    required this.bytesSent,
+    required this.bytesReceived,
+    required this.lossPct,
+    required this.lossPctRx,
+    required this.jitterMs,
+    required this.txJitterMs,
+    required this.rttMs,
+    required this.jitterBufferMs,
+    required this.jitterBufferLoad,
+    required this.latePackets,
+    required this.discardedPackets,
+    required this.bandwidthTx,
+    required this.bandwidthRx,
+    required this.avgBandwidthTx,
+    required this.avgBandwidthRx,
+    required this.mosLq,
+    required this.mosCq,
+    required this.mosMethod,
+    required this.codec,
+    required this.codecClockRate,
+    required this.codecSampleRate,
+    required this.codecChannels,
+    required this.payloadType,
+    required this.audioLevelDbov,
+    required this.ssrcTx,
+    required this.ssrcRx,
+    required this.remoteAddr,
+  });
 }
 
 class LogEvent extends BareSDKEvent {
@@ -118,7 +191,8 @@ class Call {
   void hangup()             => internal.nativeBindings.baresdk_call_hangup(_handle);
   void hold()               => internal.nativeBindings.baresdk_call_hold(_handle);
   void resume()             => internal.nativeBindings.baresdk_call_resume(_handle);
-  void mute({bool on = true}) => internal.nativeBindings.baresdk_audio_mute(_handle, on ? 1 : 0);
+  void mute({bool on = true})   => internal.nativeBindings.baresdk_audio_mute(_handle, on ? 1 : 0);
+  void muteRx({bool on = true}) => internal.nativeBindings.baresdk_audio_mute_rx(_handle, on ? 1 : 0);
 
   void sendDtmf(String digit) {
     internal.nativeBindings.baresdk_call_send_dtmf(_handle, digit.codeUnitAt(0));
@@ -244,6 +318,24 @@ class BareSDK {
     return account;
   }
 
+  List<AudioDevice> listInputDevices()  => _listDevices(internal.nativeBindings.baresdk_audio_list_input_devices);
+  List<AudioDevice> listOutputDevices() => _listDevices(internal.nativeBindings.baresdk_audio_list_output_devices);
+
+  List<AudioDevice> _listDevices(int Function(Pointer<baresdk_audio_device_t>, int) fn) {
+    final buf = calloc<baresdk_audio_device_t>(32);
+    final n   = fn(buf, 32);
+    final out = <AudioDevice>[];
+    for (int i = 0; i < n; i++) {
+      final d = buf[i];
+      String nameStr = '', descStr = '';
+      for (int j = 0; j < 128 && d.name[j] != 0; j++) nameStr += String.fromCharCode(d.name[j]);
+      for (int j = 0; j < 256 && d.description[j] != 0; j++) descStr += String.fromCharCode(d.description[j]);
+      out.add(AudioDevice(nameStr, descStr, d.is_default));
+    }
+    calloc.free(buf);
+    return out;
+  }
+
   void shutdown() {
     internal.nativeBindings.baresdk_shutdown();
     _nativeCb.close();
@@ -296,13 +388,46 @@ class BareSDK {
 
       case baresdk_event_type_t.BARESDK_EV_MEDIA_STATS:
         final s = ev.ref.u.stats;
+        String addrStr = '';
+        for (int i = 0; i < 64; i++) {
+          final b = s.remote_addr[i];
+          if (b == 0) break;
+          addrStr += String.fromCharCode(b);
+        }
         decoded = MediaStatsEvent(
-          Call(s.call),
-          s.mos_lq, s.mos_cq, s.rtt_ms, s.loss_pct,
-          s.bandwidth_kbps_tx, s.bandwidth_kbps_rx,
-          s.codec_name == nullptr ? '' : s.codec_name.cast<Utf8>().toDartString(),
+          call:               Call(s.call),
+          packetsSent:        s.packets_sent,
+          packetsReceived:    s.packets_received,
+          packetsLost:        s.packets_lost,
+          packetsLostRx:      s.packets_lost_rx,
+          bytesSent:          s.bytes_sent,
+          bytesReceived:      s.bytes_received,
+          lossPct:            s.loss_pct,
+          lossPctRx:          s.loss_pct_rx,
+          jitterMs:           s.jitter_ms,
+          txJitterMs:         s.tx_jitter_ms,
+          rttMs:              s.rtt_ms,
+          jitterBufferMs:     s.jitter_buffer_ms,
+          jitterBufferLoad:   s.jitter_buffer_load,
+          latePackets:        s.late_packets,
+          discardedPackets:   s.discarded_packets,
+          bandwidthTx:        s.bandwidth_kbps_tx,
+          bandwidthRx:        s.bandwidth_kbps_rx,
+          avgBandwidthTx:     s.avg_bandwidth_kbps_tx,
+          avgBandwidthRx:     s.avg_bandwidth_kbps_rx,
+          mosLq:              s.mos_lq,
+          mosCq:              s.mos_cq,
+          mosMethod:          s.mos_method,
+          codec:              s.codec_name == nullptr ? '' : s.codec_name.cast<Utf8>().toDartString(),
+          codecClockRate:     s.codec_clock_rate,
+          codecSampleRate:    s.codec_sample_rate,
+          codecChannels:      s.codec_channels,
+          payloadType:        s.payload_type,
+          audioLevelDbov:     s.audio_level_dbov,
+          ssrcTx:             s.ssrc_tx,
+          ssrcRx:             s.ssrc_rx,
+          remoteAddr:         addrStr,
         );
-        // broadcast to all accounts
         for (final a in _accounts.values) a._add(decoded!);
         return;
 

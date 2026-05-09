@@ -300,6 +300,16 @@ fail:
 
 /* ── baresdk_shutdown ────────────────────────────────────────────────────── */
 
+/* Runs on the re thread: hang up all calls and free the UA. Audio drivers
+ * (PulseAudio, CoreAudio, WASAPI, …) must be torn down from the same thread
+ * that opened the streams, which is the re thread. */
+static void hangup_ua_fn(void *arg)
+{
+	struct ua **pua = arg;
+	ua_hangup(*pua, NULL, 0, NULL);
+	*pua = mem_deref(*pua);
+}
+
 void baresdk_shutdown(void)
 {
 	mtx_lock(&g_bsdk.lock);
@@ -310,27 +320,28 @@ void baresdk_shutdown(void)
 
 	bsdk_event_close();
 
-	bsdk_re_loop_stop();
-
 	bsdk_stats_close();
 	bsdk_trace_close();
 	bsdk_message_close();
 	bsdk_presence_close();
 
+	/* Hang up all active calls and free UAs on the re thread BEFORE stopping
+	 * the event loop.  ua_hangup() triggers audio stream teardown; audio
+	 * drivers interact with their own mainloops and must be called from the
+	 * same thread that opened the streams. */
 	struct le *le, *le_tmp;
 	LIST_FOREACH_SAFE(&g_bsdk.accounts, le, le_tmp) {
 		struct baresdk_account *acct = le->data;
 		acct->destroyed = true;
 		tmr_cancel(&acct->retry_tmr);
-		if (acct->ua) {
-			ua_hangup(acct->ua, NULL, 0, NULL);
-			mem_deref(acct->ua);
-			acct->ua = NULL;
-		}
+		if (acct->ua)
+			bsdk_dispatch_sync(hangup_ua_fn, &acct->ua);
 		bsdk_acct_cfg_deep_free(acct);
 		list_unlink(&acct->le);
 		mem_deref(acct);
 	}
+
+	bsdk_re_loop_stop();
 
 	ua_close();
 	module_app_unload();

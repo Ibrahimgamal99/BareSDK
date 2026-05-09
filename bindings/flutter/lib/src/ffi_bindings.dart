@@ -168,31 +168,54 @@ final class baresdk_ev_sip_trace_t extends Struct {
 
 final class baresdk_ev_media_stats_t extends Struct {
   external Pointer<baresdk_call> call;
-  @Uint32()
-  external int packets_sent;
-  @Uint32()
-  external int packets_received;
-  @Uint32()
-  external int packets_lost;
-  @Float()
-  external double loss_pct;
-  @Float()
-  external double jitter_ms;
-  @Float()
-  external double rtt_ms;
-  @Float()
-  external double mos_lq;
-  @Float()
-  external double mos_cq;
-  @Int32()
-  external int mos_method;
+  // Packet counters
+  @Uint32() external int packets_sent;
+  @Uint32() external int packets_received;
+  @Uint32() external int packets_lost;
+  @Uint32() external int packets_lost_rx;
+  @Uint32() external int bytes_sent;
+  @Uint32() external int bytes_received;
+  @Uint32() external int tx_errors;
+  @Uint32() external int rx_errors;
+  // Loss
+  @Float()  external double loss_pct;
+  @Float()  external double loss_pct_rx;
+  // Delay / jitter
+  @Float()  external double jitter_ms;
+  @Float()  external double tx_jitter_ms;
+  @Float()  external double rtt_ms;
+  // Jitter buffer
+  @Uint32() external int jitter_buffer_ms;
+  @Uint32() external int jitter_buffer_load;
+  @Uint32() external int late_packets;
+  @Uint32() external int discarded_packets;
+  // Bandwidth
+  @Uint32() external int bandwidth_kbps_tx;
+  @Uint32() external int bandwidth_kbps_rx;
+  @Uint32() external int avg_bandwidth_kbps_tx;
+  @Uint32() external int avg_bandwidth_kbps_rx;
+  // MOS
+  @Float()  external double mos_lq;
+  @Float()  external double mos_cq;
+  @Int32()  external int    mos_method;
+  // Codec
   external Pointer<Char> codec_name;
-  @Uint32()
-  external int codec_clock_rate;
-  @Uint32()
-  external int bandwidth_kbps_tx;
-  @Uint32()
-  external int bandwidth_kbps_rx;
+  @Uint32() external int codec_clock_rate;
+  @Uint32() external int codec_sample_rate;
+  @Uint8()  external int codec_channels;
+  @Int32()  external int payload_type;
+  // Audio level
+  @Float()  external double audio_level_dbov;
+  // Stream identity
+  @Uint32() external int ssrc_tx;
+  @Uint32() external int ssrc_rx;
+  @Array(64) external Array<Uint8> remote_addr;
+}
+
+final class baresdk_audio_device_t extends Struct {
+  @Array(128) external Array<Uint8> name;
+  @Array(256) external Array<Uint8> description;
+  @Bool()     external bool         is_default;
 }
 
 final class baresdk_ev_registrar_warning_t extends Struct {
@@ -548,11 +571,29 @@ class BareSDKBindings {
         int Function(Pointer<baresdk_account>, int)
       >('baresdk_account_set_100rel');
 
-  late final int Function(Pointer<baresdk_call>, Bool) baresdk_audio_mute =
+  late final int Function(Pointer<baresdk_call>, int) baresdk_audio_mute =
       _lib.lookupFunction<
         Int32 Function(Pointer<baresdk_call>, Bool),
         int Function(Pointer<baresdk_call>, int)
       >('baresdk_audio_mute');
+
+  late final int Function(Pointer<baresdk_call>, int) baresdk_audio_mute_rx =
+      _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_call>, Bool),
+        int Function(Pointer<baresdk_call>, int)
+      >('baresdk_audio_mute_rx');
+
+  late final int Function(Pointer<baresdk_audio_device_t>, int)
+      baresdk_audio_list_input_devices = _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_audio_device_t>, Int32),
+        int Function(Pointer<baresdk_audio_device_t>, int)
+      >('baresdk_audio_list_input_devices');
+
+  late final int Function(Pointer<baresdk_audio_device_t>, int)
+      baresdk_audio_list_output_devices = _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_audio_device_t>, Int32),
+        int Function(Pointer<baresdk_audio_device_t>, int)
+      >('baresdk_audio_list_output_devices');
 
   late final int Function(Pointer<Char>) baresdk_audio_set_input_device =
       _lib.lookupFunction<

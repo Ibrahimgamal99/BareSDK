@@ -16,34 +16,75 @@ You will receive `BARESDK_EV_MEDIA_STATS` events at that interval during every a
 
 ### Key metrics
 
-| Metric | Field | Unit | Typical range |
+**Quality scores**
+
+| Metric | Field | Unit | Good | Acceptable | Poor |
+|---|---|---|---|---|---|
+| TX packet loss | `loss_pct` | % | < 1% | < 5% | ≥ 5% |
+| RX packet loss | `loss_pct_rx` | % | < 1% | < 5% | ≥ 5% |
+| RX jitter | `jitter_ms` | ms | < 10 | < 30 | ≥ 30 |
+| Round-trip time | `rtt_ms` | ms | < 150 | < 300 | ≥ 300 |
+| MOS listening quality | `mos_lq` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
+| MOS conversational quality | `mos_cq` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
+
+**Bandwidth**
+
+| Metric | Field | Unit | Notes |
 |---|---|---|---|
-| Packet loss | `loss_pct` | % | 0–5% is acceptable |
-| Jitter | `jitter_ms` | ms | < 30 ms is good |
-| Round-trip time | `rtt_ms` | ms | < 150 ms is good |
-| MOS listening quality | `mos_lq` | 1–5 | ≥ 3.6 is acceptable |
-| MOS conversational quality | `mos_cq` | 1–5 | ≥ 3.6 is acceptable |
-| TX bandwidth | `bandwidth_kbps_tx` | kbps | codec-dependent |
-| RX bandwidth | `bandwidth_kbps_rx` | kbps | codec-dependent |
+| Current TX bitrate | `bandwidth_kbps_tx` | kbps | Instantaneous |
+| Current RX bitrate | `bandwidth_kbps_rx` | kbps | Instantaneous |
+| Average TX bitrate | `avg_bandwidth_kbps_tx` | kbps | Session average |
+| Average RX bitrate | `avg_bandwidth_kbps_rx` | kbps | Session average |
+
+**Jitter buffer**
+
+| Metric | Field | Notes |
+|---|---|---|
+| Buffer depth | `jitter_buffer_ms` | Current adaptive delay introduced |
+| Buffer load | `jitter_buffer_load` | Packets currently buffered |
+| Late arrivals | `late_packets` | Arrived after playout deadline |
+| Discarded | `discarded_packets` | Overflow or flush |
+
+**Audio level**
+
+| Metric | Field | Notes |
+|---|---|---|
+| Received level | `audio_level_dbov` | dBov: 0 = max, –127 = silent; `NaN` = unavailable |
+
+**Stream identity** — useful for correlating stats with network captures
+
+| Field | Notes |
+|---|---|
+| `ssrc_tx` | Our SSRC as seen in Wireshark |
+| `ssrc_rx` | Remote SSRC (0 until first RTP received) |
+| `remote_addr` | Remote RTP endpoint `"ip:port"` |
+| `payload_type` | RTP payload type number |
 
 ### MOS methods
 
 Set `cfg.mos_method` to choose the scoring algorithm:
 
-| Method | Enum | Description |
-|---|---|---|
-| E-Model (ITU-T G.107) | `BARESDK_MOS_EMODEL` | Network-impairment model; uses loss, jitter, RTT |
-| Simplified | `BARESDK_MOS_SIMPLIFIED` | Loss-only approximation; lower overhead |
+| Method | Enum | Formula | Best for |
+|---|---|---|---|
+| E-Model (ITU-T G.107) | `BARESDK_MOS_EMODEL` | Full impairment model: loss + jitter + one-way delay | Accurate VoIP quality assessment |
+| Simplified | `BARESDK_MOS_SIMPLIFIED` | Telchemy/CISCO: 4.5 − 0.09·loss − 0.0009·jitter − 0.0005·RTT | Quick dashboard metric |
+
+Both produce MOS in the 1.0–4.5 range. `mos_cq` adds an additional penalty for RTT > 300 ms (ITU-T G.114 conversational limit).
 
 ### Synchronous query
 
-At any time you can query the current stats for a call:
+`baresdk_call_get_stats()` returns the current stats without waiting for the next timer tick. Packet counters and bandwidth are always populated; RTCP fields are zero until the first RTCP exchange.
 
 ```c
 baresdk_ev_media_stats_t stats;
 int rc = baresdk_call_get_stats(call, &stats);
 if (rc == BARESDK_OK) {
-    printf("MOS-LQ=%.2f loss=%.1f%%\n", stats.mos_lq, stats.loss_pct);
+    printf("MOS-LQ=%.2f  MOS-CQ=%.2f  RTT=%.0f ms  loss=%.1f%%\n",
+           stats.mos_lq, stats.mos_cq, stats.rtt_ms, stats.loss_pct);
+    printf("TX %u kbps  RX %u kbps  jitter %.1f ms\n",
+           stats.bandwidth_kbps_tx, stats.bandwidth_kbps_rx, stats.jitter_ms);
+    printf("codec %s  remote %s  SSRC rx=%u\n",
+           stats.codec_name, stats.remote_addr, stats.ssrc_rx);
 }
 ```
 

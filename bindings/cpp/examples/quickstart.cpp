@@ -12,10 +12,67 @@
 #include "../baresdk.hpp"
 #include <chrono>
 #include <condition_variable>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <mutex>
 #include <thread>
+
+static void print_devices(baresdk::SDK& sdk)
+{
+    baresdk_audio_device_t devs[32];
+
+    int n = baresdk_audio_list_input_devices(devs, 32);
+    if (n > 0) {
+        std::cout << "Input devices (" << n << "):\n";
+        for (int i = 0; i < n; i++)
+            std::cout << "  [" << i << "] " << devs[i].name
+                      << (devs[i].is_default ? "  *default*" : "") << "\n";
+    }
+
+    n = baresdk_audio_list_output_devices(devs, 32);
+    if (n > 0) {
+        std::cout << "Output devices (" << n << "):\n";
+        for (int i = 0; i < n; i++)
+            std::cout << "  [" << i << "] " << devs[i].name
+                      << (devs[i].is_default ? "  *default*" : "") << "\n";
+    }
+}
+
+static void print_stats(const baresdk_ev_media_stats_t& s)
+{
+    const char* method = (s.mos_method == BARESDK_MOS_EMODEL) ? "E-model" : "simplified";
+
+    std::cout
+        << "┌─ Media Stats ─────────────────────────────────\n"
+        << "│  Codec     : " << (s.codec_name ? s.codec_name : "?")
+        <<   "  " << s.codec_clock_rate / 1000 << " kHz"
+        <<   "  ch=" << (int)s.codec_channels
+        <<   "  PT=" << s.payload_type << "\n"
+        << "│  Remote    : " << s.remote_addr
+        <<   "  SSRC rx=" << s.ssrc_rx << "  tx=" << s.ssrc_tx << "\n"
+        << "│  Packets   : tx=" << s.packets_sent
+        <<   "  rx=" << s.packets_received
+        <<   "  lost_tx=" << s.packets_lost << " (" << s.loss_pct << "%)"
+        <<   "  lost_rx=" << s.packets_lost_rx << " (" << s.loss_pct_rx << "%)\n"
+        << "│  Bandwidth : tx=" << s.bandwidth_kbps_tx << " kbps"
+        <<   "  rx=" << s.bandwidth_kbps_rx << " kbps"
+        <<   "  (avg tx=" << s.avg_bandwidth_kbps_tx
+        <<   "  rx=" << s.avg_bandwidth_kbps_rx << ")\n"
+        << "│  Delay     : RTT=" << s.rtt_ms << " ms"
+        <<   "  jitter=" << s.jitter_ms << " ms"
+        <<   "  tx_jitter=" << s.tx_jitter_ms << " ms\n"
+        << "│  Jitter buf: depth=" << s.jitter_buffer_ms << " ms"
+        <<   "  load=" << s.jitter_buffer_load
+        <<   "  late=" << s.late_packets
+        <<   "  discarded=" << s.discarded_packets << "\n"
+        << "│  MOS (" << method << "): LQ=" << s.mos_lq << "  CQ=" << s.mos_cq << "\n";
+
+    if (!std::isnan(s.audio_level_dbov))
+        std::cout << "│  Level     : " << s.audio_level_dbov << " dBov\n";
+
+    std::cout << "└───────────────────────────────────────────────\n";
+}
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
@@ -51,7 +108,8 @@ int main(int argc, char* argv[]) {
                 registered = true;
                 cv.notify_one();
             } else if (ev.u.reg.state == BARESDK_REG_FAILED) {
-                std::cerr << "Registration failed: " << (ev.u.reg.error_str ? ev.u.reg.error_str : "?") << "\n";
+                std::cerr << "Registration failed: "
+                          << (ev.u.reg.error_str ? ev.u.reg.error_str : "?") << "\n";
                 std::lock_guard<std::mutex> lk(mtx);
                 registered = true; /* unblock main */
                 cv.notify_one();
@@ -97,13 +155,9 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        case BARESDK_EV_MEDIA_STATS: {
-            const auto& s = ev.u.stats;
-            std::cout << "Stats — MOS-LQ: " << s.mos_lq
-                      << "  RTT: " << s.rtt_ms << " ms"
-                      << "  loss: " << s.loss_pct << "%\n";
+        case BARESDK_EV_MEDIA_STATS:
+            print_stats(ev.u.stats);
             break;
-        }
 
         case BARESDK_EV_LOG:
             if (ev.u.log.message)
@@ -128,6 +182,8 @@ int main(int argc, char* argv[]) {
         cv.wait_for(lk, std::chrono::seconds(15), [&]{ return registered; });
     }
 
+    print_devices(sdk);
+
     /* ── Dial or wait ───────────────────────────────────────────────────── */
     if (callee) {
         std::string callee_uri = callee;
@@ -138,7 +194,9 @@ int main(int argc, char* argv[]) {
 
         std::unique_lock<std::mutex> lk(mtx);
         cv.wait_for(lk, std::chrono::seconds(30),
-                    [&]{ return call_established; });
+                    [&]{ return call_established || call_done; });
+        if (!call_established) return 0;
+
         /* Hold the call for 10 s then hang up */
         lk.unlock();
         std::this_thread::sleep_for(std::chrono::seconds(10));

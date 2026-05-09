@@ -18,16 +18,19 @@ class PhonePage extends StatefulWidget {
 }
 
 class _PhonePageState extends State<PhonePage> {
-  late final BareSDK _sdk;
-  late final Account _account;
+  late final BareSDK  _sdk;
+  late final Account  _account;
 
-  String _status   = 'Initializing...';
-  Call?  _call;
+  String  _status  = 'Initializing...';
+  String  _stats   = '';
+  Call?   _call;
+  bool    _muted   = false;
+  bool    _mutedRx = false;
 
   @override
   void initState() {
     super.initState();
-    _sdk = BareSDK(logLevel: 1, statsIntervalMs: 5000);
+    _sdk     = BareSDK(logLevel: 1, statsIntervalMs: 5000);
     _account = _sdk.createAccount(
       'alice@pbx.example.com',
       'secret',
@@ -51,14 +54,30 @@ class _PhonePageState extends State<PhonePage> {
                      ev.state == baresdk_call_state_t.BARESDK_CALL_FAILED;
         setState(() {
           _status = done ? 'Call ended' : 'Call state: ${ev.state}';
-          if (done) _call = null;
+          if (done) { _call = null; _stats = ''; _muted = false; _mutedRx = false; }
         });
       } else if (ev is MediaStatsEvent) {
-        setState(() => _status = 'MOS: ${ev.mosLq.toStringAsFixed(2)}  RTT: ${ev.rttMs.toStringAsFixed(0)} ms');
+        setState(() => _stats = _formatStats(ev));
       }
     });
 
     _account.register();
+  }
+
+  String _formatStats(MediaStatsEvent s) {
+    final method = s.mosMethod == 0 ? 'E-model' : 'simplified';
+    return 'MOS-LQ ${s.mosLq.toStringAsFixed(2)} / CQ ${s.mosCq.toStringAsFixed(2)} ($method)\n'
+        'RTT ${s.rttMs.toStringAsFixed(0)} ms  '
+        'jitter ${s.jitterMs.toStringAsFixed(1)} ms\n'
+        'loss TX ${s.lossPct.toStringAsFixed(1)}%  '
+        'RX ${s.lossPctRx.toStringAsFixed(1)}%\n'
+        'bw TX ${s.bandwidthTx} kbps  RX ${s.bandwidthRx} kbps\n'
+        '(avg TX ${s.avgBandwidthTx}  RX ${s.avgBandwidthRx})\n'
+        'jitter buf ${s.jitterBufferMs} ms  late ${s.latePackets}  discarded ${s.discardedPackets}\n'
+        'codec ${s.codec} ${s.codecClockRate ~/ 1000} kHz  PT ${s.payloadType}\n'
+        'pkts TX ${s.packetsSent}  RX ${s.packetsReceived}  '
+        'lost TX ${s.packetsLost}  RX ${s.packetsLostRx}\n'
+        '${s.remoteAddr}  SSRC rx ${s.ssrcRx}';
   }
 
   @override
@@ -68,16 +87,50 @@ class _PhonePageState extends State<PhonePage> {
     super.dispose();
   }
 
+  void _toggleMute() {
+    _muted = !_muted;
+    _call?.mute(on: _muted);
+    setState(() {});
+  }
+
+  void _toggleMuteRx() {
+    _mutedRx = !_mutedRx;
+    _call?.muteRx(on: _mutedRx);
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('BareSDK Demo')),
-      body: Center(
+      body: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Text(_status, style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: 32),
+            Text(_status, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+
+            if (_stats.isNotEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _stats,
+                  style: const TextStyle(
+                    color: Colors.greenAccent,
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+
+            const SizedBox(height: 24),
+
             if (_call == null)
               ElevatedButton(
                 onPressed: () {
@@ -87,18 +140,39 @@ class _PhonePageState extends State<PhonePage> {
                 child: const Text('Call Bob'),
               )
             else
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              Column(
                 children: [
-                  ElevatedButton(
-                    onPressed: () { _call!.answer(); },
-                    child: const Text('Answer'),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton(
+                        onPressed: () { _call!.answer(); },
+                        child: const Text('Answer'),
+                      ),
+                      const SizedBox(width: 12),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                        onPressed: () { _call!.hangup(); },
+                        child: const Text('Hang Up'),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 16),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                    onPressed: () { _call!.hangup(); },
-                    child: const Text('Hang Up'),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        icon: Icon(_muted ? Icons.mic_off : Icons.mic),
+                        label: Text(_muted ? 'Unmute' : 'Mute'),
+                        onPressed: _toggleMute,
+                      ),
+                      const SizedBox(width: 12),
+                      ElevatedButton.icon(
+                        icon: Icon(_mutedRx ? Icons.volume_off : Icons.volume_up),
+                        label: Text(_mutedRx ? 'Unmute Speaker' : 'Mute Speaker'),
+                        onPressed: _toggleMuteRx,
+                      ),
+                    ],
                   ),
                 ],
               ),

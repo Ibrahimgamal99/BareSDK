@@ -14,6 +14,7 @@ Usage:
     python quickstart.py alice@pbx.example.com secret bob@pbx.example.com  # dial
 """
 
+import math
 import sys
 import time
 import threading
@@ -36,7 +37,50 @@ callee   = sys.argv[3] if len(sys.argv) >= 4 else None
 if callee and not callee.startswith("sip:"):
     callee = "sip:" + callee
 
-# ── Start SDK ──────────────────────────────────────────────────────────────
+
+def print_devices(sdk):
+    inputs  = sdk.list_input_devices()
+    outputs = sdk.list_output_devices()
+    if inputs:
+        print(f"Input devices ({len(inputs)}):")
+        for i, d in enumerate(inputs):
+            dflt = "  *default*" if d["is_default"] else ""
+            print(f"  [{i}] {d['name']}{dflt}")
+    if outputs:
+        print(f"Output devices ({len(outputs)}):")
+        for i, d in enumerate(outputs):
+            dflt = "  *default*" if d["is_default"] else ""
+            print(f"  [{i}] {d['name']}{dflt}")
+
+
+def print_stats(s: MediaStatsEvent):
+    method = "E-model" if s.mos_method == 0 else "simplified"
+    level  = f"{s.audio_level_dbov:.1f} dBov" if not math.isnan(s.audio_level_dbov) else "n/a"
+    print(
+        f"┌─ Media Stats ─────────────────────────────────\n"
+        f"│  Codec     : {s.codec_name}  {s.codec_clock_rate // 1000} kHz"
+        f"  ch={s.codec_channels}  PT={s.payload_type}\n"
+        f"│  Remote    : {s.remote_addr}"
+        f"  SSRC rx={s.ssrc_rx}  tx={s.ssrc_tx}\n"
+        f"│  Packets   : tx={s.packets_sent}  rx={s.packets_received}"
+        f"  lost_tx={s.packets_lost} ({s.loss_pct:.1f}%)"
+        f"  lost_rx={s.packets_lost_rx} ({s.loss_pct_rx:.1f}%)\n"
+        f"│  Bandwidth : tx={s.bandwidth_kbps_tx} kbps  rx={s.bandwidth_kbps_rx} kbps"
+        f"  (avg tx={s.avg_bandwidth_kbps_tx}  rx={s.avg_bandwidth_kbps_rx})\n"
+        f"│  Delay     : RTT={s.rtt_ms:.1f} ms"
+        f"  jitter={s.jitter_ms:.1f} ms"
+        f"  tx_jitter={s.tx_jitter_ms:.1f} ms\n"
+        f"│  Jitter buf: depth={s.jitter_buffer_ms} ms"
+        f"  load={s.jitter_buffer_load}"
+        f"  late={s.late_packets}"
+        f"  discarded={s.discarded_packets}\n"
+        f"│  MOS ({method}): LQ={s.mos_lq:.3f}  CQ={s.mos_cq:.3f}\n"
+        f"│  Level     : {level}\n"
+        f"└───────────────────────────────────────────────"
+    )
+
+
+# ── Start SDK ──────────────────────────────────────────────────────────────────
 incoming_call = threading.Event()
 call_done     = threading.Event()
 active_call   = None
@@ -53,6 +97,7 @@ with SDK(log_level=1, stats_interval_ms=5000) as sdk:
         if isinstance(ev, RegStateEvent):
             if ev.state == REG_REGISTERED:
                 print("Registered!")
+                print_devices(sdk)
                 if callee:
                     print(f"Dialling {callee} ...")
                     with call_lock:
@@ -71,7 +116,8 @@ with SDK(log_level=1, stats_interval_ms=5000) as sdk:
             incoming_call.set()
 
         elif isinstance(ev, CallStateEvent):
-            print(f"Call state: {ev.state}")
+            print(f"Call state: {ev.state}"
+                  + (f"  reason={ev.reason!r}" if ev.reason else ""))
             if ev.state in (CALL_ENDED, CALL_FAILED, CALL_CANCELLED):
                 print("Call done.")
                 call_done.set()
@@ -83,7 +129,7 @@ with SDK(log_level=1, stats_interval_ms=5000) as sdk:
                         active_call.hangup()
 
         elif isinstance(ev, MediaStatsEvent):
-            print(f"MOS-LQ: {ev.mos_lq:.2f}  RTT: {ev.rtt_ms:.0f} ms  loss: {ev.loss_pct:.1f}%")
+            print_stats(ev)
 
         if incoming_call.is_set() and not call_done.is_set():
             choice = input().strip().lower()
