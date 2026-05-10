@@ -68,7 +68,8 @@ if(BARESDK_SRC_MODE)
   set_target_properties(baresdk_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     C_STANDARD 11
-    C_STANDARD_REQUIRED ON)
+    C_STANDARD_REQUIRED ON
+    PREFIX "")
 
   install(TARGETS baresdk_core ARCHIVE DESTINATION .)
   return()
@@ -87,6 +88,8 @@ set(BARESDK_BARESIP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/baresip"
     CACHE PATH "Path to baresip source tree")
 set(BARESDK_MBEDTLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls"
     CACHE PATH "Path to mbedTLS source tree (required when BARESDK_TLS=mbedtls)")
+set(BARESDK_OPUS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus"
+    CACHE PATH "Path to libopus source tree (required when opus module is enabled)")
 set(BARESDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist"
     CACHE PATH "Top-level output directory for built archives")
 
@@ -145,7 +148,10 @@ foreach(_var
     CMAKE_AR CMAKE_RANLIB CMAKE_NM CMAKE_STRIP
     CMAKE_FIND_ROOT_PATH CMAKE_SYSROOT)
   if(DEFINED ${_var} AND NOT "${${_var}}" STREQUAL "")
-    list(APPEND CROSS_ARGS "-D${_var}=${${_var}}")
+    # Replace ; with | so multi-value vars (e.g. CMAKE_OSX_ARCHITECTURES)
+    # survive cmake list serialization; ExternalProjects use LIST_SEPARATOR "|".
+    string(REPLACE ";" "|" _cross_val "${${_var}}")
+    list(APPEND CROSS_ARGS "-D${_var}=${_cross_val}")
   endif()
 endforeach()
 
@@ -163,7 +169,7 @@ else()
   set(_EXT  ".a")
   set(_RE_LIB   "libre.a")
   set(_BARE_LIB "libbaresip.a")
-  set(_CORE_LIB "libbaresdk_core.a")
+  set(_CORE_LIB "baresdk_core.a")
 endif()
 
 set(_RE_A   "${SYSROOT}/lib/${_RE_LIB}")
@@ -191,6 +197,7 @@ if(BARESDK_TLS STREQUAL "mbedtls")
   ExternalProject_Add(mbedtls_project
     SOURCE_DIR "${BARESDK_MBEDTLS_SOURCE_DIR}"
     BINARY_DIR "${CMAKE_BINARY_DIR}/mbedtls-build"
+    LIST_SEPARATOR "|"
     CMAKE_ARGS
       -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
       -DCMAKE_INSTALL_PREFIX=${SYSROOT}
@@ -208,15 +215,61 @@ if(BARESDK_TLS STREQUAL "mbedtls")
     "-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
     "-DUSE_MBEDTLS=ON"
     "-DMBEDTLS_HINTS=${SYSROOT}"
+    "-DMBEDTLS_INCLUDE_DIR=${SYSROOT}/include"
+    "-DMBEDTLS_LIBRARY=${_MBEDCRYPTO_A}|${_MBEDX509_A}|${_MBEDTLS_A}"
   )
   set(MBEDTLS_EXTRA_LIBS "${_MBEDTLS_A}" "${_MBEDX509_A}" "${_MBEDCRYPTO_A}")
   set(MBEDTLS_DEPENDS mbedtls_project)
+  # Suffix appended to RE_LIBRARIES so baresip consumers (webrtc, selftest)
+  # get all three mbedTLS archives without relying on FindMBEDTLS running in
+  # baresip's transitive cmake context (where its module path is different).
+  set(BARESDK_MBEDTLS_LINK "|${_MBEDCRYPTO_A}|${_MBEDX509_A}|${_MBEDTLS_A}")
 else()
   set(MBEDTLS_DEPENDS "")
   set(MBEDTLS_ARGS
     "-DUSE_OPENSSL=ON"
     "-DUSE_MBEDTLS=OFF"
   )
+  set(BARESDK_MBEDTLS_LINK "")
+endif()
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: build libopus (if opus module is in the profile)
+# ---------------------------------------------------------------------------
+set(OPUS_ARGS "")
+set(OPUS_EXTRA_LIBS "")
+set(OPUS_DEPENDS "")
+
+if("opus" IN_LIST BARESDK_MODULES)
+  if(NOT EXISTS "${BARESDK_OPUS_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+      "opus module enabled but sources not found at ${BARESDK_OPUS_SOURCE_DIR}. "
+      "Run: git submodule update --init third_party/opus")
+  endif()
+
+  set(_OPUS_A "${SYSROOT}/lib/${_LPFX}opus${_EXT}")
+
+  ExternalProject_Add(opus_project
+    SOURCE_DIR "${BARESDK_OPUS_SOURCE_DIR}"
+    BINARY_DIR "${CMAKE_BINARY_DIR}/opus-build"
+    LIST_SEPARATOR "|"
+    CMAKE_ARGS
+      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -DCMAKE_INSTALL_PREFIX=${SYSROOT}
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      -DOPUS_BUILD_SHARED_LIBRARY=OFF
+      -DOPUS_BUILD_TESTING=OFF
+      -DOPUS_INSTALL_PKG_CONFIG_MODULE=OFF
+      ${CROSS_ARGS}
+    BUILD_BYPRODUCTS "${_OPUS_A}"
+  )
+
+  set(OPUS_ARGS
+    "-DOPUS_INCLUDE_DIR=${SYSROOT}/include"
+    "-DOPUS_LIBRARY=${_OPUS_A}"
+  )
+  set(OPUS_EXTRA_LIBS "${_OPUS_A}")
+  set(OPUS_DEPENDS opus_project)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -231,6 +284,7 @@ ExternalProject_Add(re_project
   DEPENDS ${MBEDTLS_DEPENDS}
   SOURCE_DIR "${BARESDK_RE_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/re-build"
+  LIST_SEPARATOR "|"
   CMAKE_ARGS
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
     -DCMAKE_INSTALL_PREFIX=${SYSROOT}
@@ -250,7 +304,7 @@ ExternalProject_Add(re_project
 string(REPLACE ";" "|" BARESDK_MODULES_SEP "${BARESDK_MODULES}")
 
 ExternalProject_Add(baresip_project
-  DEPENDS re_project
+  DEPENDS re_project ${OPUS_DEPENDS}
   SOURCE_DIR "${BARESDK_BARESIP_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/baresip-build"
   LIST_SEPARATOR "|"
@@ -261,12 +315,16 @@ ExternalProject_Add(baresip_project
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     -DRE_INCLUDE_DIR=${SYSROOT}/include/re
     -DRE_INCLUDE_DIRS=${SYSROOT}/include/re
-    -DRE_LIBRARY=${_RE_A}
-    -DRE_LIBRARIES=${_RE_A}
+    "-DRE_LIBRARY=${_RE_A}${BARESDK_MBEDTLS_LINK}"
+    "-DRE_LIBRARIES=${_RE_A}${BARESDK_MBEDTLS_LINK}"
     -Dre_DIR=${SYSROOT}/lib/cmake/re
     -DSTATIC=ON
     "-DMODULES=${BARESDK_MODULES_SEP}"
+    -DBUILD_TESTING=OFF
+    ${MBEDTLS_ARGS}
+    ${OPUS_ARGS}
     ${CROSS_ARGS}
+  BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target baresip
   BUILD_BYPRODUCTS "${_BARE_A}"
 )
 
@@ -301,7 +359,7 @@ endif()
 
 baresdk_merge(
   OUTPUT   "${_OUT}"
-  INPUTS   "${_CORE_A}" "${_RE_A}" "${_BARE_A}" ${MBEDTLS_EXTRA_LIBS}
+  INPUTS   "${_CORE_A}" "${_RE_A}" "${_BARE_A}" ${MBEDTLS_EXTRA_LIBS} ${OPUS_EXTRA_LIBS}
   DEPENDS  baresdk_core_project
 )
 

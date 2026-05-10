@@ -22,10 +22,10 @@ flutter:
       android:
         ffiPlugin: true
       ios:
-        ffiPlugin: true
+        ffiPlugin: false
       linux:
         ffiPlugin: true
       macos:
-        ffiPlugin: true
+        ffiPlugin: false
       windows:
         ffiPlugin: true

@@ -310,6 +310,9 @@ class Call:
     def mute_rx(self, muted: bool = True):
         lib.baresdk_audio_mute_rx(self._h, muted)
 
+    def set_dscp_rtp(self, dscp: int):
+        _check(lib.baresdk_call_set_dscp_rtp(self._h, dscp), "set_dscp_rtp")
+
     def stats(self):
         s = ffi.new("baresdk_ev_media_stats_t *")
         lib.baresdk_call_get_stats(self._h, s)
@@ -495,6 +498,18 @@ class SDK:
 
     def set_output_device(self, name: str):
         lib.baresdk_audio_set_output_device(name.encode())
+
+    def set_aec(self, enable: bool):
+        lib.baresdk_set_aec(int(enable))
+
+    def set_ns(self, enable: bool):
+        lib.baresdk_set_ns(int(enable))
+
+    def set_agc(self, enable: bool):
+        lib.baresdk_set_agc(int(enable))
+
+    def set_jitter_buffer(self, min_ms: int, max_ms: int):
+        lib.baresdk_set_jitter_buffer(min_ms, max_ms)
 
     def pcap_start(self, path: str):
         _check(lib.baresdk_pcap_start(path.encode()), "pcap_start")

@@ -6,8 +6,8 @@
 #   - Android NDK (set ANDROID_NDK or detected from ANDROID_NDK_ROOT /
 #     ANDROID_NDK_LATEST_HOME)
 #   - cmake ninja
-#   - third_party/mbedtls submodule initialised
-#       git submodule update --init third_party/mbedtls
+#   - submodules initialised:
+#       git submodule update --init third_party/mbedtls third_party/opus
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

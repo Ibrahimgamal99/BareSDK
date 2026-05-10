@@ -17,7 +17,6 @@ set(BARESDK_MOBILE_MODULES_BASE
   "turn"
   "ice"
   "uuid"
-  "auloop"
   "account"
   "contact"
   "menu"

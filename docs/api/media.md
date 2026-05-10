@@ -21,11 +21,56 @@ cfg.audio_codec_count = 2;
 
 ## Audio processing
 
+Enable at init time via `baresdk_config_t`:
+
 ```c
-cfg.aec = true;   // acoustic echo cancellation (prevents echo on speakerphone)
-cfg.ns  = true;   // noise suppression
-cfg.agc = true;   // automatic gain control (normalises mic volume)
+cfg.aec = true;   // half-duplex echo suppressor (attenuates TX when RX is loud)
+cfg.ns  = true;   // noise suppression (Wiener gate on microphone path)
+cfg.agc = true;   // automatic gain control (normalises mic volume to −20 dBFS)
 ```
+
+Toggle at runtime on any active call without re-dialling:
+
+```c
+baresdk_set_aec(true);
+baresdk_set_ns(false);
+baresdk_set_agc(true);
+```
+
+> **Note on AEC:** the built-in suppressor is a half-duplex gate, not full acoustic echo cancellation. For true AEC use platform voice modes: CoreAudio `VoiceProcessingIO`, AAudio `USAGE_VOICE_COMMUNICATION`, or PulseAudio `module-echo-cancel`.
+
+---
+
+## Jitter buffer
+
+Configure adaptive jitter buffering at init time:
+
+```c
+cfg.jitter_buffer_min_ms = 20;
+cfg.jitter_buffer_max_ms = 150;
+```
+
+Adjust at runtime (takes effect on new calls):
+
+```c
+baresdk_set_jitter_buffer(20, 200);  // widen buffer on a poor network
+baresdk_set_jitter_buffer(10,  80);  // tighten for a low-latency LAN
+```
+
+Both bounds default to baresip's built-in values when left at zero.
+
+---
+
+## Per-call DSCP / QoS
+
+Override the RTP DSCP marking for a specific established call:
+
+```c
+// EF (46) — Expedited Forwarding, lowest latency
+baresdk_call_set_dscp_rtp(call, 46);
+```
+
+The global RTP and SIP DSCP values are set at init time via `cfg.dscp_rtp` and `cfg.dscp_sip`.
 
 ---
 

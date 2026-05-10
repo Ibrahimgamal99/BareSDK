@@ -43,9 +43,9 @@ def _find_lib():
     if sys.platform == "win32":
         names = ["baresdk.dll"]
     elif sys.platform == "darwin":
-        names = ["baresdk.dylib", "libbaresdk.dylib"]
+        names = ["baresdk.dylib", "baresdk.dylib"]
     else:
-        names = ["baresdk.so", "libbaresdk.so"]
+        names = ["baresdk.so", "baresdk.so"]
 
     # 1. Next to the package (pip-installed wheel)
     for name in names:

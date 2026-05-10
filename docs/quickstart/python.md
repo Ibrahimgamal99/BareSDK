@@ -120,6 +120,28 @@ account = sdk.create_account(
 
 ---
 
+## Runtime audio quality controls
+
+```python
+# At init time (before baresdk_init):
+sdk = SDK(log_level=1, aec=1, ns=1, agc=1,
+          jitter_buffer_min_ms=20, jitter_buffer_max_ms=150)
+
+# Toggle filters on the fly at any time:
+sdk.set_aec(True)
+sdk.set_ns(False)
+sdk.set_agc(True)
+
+# Change jitter buffer bounds (takes effect on new calls):
+sdk.set_jitter_buffer(20, 200)   # widen on a poor network
+
+# Set per-call RTP DSCP on an established call:
+call.set_dscp_rtp(46)  # EF — Expedited Forwarding
+```
+
+---
+
 ## See also
 - Full example: [bindings/python/examples/quickstart.py](../../bindings/python/examples/quickstart.py)
 - Events: [events reference](../api/events.md)
+- Media & audio API: [api/media.md](../api/media.md)

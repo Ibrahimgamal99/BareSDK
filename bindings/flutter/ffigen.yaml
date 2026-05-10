@@ -12,22 +12,32 @@ headers:
 
 compiler-opts:
   - '-I../../include'
+  - '-isystem/usr/lib/clang/21/include'
 
-# Only include the baresdk public API
-include:
-  symbols:
+# Symbol filtering
+functions:
+  include:
     - 'baresdk_.*'
+
+globals:
+  include:
     - 'BARESDK_.*'
 
-typedef-map:
-  'size_t': 'IntPtr'
-  'uint8_t': 'Uint8'
-  'uint16_t': 'Uint16'
-  'uint32_t': 'Uint32'
-  'uint64_t': 'Uint64'
-  'int16_t': 'Int16'
-  'int32_t': 'Int32'
-  'bool': 'Bool'
+macros:
+  include:
+    - 'BARESDK_.*'
+
+enums:
+  include:
+    - 'baresdk_.*'
+
+structs:
+  include:
+    - 'baresdk_.*'
+
+typedefs:
+  include:
+    - 'baresdk_.*'
 
 comments:
   style: any

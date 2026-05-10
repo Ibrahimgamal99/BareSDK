@@ -1,8 +1,9 @@
 /**
- * @file audio.c  Audio device control and mute
+ * @file audio.c  Audio device control, mute, and runtime quality settings
  */
 
 #include "baresdk_internal.h"
+#include <re_udp.h>
 
 /* ── baresdk_audio_mute ──────────────────────────────────────────────────── */
 
@@ -241,4 +242,89 @@ int baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_c
 	};
 	int err = bsdk_dispatch_sync(enum_output_fn, &ctx);
 	return err ? err : ctx.result;
+}
+
+/* ── Runtime audio processing toggles ───────────────────────────────────── */
+
+static void set_filter_fn(void *arg)
+{
+	struct { const char *name; bool enable; } *ctx = arg;
+	aufilt_enable(baresip_aufiltl(), ctx->name, ctx->enable);
+}
+
+void baresdk_set_aec(bool enable)
+{
+	struct { const char *name; bool enable; } ctx = { "bsdk_aec", enable };
+	bsdk_dispatch_sync(set_filter_fn, &ctx);
+	g_bsdk.cfg.aec = enable;
+}
+
+void baresdk_set_ns(bool enable)
+{
+	struct { const char *name; bool enable; } ctx = { "bsdk_ns", enable };
+	bsdk_dispatch_sync(set_filter_fn, &ctx);
+	g_bsdk.cfg.ns = enable;
+}
+
+void baresdk_set_agc(bool enable)
+{
+	struct { const char *name; bool enable; } ctx = { "bsdk_agc", enable };
+	bsdk_dispatch_sync(set_filter_fn, &ctx);
+	g_bsdk.cfg.agc = enable;
+}
+
+/* ── Per-call DSCP ───────────────────────────────────────────────────────── */
+
+typedef struct {
+	struct baresdk_call *lc;
+	uint8_t              dscp;
+	int                  result;
+} dscp_ctx_t;
+
+static void set_dscp_rtp_fn(void *arg)
+{
+	dscp_ctx_t *ctx = arg;
+	if (!ctx->lc->bc) { ctx->result = ENOENT; return; }
+
+	struct audio *au = call_audio(ctx->lc->bc);
+	if (!au)          { ctx->result = ENOENT; return; }
+
+	struct stream *strm = audio_strm(au);
+	if (!strm)        { ctx->result = ENOENT; return; }
+
+	struct rtp_sock *rs = stream_rtp_sock(strm);
+	if (!rs)          { ctx->result = ENOENT; return; }
+
+	/* rtp_sock() returns the underlying struct udp_sock* as void* */
+	struct udp_sock *us = rtp_sock(rs);
+	if (!us)          { ctx->result = ENOENT; return; }
+
+	ctx->result = udp_settos(us, ctx->dscp);
+}
+
+int baresdk_call_set_dscp_rtp(baresdk_call_handle_t call, uint8_t dscp)
+{
+	if (!call) return BARESDK_ERR_INVAL;
+	dscp_ctx_t ctx = { .lc = call, .dscp = dscp, .result = 0 };
+	int err = bsdk_dispatch_sync(set_dscp_rtp_fn, &ctx);
+	return err ? err : ctx.result;
+}
+
+/* ── Global jitter buffer bounds ─────────────────────────────────────────── */
+
+static void set_jbuf_fn(void *arg)
+{
+	uint32_t *bounds = arg; /* [0]=min, [1]=max */
+	struct config *c = conf_config();
+	c->avt.audio.jbtype       = JBUF_ADAPTIVE;
+	c->avt.audio.jbuf_del.min = bounds[0];
+	c->avt.audio.jbuf_del.max = bounds[1] ? bounds[1] : 150u;
+}
+
+void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms)
+{
+	uint32_t bounds[2] = { min_ms, max_ms };
+	bsdk_dispatch_sync(set_jbuf_fn, bounds);
+	g_bsdk.cfg.jitter_buffer_min_ms = min_ms;
+	g_bsdk.cfg.jitter_buffer_max_ms = max_ms;
 }

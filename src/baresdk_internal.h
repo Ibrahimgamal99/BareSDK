@@ -5,6 +5,8 @@
 #ifndef BARESDK_INTERNAL_H
 #define BARESDK_INTERNAL_H
 
+#include <string.h>
+#include <strings.h>
 #include <re.h>
 #include <baresip.h>
 #include "../include/baresdk.h"
@@ -234,6 +236,11 @@ void bsdk_pcap_close(void);
 void bsdk_pcap_write_sip(const char *data, size_t len,
                           const struct sa *src, const struct sa *dst,
                           bool is_udp);
+
+/* ── audio_processing.c ────────────────────────────────────────────────── */
+
+void bsdk_audio_processing_init(bool ns, bool agc, bool aec);
+void bsdk_audio_processing_close(void);
 
 /* ── stats.c ───────────────────────────────────────────────────────────── */
 

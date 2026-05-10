@@ -251,6 +251,8 @@ int baresdk_init(const baresdk_config_t *cfg)
 	if (err)
 		goto fail;
 
+	bsdk_audio_processing_init(g_bsdk.cfg.ns, g_bsdk.cfg.agc, g_bsdk.cfg.aec);
+
 	err = bsdk_message_init();
 	if (err)
 		goto fail;
@@ -324,6 +326,7 @@ void baresdk_shutdown(void)
 	bsdk_trace_close();
 	bsdk_message_close();
 	bsdk_presence_close();
+	bsdk_audio_processing_close();
 
 	/* Hang up all active calls and free UAs on the re thread BEFORE stopping
 	 * the event loop.  ua_hangup() triggers audio stream teardown; audio

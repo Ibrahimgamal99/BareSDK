@@ -204,6 +204,10 @@ class Call {
     calloc.free(p);
   }
 
+  void setDscpRtp(int dscp) {
+    internal.nativeBindings.baresdk_call_set_dscp_rtp(_handle, dscp);
+  }
+
   Pointer<baresdk_call> get handle => _handle;
 }
 
@@ -276,7 +280,9 @@ class BareSDK {
     int logLevel        = 1,
     int statsIntervalMs = 0,
     bool traceSip       = false,
+    String? libPath,
   }) {
+    if (libPath != null) internal.setLibPath(libPath);
     _eventDispatch = _dispatchEvent;
 
     _nativeCb = NativeCallable<
@@ -334,6 +340,14 @@ class BareSDK {
     }
     calloc.free(buf);
     return out;
+  }
+
+  void setAec(bool enable) => internal.nativeBindings.baresdk_set_aec(enable ? 1 : 0);
+  void setNs(bool enable)  => internal.nativeBindings.baresdk_set_ns(enable ? 1 : 0);
+  void setAgc(bool enable) => internal.nativeBindings.baresdk_set_agc(enable ? 1 : 0);
+
+  void setJitterBuffer(int minMs, int maxMs) {
+    internal.nativeBindings.baresdk_set_jitter_buffer(minMs, maxMs);
   }
 
   void shutdown() {

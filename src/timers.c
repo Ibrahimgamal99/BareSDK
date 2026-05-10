@@ -36,6 +36,16 @@ void bsdk_timers_configure(const baresdk_config_t *cfg)
 	/* Enable RTCP stats collection */
 	c->avt.rtp_stats = (cfg->stats_interval_ms > 0);
 
+	/* Jitter buffer — adaptive mode with caller-supplied min/max bounds.
+	 * Only applied when at least one bound is non-zero to preserve baresip
+	 * defaults for callers that don't set either field. */
+	if (cfg->jitter_buffer_min_ms || cfg->jitter_buffer_max_ms) {
+		c->avt.audio.jbtype        = JBUF_ADAPTIVE;
+		c->avt.audio.jbuf_del.min  = cfg->jitter_buffer_min_ms;
+		c->avt.audio.jbuf_del.max  = cfg->jitter_buffer_max_ms
+		                             ? cfg->jitter_buffer_max_ms : 150u;
+	}
+
 	/* Bind interface */
 	if (cfg->bind_interface)
 		str_ncpy(c->net.ifname, cfg->bind_interface,

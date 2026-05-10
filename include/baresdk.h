@@ -421,6 +421,10 @@ typedef struct {
 	bool  ns;   /* noise suppression */
 	bool  agc;  /* automatic gain control */
 
+	/* ── Jitter buffer ────────────────────────────────────────────── */
+	uint32_t jitter_buffer_min_ms; /* minimum adaptive buffer depth; 0 = baresip default */
+	uint32_t jitter_buffer_max_ms; /* maximum adaptive buffer depth; 0 = baresip default */
+
 	/* ── Registration ─────────────────────────────────────────────── */
 	uint32_t  reg_expires;           /* seconds; default 3600 */
 	uint32_t  reg_refresh_pct;       /* refresh at N% of expires; default 75 */
@@ -701,6 +705,32 @@ BARESDK_EXPORT int baresdk_audio_list_input_devices(baresdk_audio_device_t *devi
 /** Same for audio output (speaker/playback) devices. */
 BARESDK_EXPORT int baresdk_audio_list_output_devices(baresdk_audio_device_t *devices,
                                                       int max_count);
+
+/* ── Audio processing — runtime toggles ──────────────────────────────────── */
+
+/** Enable/disable acoustic echo suppression globally (takes effect next frame). */
+BARESDK_EXPORT void baresdk_set_aec(bool enable);
+
+/** Enable/disable noise suppression globally (takes effect next frame). */
+BARESDK_EXPORT void baresdk_set_ns(bool enable);
+
+/** Enable/disable automatic gain control globally (takes effect next frame). */
+BARESDK_EXPORT void baresdk_set_agc(bool enable);
+
+/**
+ * Change DSCP/TOS on the RTP socket of an active call.
+ * Common values: 46 (EF — voice), 34 (AF41 — video), 0 (best-effort).
+ * Takes effect immediately on the next outgoing RTP packet.
+ */
+BARESDK_EXPORT int baresdk_call_set_dscp_rtp(baresdk_call_handle_t call,
+                                              uint8_t dscp);
+
+/**
+ * Update jitter buffer bounds.  Takes effect on calls established after
+ * this call — existing streams keep their current adaptive depth.
+ * Pass 0 for either bound to restore the baresip default (~0 / 150 ms).
+ */
+BARESDK_EXPORT void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
 
 /* ── Audio mute / device control ─────────────────────────────────────────── */
 

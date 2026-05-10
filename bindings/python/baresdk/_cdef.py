@@ -300,6 +300,9 @@ typedef struct {
     int   ns;
     int   agc;
 
+    uint32_t  jitter_buffer_min_ms;
+    uint32_t  jitter_buffer_max_ms;
+
     uint32_t  reg_expires;
     uint32_t  reg_refresh_pct;
     uint32_t  keepalive_interval;
@@ -416,6 +419,13 @@ typedef struct {
 
 int  baresdk_audio_list_input_devices(baresdk_audio_device_t *devices, int max_count);
 int  baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_count);
+
+/* ── Runtime audio processing toggles ───────────────────────────────────── */
+void baresdk_set_aec(int enable);
+void baresdk_set_ns(int enable);
+void baresdk_set_agc(int enable);
+int  baresdk_call_set_dscp_rtp(baresdk_call_handle_t call, uint8_t dscp);
+void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
 
 /* ── pcap ─────────────────────────────────────────────────────────────────── */
 int  baresdk_pcap_start(const char *path);

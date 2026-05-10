@@ -5,8 +5,8 @@
 # Prerequisites (macOS only):
 #   - Xcode with iphoneos + iphonesimulator SDKs
 #   - cmake  (brew install cmake)
-#   - third_party/mbedtls submodule initialised
-#       git submodule update --init third_party/mbedtls
+#   - submodules initialised:
+#       git submodule update --init third_party/mbedtls third_party/opus
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

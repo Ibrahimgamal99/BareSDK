@@ -25,6 +25,9 @@ then jump to whichever operation you need.
 | Attended transfer | ✓ | ✓ | — | — |
 | Custom SIP headers | ✓ | ✓ | ✓ | ✓ |
 | Audio devices | ✓ | ✓ | ✓ | ✓ |
+| AEC / NS / AGC (runtime toggle) | ✓ | ✓ | ✓ | ✓ |
+| Jitter buffer (runtime) | ✓ | ✓ | ✓ | ✓ |
+| Per-call DSCP / QoS | ✓ | ✓ | ✓ | ✓ |
 | Stats (on demand) | ✓ | ✓ | ✓ | — |
 | pcap capture | ✓ | ✓ | ✓ | — |
 | Audio recording (WAV) | ✓ | ✓ | ✓ | ✓ |
@@ -893,7 +896,67 @@ Output format: PCM S16LE WAV, 48 kHz/2ch (Opus) or 8 kHz/1ch (G.711). Recording 
 
 ---
 
-## 15. Registration retry control (C / C++)
+## 15. Runtime audio quality controls
+
+Toggle noise suppression, AGC, and the echo suppressor live — no re-dial needed.
+Jitter buffer and DSCP changes are also covered here.
+
+**C**
+```c
+/* Toggle processing filters at any time */
+baresdk_set_aec(true);   /* half-duplex echo suppressor */
+baresdk_set_ns(true);    /* noise suppression           */
+baresdk_set_agc(true);   /* auto gain control           */
+
+/* Change jitter buffer bounds — takes effect on new calls */
+baresdk_set_jitter_buffer(20, 200);   /* widen on poor network */
+baresdk_set_jitter_buffer(10,  80);   /* tighten on local LAN  */
+
+/* Override RTP DSCP on an established call */
+baresdk_call_set_dscp_rtp(call, 46);  /* EF — Expedited Forwarding */
+```
+
+**C++**
+```cpp
+/* C++ delegates to the same C functions */
+baresdk_set_aec(true);
+baresdk_set_ns(false);
+baresdk_set_agc(true);
+
+baresdk_set_jitter_buffer(20, 200);
+
+baresdk_call_set_dscp_rtp(call.handle(), 46);
+```
+
+**Python**
+```python
+sdk.set_aec(True)
+sdk.set_ns(False)
+sdk.set_agc(True)
+
+sdk.set_jitter_buffer(20, 200)
+
+call.set_dscp_rtp(46)
+```
+
+**Flutter**
+```dart
+sdk.setAec(true);
+sdk.setNs(false);
+sdk.setAgc(true);
+
+sdk.setJitterBuffer(20, 200);
+
+call.setDscpRtp(46);
+```
+
+> **AEC note:** `baresdk_set_aec` is a half-duplex gate, not full acoustic echo cancellation. For true AEC use platform voice modes: CoreAudio `VoiceProcessingIO`, AAudio `USAGE_VOICE_COMMUNICATION`, or PulseAudio `module-echo-cancel`.
+>
+> **Jitter buffer note:** the bounds apply to newly created audio streams. Active calls are unaffected until they re-negotiate or end and reconnect.
+
+---
+
+## 16. Registration retry control
 
 The SDK retries failed registrations automatically. These functions let you adjust the policy at runtime or take manual control.
 
@@ -914,8 +977,33 @@ baresdk_account_cancel_retry(acct);
 baresdk_account_retry_now(acct);
 ```
 
+**C++**
+```cpp
+acct.set_retry_policy(1000, 30000, 1.5f, 0);
+acct.cancel_retry();
+acct.retry_now();
+```
+
+**Python**
+```python
+account.set_retry_policy(initial_ms=1000, max_ms=30000,
+                         backoff=1.5, max_attempts=0)
+account.cancel_retry()
+account.retry_now()
+```
+
+**Flutter**
+```dart
+// Flutter binding exposes the same three calls
+internal.nativeBindings.baresdk_account_set_retry_policy(
+    account.handle, 1000, 30000, 1.5, 0);
+internal.nativeBindings.baresdk_account_cancel_retry(account.handle);
+internal.nativeBindings.baresdk_account_retry_now(account.handle);
+```
+
 Each scheduled retry fires `BARESDK_EV_REG_STATE` with `state == BARESDK_REG_FAILED`:
 
+**C**
 ```c
 case BARESDK_EV_REG_STATE:
     if (ev->u.reg.state == BARESDK_REG_FAILED && ev->u.reg.retry_attempt > 0)
@@ -924,9 +1012,25 @@ case BARESDK_EV_REG_STATE:
                ev->u.reg.retry_delay_ms);
 ```
 
+**Python**
+```python
+elif isinstance(ev, RegStateEvent) and ev.state == REG_FAILED:
+    if ev.retry_attempt > 0:
+        print(f"retry {ev.retry_attempt} in {ev.retry_delay_ms} ms")
+```
+
+**Flutter**
+```dart
+} else if (ev is RegStateEvent &&
+           ev.state == baresdk_reg_state_t.BARESDK_REG_FAILED) {
+  // retry_attempt and retry_delay_ms are in the raw C struct;
+  // read via the event pointer if needed, or handle reconnect logic here
+}
+```
+
 ---
 
-## 16. Teardown
+## 17. Teardown
 
 **C**
 ```c
@@ -975,7 +1079,10 @@ sdk.shutdown();
 | TURN only | `ice_enabled=true`, `turn_server=…`, `turn_user`, `turn_pass` | — native plugin |
 | STUN + TURN | both — TURN takes priority | — native plugin |
 | WebRTC interop | `media_enc=DTLS_SRTP`, `ice_enabled=true`, STUN+TURN | — native plugin |
-| Voice quality | `aec=true`, `ns=true`, `agc=true` | — native plugin |
+| Voice quality (init) | `aec=true`, `ns=true`, `agc=true` | — native plugin |
+| Voice quality (runtime) | `baresdk_set_aec/ns/agc()` / `sdk.set_aec/ns/agc()` | `sdk.setAec/Ns/Agc()` |
+| Jitter buffer (runtime) | `baresdk_set_jitter_buffer()` / `sdk.set_jitter_buffer()` | `sdk.setJitterBuffer()` |
+| Per-call DSCP | `baresdk_call_set_dscp_rtp()` / `call.set_dscp_rtp()` | `call.setDscpRtp()` |
 | Codec order | `audio_codecs[]`, `audio_codec_count` | — native plugin |
 
 ---
