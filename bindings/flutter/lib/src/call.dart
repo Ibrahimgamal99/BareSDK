@@ -51,5 +51,15 @@ class Call {
   int getStats(Pointer<baresdk_ev_media_stats_t> out) =>
       internal.nativeBindings.baresdk_call_get_stats(_handle, out);
 
+  int recordStart(String path) {
+    final p = path.toNativeUtf8().cast<Char>();
+    final rc = internal.nativeBindings.baresdk_call_record_start(_handle, p);
+    calloc.free(p);
+    return rc;
+  }
+
+  int recordStop() =>
+      internal.nativeBindings.baresdk_call_record_stop(_handle);
+
   Pointer<baresdk_call> get handle => _handle;
 }

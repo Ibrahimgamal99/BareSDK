@@ -1,6 +1,6 @@
 # baresdk
 
-A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/baresip/baresip) and [libre](https://github.com/baresip/re), delivered as a single static archive per platform.
+A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/baresip/baresip) and [libre](https://github.com/baresip/re), delivered as a self-contained shared library and static archive per platform.
 
 `baresdk.h` is the only header you need. The baresip/libre internals are an implementation detail.
 
@@ -17,24 +17,38 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 | **Presence** | PUBLISH · SUBSCRIBE/NOTIFY · BLF · MWI |
 | **Reliability** | PRACK / 100rel (RFC 3262) |
 | **Custom Headers** | Per-account + per-dialog (call) custom SIP headers |
-| **Media** | PCM tap (TX/RX) · TX mute · RX mute (speaker) · device enumerate + hot-switch |
-| **Observability** | SIP trace · SDP diff · pcap (UDP + TCP framing) · RTCP/MOS stats (E-model + simplified) · jitter buffer · audio level · bandwidth (instant + avg, TX/RX) |
+| **Media** | PCM tap (TX/RX) · Audio recording to WAV (per-direction) · TX mute · RX mute (speaker) · device enumerate + hot-switch |
+| **Observability** | SIP trace · SDP diff · pcap · RTCP/MOS stats (E-model + simplified) · jitter buffer · audio level · bandwidth (instant + avg, TX/RX) |
 | **Multi-account** | Yes — any number of accounts per stack |
 | **Thread safety** | Full — call any API from any thread |
 | **Memory safety** | Deep-copied config strings — caller can free immediately after init |
 
+---
+
 ## Supported platforms
 
-| Platform | Output | TLS backend |
+Each build script produces both the **shared library** and the **static archive** in one step.
+Shared libraries are **fully self-contained** — OpenSSL, zlib, and pthreads are baked in; consumers need no extra packages at runtime.
+
+| Platform | Shared library | Static archive | TLS backend |
+|---|---|---|---|
+| Linux x86_64 | `dist/linux/x86_64/baresdk.so` | `baresdk.a` | OpenSSL (embedded) |
+| macOS universal | `dist/macos/universal/baresdk.dylib` | `baresdk.a` | OpenSSL (embedded) |
+| Windows x64 | `dist/windows/x64/baresdk.dll` | `bare.lib` | OpenSSL (embedded via vcpkg) |
+| Android arm64-v8a | `dist/android/arm64-v8a/baresdk.so` | `baresdk.a` | mbedTLS (bundled) |
+| Android armeabi-v7a | `dist/android/armeabi-v7a/baresdk.so` | `baresdk.a` | mbedTLS (bundled) |
+| Android x86_64 | `dist/android/x86_64/baresdk.so` | `baresdk.a` | mbedTLS (bundled) |
+| iOS device + simulator | `dist/ios/baresdk.xcframework` | — | mbedTLS (bundled) |
+
+---
+
+## Language bindings
+
+| Language | Location | One-command setup |
 |---|---|---|
-| Linux x86_64 | `dist/linux/x86_64/baresdk.a` | OpenSSL (system) |
-| Android arm64-v8a | `dist/android/arm64-v8a/baresdk.a` | mbedTLS (bundled) |
-| Android armeabi-v7a | `dist/android/armeabi-v7a/baresdk.a` | mbedTLS (bundled) |
-| Android x86_64 | `dist/android/x86_64/baresdk.a` | mbedTLS (bundled) |
-| iOS device | `dist/ios/baresdk.xcframework` | mbedTLS (bundled) |
-| iOS simulator | (included in xcframework) | mbedTLS (bundled) |
-| macOS universal | `dist/macos/universal/baresdk.a` | OpenSSL (system) |
-| Windows x64 | `dist/windows/x64/bare.lib` | OpenSSL (vcpkg) |
+| C / C++ | `include/baresdk.h` · `bindings/cpp/baresdk.hpp` | `bash bindings/cpp/build.sh` |
+| Python | `bindings/python/` | `bash bindings/python/build.sh` |
+| Flutter / Dart | `bindings/flutter/` | `dart pub get` in `bindings/flutter/` |
 
 ---
 
@@ -44,8 +58,11 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 git clone --recurse-submodules https://github.com/Ibrahimgamal99/BareSDK.git
 cd BareSDK
 
-./scripts/build-linux.sh
-./tools/verify.sh dist/linux/x86_64/baresdk.a link
+# Build SDK (shared lib + static archive)
+bash scripts/build-linux.sh
+
+# Verify
+./tools/verify.sh dist/linux/x86_64/baresdk.so link
 ```
 
 If you cloned without `--recurse-submodules`:
@@ -55,6 +72,42 @@ git submodule update --init --recursive third_party/re third_party/baresip
 # mobile only:
 git submodule update --init --recursive third_party/mbedtls
 ```
+
+### C++ — one command
+
+```bash
+bash bindings/cpp/build.sh
+# builds SDK if needed, compiles all examples, places binary + .so together
+```
+
+### Python — one command
+
+```bash
+bash bindings/python/build.sh
+# builds SDK if needed, installs the Python package
+# library is auto-discovered — no LD_LIBRARY_PATH required
+```
+
+### Flutter
+
+```bash
+bash scripts/build-android.sh    # or build-linux.sh / build-macos.sh
+cd bindings/flutter
+dart pub get
+dart run ffigen --config ffigen.yaml   # only needed when baresdk.h changes
+```
+
+---
+
+## Documentation
+
+**[SDK usage guide — all operations, all languages](docs/guides/complete_example.md)**
+
+Covers every operation in one place with code for C, C++, Python, and Flutter:
+account setup, transport, TLS, STUN/TURN/ICE, calls, hold, mute, transfer,
+stats, audio devices, pcap, and teardown.
+
+Full docs: [docs/index.md](docs/index.md)
 
 ---
 
@@ -74,9 +127,17 @@ const char *baresdk_version(void);
 ```c
 int  baresdk_account_create(const baresdk_account_config_t *cfg,
                              baresdk_account_handle_t *out);
-void baresdk_account_destroy(baresdk_account_handle_t acct);
+void baresdk_account_destroy(baresdk_account_handle_t acct);     // blocks until complete
 int  baresdk_account_register(baresdk_account_handle_t acct);
 int  baresdk_account_unregister(baresdk_account_handle_t acct);
+
+// Retry control — override policy, cancel, or force immediate retry
+int  baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
+                                       uint32_t initial_ms, uint32_t max_ms,
+                                       float backoff, uint32_t max_attempts);
+int  baresdk_account_cancel_retry(baresdk_account_handle_t acct);
+int  baresdk_account_retry_now(baresdk_account_handle_t acct);
+
 int  baresdk_account_add_header(baresdk_account_handle_t acct,
                                  const char *name, const char *value);
 int  baresdk_account_publish_presence(baresdk_account_handle_t acct,
@@ -110,20 +171,24 @@ int  baresdk_call_add_header(baresdk_call_handle_t call,
 
 ```c
 /* Mute / unmute */
-int  baresdk_audio_mute(baresdk_call_handle_t call, bool mute);      // TX (microphone)
-int  baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);   // RX (speaker)
+int  baresdk_audio_mute(baresdk_call_handle_t call, bool mute);     // TX (microphone)
+int  baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);  // RX (speaker)
 
 /* Device enumeration */
 int  baresdk_audio_list_input_devices(baresdk_audio_device_t *devices, int max_count);
 int  baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_count);
 
 /* Device selection — takes effect immediately on active calls */
-int  baresdk_audio_set_input_device(const char *name);    // NULL = platform default
+int  baresdk_audio_set_input_device(const char *name);   // NULL = platform default
 int  baresdk_audio_set_output_device(const char *name);
 
 /* PCM tap */
 int  baresdk_call_set_media_tap(baresdk_call_handle_t call,
                                  baresdk_media_tap_cb_t cb, void *userdata);
+
+/* Audio recording — single mixed WAV file (RX+TX clip-summed) */
+int  baresdk_call_record_start(baresdk_call_handle_t call, const char *path);
+int  baresdk_call_record_stop(baresdk_call_handle_t call);
 ```
 
 ### Messaging & presence
@@ -137,20 +202,19 @@ int  baresdk_message_send(baresdk_account_handle_t acct,
 ### Observability
 
 ```c
-/* Synchronous stats query — safe to call from any thread */
 int  baresdk_call_get_stats(baresdk_call_handle_t call,
                              baresdk_ev_media_stats_t *out);
 int  baresdk_pcap_start(const char *path);
 int  baresdk_pcap_stop(void);
 ```
 
-`baresdk_ev_media_stats_t` covers: packet counters (TX + RX), loss % (TX + RX), RTT, jitter (TX + RX), jitter buffer depth/load/late/discards, bandwidth (instant + session-avg, TX + RX), MOS-LQ + MOS-CQ (E-model or simplified), codec (name/rate/channels/PT), audio level (dBov), SSRC and remote address. All RTCP-dependent fields are zero until the first RTCP exchange; packet counters and bandwidth are always available.
+`baresdk_ev_media_stats_t` covers: packet counters (TX + RX), loss % (TX + RX), RTT, jitter (TX + RX), jitter buffer depth/load/late/discards, bandwidth (instant + session-avg, TX + RX), MOS-LQ + MOS-CQ (E-model or simplified), codec (name/rate/channels/PT), audio level (dBov), SSRC and remote address.
 
 ### Events
 
-All events arrive on a dedicated dispatch thread (never on `re_main`). The callback is set in `baresdk_config_t.event_cb`.
+All events arrive on a dedicated dispatch thread. The callback is set in `baresdk_config_t.event_cb`.
 
-**Thread-safety note:** Calling most baresdk APIs from inside the event callback is safe — the dispatch thread is deliberately separate from `re_main` to allow this. The one exception is calling a blocking or long-running operation that itself waits for another event (e.g., synchronously waiting for a call to end inside `BARESDK_EV_INCOMING_CALL`). For complex flows, post work to your own thread and call baresdk APIs from there.
+**Thread-safety note:** Calling baresdk APIs from inside the event callback is safe. The one exception is blocking inside the callback waiting for another event — for complex flows, post work to your own thread.
 
 | Event type | Payload field | Fired when |
 |---|---|---|
@@ -171,21 +235,21 @@ All events arrive on a dedicated dispatch thread (never on `re_main`). The callb
 
 ## Account config
 
-`baresdk_account_config_t` is self-contained — `uri` + `password` + `transport` is all that's required. Everything else is auto-derived but overridable.
+`uri` + `password` + `transport` is all that's required. Everything else is auto-derived but overridable.
 
 ```c
 baresdk_account_config_t acct = {
-    // ── Required ──────────────────────────────────────────────────────────
-    .uri      = "120@pbx.example.com",  // "user@host", "user@host:port", or "sip:user@host"
+    // ── Required ───────────────────────────────────────────────────────────
+    .uri      = "120@pbx.example.com",  // "user@host", "user@host:port", "sip:user@host"
     .password = "secret",
 
     // ── Transport & server ─────────────────────────────────────────────────
-    // Option A — plain UDP/TCP/TLS: transport + optional server_host/port override
-    .transport   = BARESDK_TRANSPORT_UDP,   // UDP(0) TCP(1) TLS(2) WS(3) WSS(4)
-    .server_host = "192.168.1.1",           // NULL = host from uri
-    .server_port = 5060,                    // 0 = port from uri or transport default
+    // Option A — UDP/TCP/TLS
+    .transport   = BARESDK_TRANSPORT_TLS,  // UDP(0) TCP(1) TLS(2) WS(3) WSS(4)
+    .server_host = "192.168.1.1",          // NULL = host from uri
+    .server_port = 5061,                   // 0 = transport default
 
-    // Option B — WebSocket / custom URL (overrides transport/server_host/server_port)
+    // Option B — WebSocket / WSS (overrides transport/server_host/server_port)
     .server_url  = "wss://pbx.example.com:443/ws",
 
     // ── Identity ────────────────────────────────────────────────────────────
@@ -196,29 +260,28 @@ baresdk_account_config_t acct = {
     .media_enc   = BARESDK_MEDIA_ENC_DTLS_SRTP,  // NONE / SDES / DTLS_SRTP
     .ice_enabled = true,
     .stun_server = "stun:stun.l.google.com:19302",
-    .turn_server = "turn:turn.example.com:3478",
+    .turn_server = "turn:turn.example.com:3478",  // TURN takes priority over STUN
     .turn_user   = "turnuser",
     .turn_pass   = "turnpass",
 
     // ── Advanced ────────────────────────────────────────────────────────────
-    .outbound    = NULL,     // NULL = auto-derived from server
-    .verify_tls  = false,    // true = verify server TLS certificate
+    .verify_tls  = true,     // false = skip TLS cert check (testing only)
 };
 ```
 
 ### Common patterns
 
 ```c
-// UDP — minimum
+// Minimum — UDP
 baresdk_account_config_t acct = { .uri = "100@192.168.1.1", .password = "pass" };
 
-// UDP — SIP domain differs from physical server
+// SIP domain differs from physical server
 baresdk_account_config_t acct = {
     .uri = "100@company.com", .password = "pass",
     .server_host = "192.168.1.1", .server_port = 5060,
 };
 
-// WSS via Nginx reverse proxy
+// WSS via reverse proxy
 baresdk_account_config_t acct = {
     .uri        = "120@pbx.example.com",
     .password   = "secret",
@@ -226,9 +289,7 @@ baresdk_account_config_t acct = {
     .verify_tls = false,
 };
 
-// WSS + DTLS-SRTP + ICE (equivalent to baresip accounts-file line)
-// <sip:120@pbx.example.com>;auth_pass=secret;outbound="sip:pbx.example.com:443;transport=wss";
-//   mediaenc=dtls_srtp;medianat=ice;stunserver=stun:stun.l.google.com:19302
+// WSS + DTLS-SRTP + ICE (WebRTC-compatible)
 baresdk_account_config_t acct = {
     .uri         = "120@pbx.example.com",
     .password    = "secret",
@@ -239,17 +300,17 @@ baresdk_account_config_t acct = {
 };
 ```
 
-Per-account fields (`media_enc`, `ice_enabled`, `stun_server`, `turn_*`) override the global defaults from `baresdk_config_t` when set.
+Per-account fields override the global defaults from `baresdk_config_t` when set.
 
 ---
 
-## Global config reference (selected fields)
+## Global config (selected fields)
 
 ```c
 baresdk_config_t cfg;
-baresdk_config_init(&cfg);   // always call this first — zero-fills and sets defaults
+baresdk_config_init(&cfg);   // always call first
 
-// TLS (global — applies to all accounts)
+// TLS
 cfg.ca_cert_path  = "/etc/ssl/certs/ca-certificates.crt";
 cfg.verify_server = true;
 
@@ -257,10 +318,11 @@ cfg.verify_server = true;
 cfg.ice_enabled = true;
 cfg.stun_server = "stun:stun.example.com";
 
-// Media defaults (overridable per-account)
+// Media defaults
 cfg.media_enc         = BARESDK_MEDIA_ENC_DTLS_SRTP;
 cfg.audio_codecs[0]   = BARESDK_CODEC_OPUS;
 cfg.audio_codec_count = 1;
+cfg.aec = cfg.ns = cfg.agc = true;
 
 // Observability
 cfg.trace_sip         = true;
@@ -277,26 +339,98 @@ cfg.reg_retry_backoff    = 2.0f;
 
 ## Consuming baresdk
 
+### Shared library (recommended — no extra link flags needed)
+
+```bash
+# Linux
+gcc main.c dist/linux/x86_64/baresdk.so -I dist/linux/x86_64/include -o app
+
+# macOS
+clang main.c dist/macos/universal/baresdk.dylib -I dist/macos/universal/include -o app
+
+# Windows
+cl main.c dist\windows\x64\baresdk.dll /I dist\windows\x64\include
+```
+
+The shared library has OpenSSL, zlib, and pthreads baked in — no `-lssl`, `-lcrypto`, or `-lpthread` needed on the link line.
+
+### Static archive
+
+```bash
+gcc main.c dist/linux/x86_64/baresdk.a \
+    -I dist/linux/x86_64/include \
+    -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv -o app
+```
+
 ### CMake
 
 ```cmake
 add_executable(my_app main.c)
-target_include_directories(my_app PRIVATE
-    path/to/dist/linux/x86_64/include)
-target_link_libraries(my_app
-    path/to/dist/linux/x86_64/baresdk.a
-    pthread ssl crypto m dl resolv)
+target_include_directories(my_app PRIVATE dist/linux/x86_64/include)
+# Shared lib — no extra link flags:
+target_link_libraries(my_app dist/linux/x86_64/baresdk.so)
+# Static archive — add platform libs:
+# target_link_libraries(my_app dist/linux/x86_64/baresdk.a pthread ssl crypto m dl resolv)
+```
+
+### Python
+
+```bash
+bash bindings/python/build.sh
+```
+
+Builds the SDK and installs the package. The shared library is auto-discovered from `dist/` — no `LD_LIBRARY_PATH` or manual copy needed. Then:
+
+```python
+from baresdk import SDK, RegStateEvent, IncomingCallEvent, TRANSPORT_TLS
+
+with SDK(log_level=1, transport=TRANSPORT_TLS, server_host="pbx.example.com") as sdk:
+    account = sdk.create_account("alice@pbx.example.com", "secret")
+    account.register()
+    for ev in account.events(timeout=30):
+        if isinstance(ev, RegStateEvent):
+            print(f"Registered: {ev.state}")
+    account.destroy()
+```
+
+### C++ (header-only wrapper)
+
+```bash
+bash bindings/cpp/build.sh
+```
+
+```cpp
+#include "baresdk.hpp"
+
+baresdk::SDK sdk;
+sdk.config().transport    = BARESDK_TRANSPORT_TLS;
+sdk.config().server_host  = "pbx.example.com";
+sdk.config().log_level    = 1;
+
+sdk.on_event([](const baresdk_event_t& ev) { /* handle events */ });
+
+auto acct = sdk.create_account("alice@pbx.example.com", "secret", BARESDK_TRANSPORT_TLS);
+acct.register_account();
 ```
 
 ### Flutter (dart:ffi)
 
 ```yaml
-# ffigen.yaml
-name: LibBareBindings
-output: lib/src/baresdk_bindings.dart
-headers:
-  entry-points:
-    - dist/linux/x86_64/include/baresdk.h
+# pubspec.yaml
+dependencies:
+  baresdk:
+    path: path/to/baresdk/bindings/flutter
+```
+
+```bash
+dart run ffigen --config ffigen.yaml   # only needed when baresdk.h changes
+```
+
+### Swift Package (iOS)
+
+```swift
+// Package.swift
+.binaryTarget(name: "baresdk", path: "dist/ios/baresdk.xcframework")
 ```
 
 ### Kotlin Multiplatform (cinterop)
@@ -309,55 +443,23 @@ libraryPaths = dist/android/arm64-v8a
 includePaths = dist/android/arm64-v8a/include
 ```
 
-### Swift Package (iOS)
-
-```swift
-// Package.swift
-.binaryTarget(name: "baresdk",
-              path: "dist/ios/baresdk.xcframework")
-```
-
-### Python (cffi)
-
-baresdk is a static archive, so cffi cannot `dlopen` it directly. First build a thin shared wrapper and preprocess the header:
-
-```bash
-# Build shared library
-gcc -shared -o baresdk_shared.so \
-    -Wl,--whole-archive dist/linux/x86_64/baresdk.a -Wl,--no-whole-archive \
-    -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv
-
-# Preprocess header (strips system includes for cffi)
-gcc -E -P -undef -D__extension__= -m64 \
-    dist/linux/x86_64/include/baresdk.h -o baresdk_clean.h
-```
-
-Then load from Python:
-
-```python
-from cffi import FFI
-
-ffi = FFI()
-ffi.cdef(open("baresdk_clean.h").read())
-lib = ffi.dlopen("./baresdk_shared.so")
-
-print(ffi.string(lib.baresdk_version()).decode())  # "1.0.0"
-```
-
 ### Go (cgo)
 
 ```go
 // #cgo CFLAGS: -I/path/to/dist/linux/x86_64/include
-// #cgo LDFLAGS: /path/to/dist/linux/x86_64/baresdk.a -lpthread -lssl -lcrypto -lm -ldl
+// #cgo LDFLAGS: /path/to/dist/linux/x86_64/baresdk.so
 // #include <baresdk.h>
 import "C"
 ```
 
 ---
 
-## Link flags
+## Link flags (static archive only)
 
-| Platform | Flags |
+When linking against the **shared library** no extra flags are needed.
+When linking against the **static archive**:
+
+| Platform | Additional flags |
 |---|---|
 | Linux | `-lpthread -lssl -lcrypto -lz -lm -ldl -lresolv` |
 | Android | `-llog -lOpenSLES -landroid` (mbedTLS bundled — no OpenSSL) |
@@ -403,52 +505,42 @@ baresdk/
 │   ├── call.c                  # INVITE FSM, hold, DTMF, transfer
 │   ├── audio.c                 # mute, device selection
 │   ├── media_tap.c             # PCM tap via aufilt
+│   ├── record.c                # per-call WAV audio recording
 │   ├── transfer.c              # blind + attended transfer
 │   ├── message.c               # SIP MESSAGE send/receive
 │   ├── presence.c              # PUBLISH, BLF, MWI, 100rel
 │   ├── sdp.c                   # SDP offer/answer capture
 │   ├── stats.c                 # RTCP polling + MOS (E-model + simplified)
 │   ├── trace.c                 # SIP trace hook
-│   ├── pcap.c                  # pcap file writer (UDP + TCP framing)
-│   ├── timers.c                # config → baresip config mapping
+│   ├── pcap.c                  # pcap file writer
 │   ├── transport.c             # URL parsing, outbound builder
-│   ├── modules_init.c          # static module loading
-│   ├── log.c                   # baresip log → event queue
-│   ├── re_loop.c               # re_main thread
-│   ├── dns.c                   # RFC 3263 NAPTR→SRV resolution
-│   └── headers.c               # per-account + per-dialog custom headers
+│   └── modules_init.c          # static module loading
+├── bindings/
+│   ├── cpp/baresdk.hpp         # header-only C++17 RAII wrapper
+│   ├── python/                 # cffi-based Python package
+│   └── flutter/                # dart:ffi + ffigen Flutter package
 ├── platform/
-│   ├── linux/audio_linux.c     # platform audio stub
+│   ├── linux/audio_linux.c
 │   ├── android/audio_android.c
-│   ├── ios/audio_ios.m         # AVAudioSession (PlayAndRecord + VoiceChat)
+│   ├── ios/audio_ios.m
 │   ├── macos/audio_macos.c
 │   └── windows/audio_windows.c
 ├── test/
-│   ├── unit/                      # unit tests (no PBX required)
-│   │   ├── test_mos.c             # MOS calculation tests
-│   │   ├── test_url_parser.c      # transport URL parsing tests
-│   │   ├── test_mwi_parser.c      # MWI body parser tests
-│   │   ├── test_codec_str.c       # codec list builder tests
-│   │   └── test_transport_str.c   # transport/media-enc string tests
+│   ├── unit/                   # unit tests (no PBX required)
 │   ├── cli_harness.c           # register + call integration test
-│   ├── thread_safety_test.c    # N-thread TSan hammer
-│   └── pbx_compat.c            # 3CX · FreeSWITCH · Kamailio scenarios
-├── cmake/
-│   ├── MergeStaticLibs.cmake
-│   ├── modules-desktop.cmake
-│   └── modules-mobile.cmake
+│   ├── thread_safety_test.c    # TSan hammer
+│   └── pbx_compat.c            # 3CX · FreeSWITCH · Kamailio
+├── docs/
+│   ├── index.md
+│   └── guides/complete_example.md   # SDK usage guide (all languages)
 ├── scripts/
 │   ├── build-linux.sh
 │   ├── build-android.sh
 │   ├── build-ios.sh
 │   ├── build-macos.sh
 │   └── build-windows.ps1
-├── tools/
-│   ├── verify.sh               # symbol + linkability checks
-│   └── gen_hpp.py              # re-embeds baresdk.h into baresdk.hpp (run after header changes)
 └── third_party/
-    ├── re/                     # libre + librem (git submodule)
+    ├── re/                     # libre (git submodule)
     ├── baresip/                # baresip (git submodule)
     └── mbedtls/                # mobile TLS (git submodule)
 ```
-

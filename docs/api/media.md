@@ -115,6 +115,36 @@ baresdk_call_set_media_tap(call, NULL, NULL);   // remove tap
 
 ---
 
+## Audio recording
+
+Record a call's audio to a single WAV file (PCM S16LE). Both the received (RX) and sent (TX) audio are clip-summed into one stream — you hear both sides of the conversation.
+
+```c
+baresdk_call_record_start(call, "/tmp/call.wav");
+
+// Stop and finalize the WAV header
+baresdk_call_record_stop(call);
+```
+
+**Output format:** PCM S16LE WAV. Sample rate and channel count are taken from the first audio frame (e.g. 48 kHz/2ch for Opus, 8 kHz/1ch for G.711).
+
+**Typical usage — start on answer, stop on hangup:**
+
+```c
+case BARESDK_EV_CALL_STATE:
+    if (ev->u.call_state.state == BARESDK_CALL_ESTABLISHED)
+        baresdk_call_record_start(ev->u.call_state.call, "/tmp/call.wav");
+    if (ev->u.call_state.state == BARESDK_CALL_CLOSED)
+        baresdk_call_record_stop(ev->u.call_state.call);
+```
+
+**Notes:**
+- Returns `EALREADY` if recording is already active.
+- Always call `record_stop` before hangup to get a correctly finalized WAV header. If the call is destroyed first, the file is closed but sizes in the header will be wrong.
+- Recording is independent of the PCM media tap — both can be active simultaneously.
+
+---
+
 ## Media encryption
 
 | Enum | Description |

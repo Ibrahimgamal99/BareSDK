@@ -57,10 +57,11 @@ void main() async {
       print('Incoming from ${ev.fromUri}');
       ev.call.answer();
 
-    } else if (ev is CallStateEvent &&
-               ev.state == baresdk_call_state_t.BARESDK_CALL_ENDED) {
-      print('Call ended.');
-      break;
+    } else if (ev is CallStateEvent) {
+      final done = ev.state == baresdk_call_state_t.BARESDK_CALL_ENDED ||
+                   ev.state == baresdk_call_state_t.BARESDK_CALL_FAILED ||
+                   ev.state == baresdk_call_state_t.BARESDK_CALL_CANCELLED;
+      if (done) { print('Call ended.'); break; }
 
     } else if (ev is MediaStatsEvent) {
       print('MOS: ${ev.mosLq.toStringAsFixed(2)}  RTT: ${ev.rttMs.toStringAsFixed(0)} ms');

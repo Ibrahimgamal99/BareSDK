@@ -4,6 +4,22 @@ All notable changes to baresdk are documented here.
 
 ---
 
+## [1.2.0] — 2026-05-10
+
+### Added
+
+#### Audio recording
+- `baresdk_call_record_start(call, path)` — record call audio to a single mixed WAV file (PCM S16LE). Both the received (RX) and sent (TX) audio are clip-summed into one stream.
+- `baresdk_call_record_stop(call)` — stop recording and finalize the WAV header with correct sizes. The file is also closed automatically if the call is destroyed.
+- Recording runs independently of the PCM media tap — both can be active simultaneously on the same call.
+
+#### Registration retry control
+- `baresdk_account_set_retry_policy(acct, initial_ms, max_ms, backoff, max_attempts)` — override the retry policy for a specific account at runtime without recreating it. Overrides the global `reg_retry_*` fields in `baresdk_config_t` for that account only.
+- `baresdk_account_cancel_retry(acct)` — cancel a pending retry timer and reset the attempt counter. The account stays in `FAILED` state; call `baresdk_account_register()` to restart manually.
+- `baresdk_account_retry_now(acct)` — skip the current backoff delay and re-register immediately. Resets the attempt counter.
+
+---
+
 ## [1.1.0] — 2026-05-08
 
 ### Fixed — Critical call flow bugs

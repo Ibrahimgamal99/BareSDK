@@ -92,6 +92,12 @@ void bsdk_call_destructor(void *data)
 		mem_deref(hdr);
 	}
 	mtx_destroy(&lc->tap_lock);
+	/* Close any open recording files (if record_stop was never called) */
+	mtx_lock(&lc->rec_lock);
+	lc->rec_active = false;
+	if (lc->rec_file) { fclose(lc->rec_file); lc->rec_file = NULL; }
+	mtx_unlock(&lc->rec_lock);
+	mtx_destroy(&lc->rec_lock);
 }
 
 /* ── baresdk_call_invite ─────────────────────────────────────────────────── */
@@ -121,6 +127,7 @@ static void invite_fn(void *arg)
 	}
 	memset(lc, 0, sizeof(*lc));
 	mtx_init(&lc->tap_lock, mtx_plain);
+	mtx_init(&lc->rec_lock, mtx_plain);
 	list_init(&lc->custom_hdrs);
 	lc->bc    = bc;
 	lc->acct  = ctx->acct;

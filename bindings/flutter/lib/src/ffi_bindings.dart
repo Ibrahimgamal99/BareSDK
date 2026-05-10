@@ -477,6 +477,24 @@ class BareSDKBindings {
         int Function(Pointer<baresdk_account>)
       >('baresdk_account_unregister');
 
+  late final int Function(Pointer<baresdk_account>, int, int, double, int)
+      baresdk_account_set_retry_policy = _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_account>, Uint32, Uint32, Float, Uint32),
+        int Function(Pointer<baresdk_account>, int, int, double, int)
+      >('baresdk_account_set_retry_policy');
+
+  late final int Function(Pointer<baresdk_account>) baresdk_account_cancel_retry =
+      _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_account>),
+        int Function(Pointer<baresdk_account>)
+      >('baresdk_account_cancel_retry');
+
+  late final int Function(Pointer<baresdk_account>) baresdk_account_retry_now =
+      _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_account>),
+        int Function(Pointer<baresdk_account>)
+      >('baresdk_account_retry_now');
+
   late final int Function(Pointer<baresdk_account>, Pointer<Char>, Pointer<Char>)
       baresdk_account_add_header = _lib.lookupFunction<
         Int32 Function(Pointer<baresdk_account>, Pointer<Char>, Pointer<Char>),
@@ -628,4 +646,16 @@ class BareSDKBindings {
     Int32 Function(),
     int Function()
   >('baresdk_pcap_stop');
+
+  late final int Function(Pointer<baresdk_call>, Pointer<Char>)
+      baresdk_call_record_start = _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_call>, Pointer<Char>),
+        int Function(Pointer<baresdk_call>, Pointer<Char>)
+      >('baresdk_call_record_start');
+
+  late final int Function(Pointer<baresdk_call>) baresdk_call_record_stop =
+      _lib.lookupFunction<
+        Int32 Function(Pointer<baresdk_call>),
+        int Function(Pointer<baresdk_call>)
+      >('baresdk_call_record_stop');
 }

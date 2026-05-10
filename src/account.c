@@ -258,17 +258,21 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 {
 	const baresdk_config_t *cfg = &g_bsdk.cfg;
 
-	if (cfg->reg_retry_max_attempts > 0 &&
-	    acct->retry_attempt >= cfg->reg_retry_max_attempts) {
+	uint32_t initial_ms   = acct->retry_policy_set ? acct->retry_initial_ms   : cfg->reg_retry_initial_ms;
+	uint32_t max_ms       = acct->retry_policy_set ? acct->retry_max_ms       : cfg->reg_retry_max_ms;
+	float    backoff      = acct->retry_policy_set ? acct->retry_backoff      : cfg->reg_retry_backoff;
+	uint32_t max_attempts = acct->retry_policy_set ? acct->retry_max_attempts : cfg->reg_retry_max_attempts;
+
+	if (max_attempts > 0 && acct->retry_attempt >= max_attempts) {
 		info("baresdk: max retry attempts reached for account\n");
 		return;
 	}
 
-	uint32_t delay = cfg->reg_retry_initial_ms;
+	uint32_t delay = initial_ms;
 	for (uint32_t i = 0; i < acct->retry_attempt; i++) {
-		delay = (uint32_t)((float)delay * cfg->reg_retry_backoff);
-		if (delay >= cfg->reg_retry_max_ms) {
-			delay = cfg->reg_retry_max_ms;
+		delay = (uint32_t)((float)delay * backoff);
+		if (delay >= max_ms) {
+			delay = max_ms;
 			break;
 		}
 	}
@@ -430,7 +434,7 @@ static void destroy_fn(void *arg)
 void baresdk_account_destroy(baresdk_account_handle_t acct)
 {
 	if (!acct) return;
-	bsdk_dispatch(destroy_fn, acct);
+	bsdk_dispatch_sync(destroy_fn, acct);
 }
 
 static void register_fn(void *arg)
@@ -459,4 +463,62 @@ int baresdk_account_unregister(baresdk_account_handle_t acct)
 {
 	if (!acct) return BARESDK_ERR_INVAL;
 	return bsdk_dispatch(unregister_fn, acct);
+}
+
+/* ── Retry control ───────────────────────────────────────────────────────── */
+
+typedef struct {
+	baresdk_account_handle_t acct;
+	uint32_t initial_ms;
+	uint32_t max_ms;
+	float    backoff;
+	uint32_t max_attempts;
+} retry_policy_ctx_t;
+
+static void set_retry_policy_fn(void *arg)
+{
+	retry_policy_ctx_t *ctx = arg;
+	struct baresdk_account *acct = ctx->acct;
+	acct->retry_policy_set   = true;
+	acct->retry_initial_ms   = ctx->initial_ms;
+	acct->retry_max_ms       = ctx->max_ms;
+	acct->retry_backoff      = ctx->backoff;
+	acct->retry_max_attempts = ctx->max_attempts;
+}
+
+int baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
+                                      uint32_t initial_ms, uint32_t max_ms,
+                                      float backoff, uint32_t max_attempts)
+{
+	if (!acct) return BARESDK_ERR_INVAL;
+	retry_policy_ctx_t ctx = { acct, initial_ms, max_ms, backoff, max_attempts };
+	return bsdk_dispatch_sync(set_retry_policy_fn, &ctx);
+}
+
+static void cancel_retry_fn(void *arg)
+{
+	struct baresdk_account *acct = arg;
+	tmr_cancel(&acct->retry_tmr);
+	acct->retry_attempt = 0;
+}
+
+int baresdk_account_cancel_retry(baresdk_account_handle_t acct)
+{
+	if (!acct) return BARESDK_ERR_INVAL;
+	return bsdk_dispatch_sync(cancel_retry_fn, acct);
+}
+
+static void retry_now_fn(void *arg)
+{
+	struct baresdk_account *acct = arg;
+	tmr_cancel(&acct->retry_tmr);
+	acct->retry_attempt = 0;
+	if (!acct->destroyed && acct->ua)
+		ua_register(acct->ua);
+}
+
+int baresdk_account_retry_now(baresdk_account_handle_t acct)
+{
+	if (!acct) return BARESDK_ERR_INVAL;
+	return bsdk_dispatch_sync(retry_now_fn, acct);
 }

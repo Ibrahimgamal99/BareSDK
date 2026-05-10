@@ -557,6 +557,28 @@ BARESDK_EXPORT int baresdk_account_register(baresdk_account_handle_t acct);
 BARESDK_EXPORT int baresdk_account_unregister(baresdk_account_handle_t acct);
 
 /**
+ * Override the retry policy for this account. Takes effect on the next retry.
+ * Overrides the global reg_retry_* fields in baresdk_config_t for this account only.
+ * @param initial_ms   First retry delay in ms (e.g. 2000)
+ * @param max_ms       Maximum retry delay cap in ms (e.g. 300000)
+ * @param backoff      Delay multiplier per attempt (e.g. 2.0)
+ * @param max_attempts Max attempts before giving up; 0 = retry forever
+ */
+BARESDK_EXPORT int baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
+                                                     uint32_t initial_ms,
+                                                     uint32_t max_ms,
+                                                     float    backoff,
+                                                     uint32_t max_attempts);
+
+/** Cancel a pending retry timer and reset the attempt counter.
+ *  The account stays in FAILED state; call baresdk_account_register() to restart. */
+BARESDK_EXPORT int baresdk_account_cancel_retry(baresdk_account_handle_t acct);
+
+/** Skip the current backoff delay and re-register immediately.
+ *  Resets the attempt counter. No-op if the account is not in a retry loop. */
+BARESDK_EXPORT int baresdk_account_retry_now(baresdk_account_handle_t acct);
+
+/**
  * Add a custom SIP header to all outgoing requests for this account.
  * @param name   Header field name  (e.g. "X-Tenant-Id")
  * @param value  Header field value (e.g. "12345")
@@ -705,6 +727,20 @@ BARESDK_EXPORT int baresdk_audio_set_output_device(const char *name);
 BARESDK_EXPORT int baresdk_call_set_media_tap(baresdk_call_handle_t   call,
                                 baresdk_media_tap_cb_t  cb,
                                 void                   *userdata);
+
+/* ── Audio recording ──────────────────────────────────────────────────────── */
+
+/**
+ * Start recording call audio to a single mixed WAV file (PCM S16LE).
+ * Both the received (RX) and sent (TX) audio are clip-summed into one stream.
+ * The WAV header is written on the first audio frame and finalized on stop.
+ * Returns EALREADY if recording is already active.
+ */
+BARESDK_EXPORT int baresdk_call_record_start(baresdk_call_handle_t call,
+                                              const char *path);
+
+/** Stop recording and finalize WAV headers. Idempotent. */
+BARESDK_EXPORT int baresdk_call_record_stop(baresdk_call_handle_t call);
 
 /* ── Stats ────────────────────────────────────────────────────────────────── */
 

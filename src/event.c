@@ -204,6 +204,7 @@ static void bevent_handler(enum bevent_ev bev,
 		new_lc->acct  = acct;
 		new_lc->state = BARESDK_CALL_RINGING;
 		mtx_init(&new_lc->tap_lock, mtx_plain);
+		mtx_init(&new_lc->rec_lock, mtx_plain);
 		list_init(&new_lc->custom_hdrs);
 
 		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);

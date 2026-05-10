@@ -87,6 +87,9 @@ static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 		   af->sampc, af->srate, af->ch,
 		   af->timestamp, ud);
 	}
+	bsdk_record_write_frame(lc, BARESDK_MEDIA_DIR_TX,
+	                        (const int16_t *)af->sampv,
+	                        af->sampc, af->srate, af->ch);
 	return 0;
 }
 
@@ -109,6 +112,9 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 		   af->sampc, af->srate, af->ch,
 		   af->timestamp, ud);
 	}
+	bsdk_record_write_frame(lc, BARESDK_MEDIA_DIR_RX,
+	                        (const int16_t *)af->sampv,
+	                        af->sampc, af->srate, af->ch);
 	return 0;
 }
 

@@ -48,7 +48,8 @@ export BARESDK_LIB=/abs/path/to/baresdk.so
 ## Register and wait for a call
 
 ```python
-from baresdk import SDK, RegStateEvent, IncomingCallEvent, CallStateEvent, REG_REGISTERED
+from baresdk import (SDK, RegStateEvent, IncomingCallEvent, CallStateEvent,
+                     REG_REGISTERED, CALL_ENDED, CALL_FAILED, CALL_CANCELLED)
 
 with SDK(log_level=1) as sdk:
     account = sdk.create_account("alice@pbx.example.com", "secret")
@@ -62,7 +63,7 @@ with SDK(log_level=1) as sdk:
             print(f"Incoming call from {ev.from_uri}")
             ev.call.answer()
 
-        elif isinstance(ev, CallStateEvent) and ev.state in (4, 5, 6):  # ENDED/CANCELLED/FAILED
+        elif isinstance(ev, CallStateEvent) and ev.state in (CALL_ENDED, CALL_FAILED, CALL_CANCELLED):
             print("Call ended.")
             break
 

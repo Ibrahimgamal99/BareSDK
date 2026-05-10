@@ -35,7 +35,7 @@ baresdk_account_unregister(acct);
 
 ```c
 baresdk_account_destroy(acct);
-// automatically unregisters first; terminates all active calls on this account
+// blocks until unregistered and all calls on this account are terminated
 ```
 
 ## Custom SIP headers
@@ -67,6 +67,56 @@ baresdk_account_subscribe_presence(acct, "bob@pbx.example.com");
 
 baresdk_account_unsubscribe_presence(acct, "bob@pbx.example.com");
 ```
+
+## Registration retry control
+
+The SDK retries failed registrations automatically with exponential backoff. These functions let you override the policy or control the retry loop at runtime.
+
+### Override retry policy
+
+```c
+// Override per-account (takes effect on the next retry)
+baresdk_account_set_retry_policy(
+    acct,
+    2000,    // initial_ms   — first retry delay
+    60000,   // max_ms       — delay cap
+    1.5f,    // backoff      — multiplier per attempt
+    10       // max_attempts — 0 = retry forever
+);
+```
+
+Per-account policy overrides the global `reg_retry_*` fields in `baresdk_config_t` for that account only.
+
+### Cancel a pending retry
+
+```c
+baresdk_account_cancel_retry(acct);
+// Stops the backoff timer and resets the attempt counter.
+// The account stays in FAILED state — call baresdk_account_register() to restart.
+```
+
+### Force immediate retry
+
+```c
+baresdk_account_retry_now(acct);
+// Cancels the current backoff delay and re-registers immediately.
+// Resets the attempt counter. No-op if not in a retry loop.
+```
+
+### Retry events
+
+Every scheduled retry fires `BARESDK_EV_REG_STATE` with `state == BARESDK_REG_FAILED`:
+
+```c
+case BARESDK_EV_REG_STATE:
+    if (ev->u.reg.state == BARESDK_REG_FAILED) {
+        printf("retry %u in %u ms\n",
+               ev->u.reg.retry_attempt,
+               ev->u.reg.retry_delay_ms);
+    }
+```
+
+---
 
 ## 100rel (RFC 3262 PRACK)
 

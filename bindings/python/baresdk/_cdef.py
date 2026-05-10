@@ -360,6 +360,11 @@ int  baresdk_account_create(const baresdk_account_config_t *cfg,
 void baresdk_account_destroy(baresdk_account_handle_t acct);
 int  baresdk_account_register(baresdk_account_handle_t acct);
 int  baresdk_account_unregister(baresdk_account_handle_t acct);
+int  baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
+                                       uint32_t initial_ms, uint32_t max_ms,
+                                       float backoff, uint32_t max_attempts);
+int  baresdk_account_cancel_retry(baresdk_account_handle_t acct);
+int  baresdk_account_retry_now(baresdk_account_handle_t acct);
 int  baresdk_account_add_header(baresdk_account_handle_t acct,
                                  const char *name, const char *value);
 int  baresdk_account_subscribe_presence(baresdk_account_handle_t acct,
@@ -390,6 +395,8 @@ int  baresdk_call_get_stats(baresdk_call_handle_t call,
 int  baresdk_call_set_media_tap(baresdk_call_handle_t   call,
                                  baresdk_media_tap_cb_t  cb,
                                  void                   *userdata);
+int  baresdk_call_record_start(baresdk_call_handle_t call, const char *path);
+int  baresdk_call_record_stop(baresdk_call_handle_t call);
 
 /* ── Messaging & audio ───────────────────────────────────────────────────── */
 int  baresdk_message_send(baresdk_account_handle_t account,

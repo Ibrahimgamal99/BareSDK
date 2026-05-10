@@ -49,6 +49,16 @@ Each platform build script produces both the static archive (`baresdk.a` / `bare
 
 ---
 
+## SDK usage guide
+
+**[How to use the SDK — all languages (C/C++, Python, Flutter)](guides/complete_example.md)**
+
+Covers every operation in one place: account setup, transport, STUN/TURN/ICE,
+calls, hold, mute, transfer, stats, audio devices, and more — with code for
+all three languages side by side.
+
+---
+
 ## API reference
 
 - [Overview & architecture](api/overview.md)

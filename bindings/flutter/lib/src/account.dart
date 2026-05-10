@@ -18,6 +18,21 @@ class Account {
     internal.nativeBindings.baresdk_account_unregister(_handle);
   }
 
+  int setRetryPolicy({
+    required int initialMs,
+    required int maxMs,
+    required double backoff,
+    int maxAttempts = 0,
+  }) =>
+      internal.nativeBindings.baresdk_account_set_retry_policy(
+          _handle, initialMs, maxMs, backoff, maxAttempts);
+
+  int cancelRetry() =>
+      internal.nativeBindings.baresdk_account_cancel_retry(_handle);
+
+  int retryNow() =>
+      internal.nativeBindings.baresdk_account_retry_now(_handle);
+
   void addHeader(String name, String value) {
     final np = name.toNativeUtf8().cast<Char>();
     final vp = value.toNativeUtf8().cast<Char>();

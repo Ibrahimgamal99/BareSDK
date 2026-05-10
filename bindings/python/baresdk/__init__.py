@@ -315,6 +315,14 @@ class Call:
         lib.baresdk_call_get_stats(self._h, s)
         return s[0]
 
+    def record_start(self, path: str):
+        """Record mixed call audio (RX+TX) to a single WAV file."""
+        _check(lib.baresdk_call_record_start(self._h, path.encode()), "record_start")
+
+    def record_stop(self):
+        """Stop recording and finalize WAV headers."""
+        lib.baresdk_call_record_stop(self._h)
+
     @property
     def handle(self):
         return self._h
@@ -343,6 +351,21 @@ class Account:
 
     def unregister(self):
         lib.baresdk_account_unregister(self._h)
+
+    def set_retry_policy(self, initial_ms: int, max_ms: int,
+                         backoff: float, max_attempts: int = 0):
+        """Override the retry policy for this account."""
+        _check(lib.baresdk_account_set_retry_policy(
+            self._h, initial_ms, max_ms, backoff, max_attempts),
+            "set_retry_policy")
+
+    def cancel_retry(self):
+        """Cancel a pending retry timer. Account stays FAILED."""
+        lib.baresdk_account_cancel_retry(self._h)
+
+    def retry_now(self):
+        """Skip the current backoff delay and re-register immediately."""
+        lib.baresdk_account_retry_now(self._h)
 
     def call(self, uri: str) -> Call:
         ch = ffi.new("baresdk_call_handle_t *")

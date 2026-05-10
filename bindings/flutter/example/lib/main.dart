@@ -21,6 +21,8 @@ class _PhonePageState extends State<PhonePage> {
   late final BareSDK  _sdk;
   late final Account  _account;
 
+  final _calleeCtrl = TextEditingController();
+
   String  _status  = 'Initializing...';
   String  _stats   = '';
   Call?   _call;
@@ -34,7 +36,7 @@ class _PhonePageState extends State<PhonePage> {
     _account = _sdk.createAccount(
       'alice@pbx.example.com',
       'secret',
-      transport: baresdk_transport_t.BARESDK_TRANSPORT_TLS,
+      transport: baresdk_transport_t.BARESDK_TRANSPORT_UDP,
     );
 
     _account.events.listen((ev) {
@@ -51,7 +53,8 @@ class _PhonePageState extends State<PhonePage> {
         });
       } else if (ev is CallStateEvent) {
         final done = ev.state == baresdk_call_state_t.BARESDK_CALL_ENDED ||
-                     ev.state == baresdk_call_state_t.BARESDK_CALL_FAILED;
+                     ev.state == baresdk_call_state_t.BARESDK_CALL_FAILED ||
+                     ev.state == baresdk_call_state_t.BARESDK_CALL_CANCELLED;
         setState(() {
           _status = done ? 'Call ended' : 'Call state: ${ev.state}';
           if (done) { _call = null; _stats = ''; _muted = false; _mutedRx = false; }
@@ -82,9 +85,18 @@ class _PhonePageState extends State<PhonePage> {
 
   @override
   void dispose() {
+    _calleeCtrl.dispose();
     _account.destroy();
     _sdk.shutdown();
     super.dispose();
+  }
+
+  void _dial() {
+    final uri = _calleeCtrl.text.trim();
+    if (uri.isEmpty) return;
+    final callee = uri.startsWith('sip:') ? uri : 'sip:$uri';
+    final call = _account.call(callee);
+    setState(() => _call = call);
   }
 
   void _toggleMute() {
@@ -131,15 +143,24 @@ class _PhonePageState extends State<PhonePage> {
 
             const SizedBox(height: 24),
 
-            if (_call == null)
-              ElevatedButton(
-                onPressed: () {
-                  final call = _account.call('bob@pbx.example.com');
-                  setState(() => _call = call);
-                },
-                child: const Text('Call Bob'),
-              )
-            else
+            if (_call == null) ...[
+              TextField(
+                controller: _calleeCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Callee URI',
+                  hintText: 'bob@pbx.example.com',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.url,
+                onSubmitted: (_) => _dial(),
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.call),
+                label: const Text('Dial'),
+                onPressed: _dial,
+              ),
+            ] else
               Column(
                 children: [
                   Row(

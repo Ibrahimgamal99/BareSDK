@@ -95,9 +95,9 @@ int main(int argc, char* argv[]) {
 
     /* ── SDK setup ──────────────────────────────────────────────────────── */
     baresdk::SDK sdk;
-    sdk.config().log_level         = 2;   /* 0=err 1=warn 2=info 3=debug */
+    sdk.config().log_level         = 1;   /* 0=err 1=warn 2=info 3=debug */
     sdk.config().stats_interval_ms = 5000;
-    sdk.config().trace_sip         = true;
+    sdk.config().trace_sip         = false;
 
     sdk.on_event([&](const baresdk_event_t& ev) {
         switch (ev.type) {
@@ -197,15 +197,24 @@ int main(int argc, char* argv[]) {
                     [&]{ return call_established || call_done; });
         if (!call_established) return 0;
 
-        /* Hold the call for 10 s then hang up */
         lk.unlock();
-        std::this_thread::sleep_for(std::chrono::seconds(10));
-        active_call.hangup();
+        std::cout << "Call active. Press 'h' + Enter to hang up.\n";
+
+        std::thread input_thread([&]{
+            char c;
+            while (std::cin.get(c)) {
+                if (c == 'h' || c == 'H') {
+                    active_call.hangup();
+                    break;
+                }
+            }
+        });
+        input_thread.detach();
 
         std::unique_lock<std::mutex> lk2(mtx);
-        cv.wait_for(lk2, std::chrono::seconds(5), [&]{ return call_done; });
+        cv.wait(lk2, [&]{ return call_done; });
     } else {
-        std::cout << "Waiting for incoming call (30 s)...\n";
+        std::cout << "Waiting for incoming call...\n";
         std::unique_lock<std::mutex> lk(mtx);
         cv.wait_for(lk, std::chrono::seconds(30), [&]{ return incoming_call || call_done; });
 
@@ -226,7 +235,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             lk.lock();
-            cv.wait_for(lk, std::chrono::seconds(30), [&]{ return call_done; });
+            cv.wait(lk, [&]{ return call_done; });
         }
     }
 

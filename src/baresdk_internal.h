@@ -98,6 +98,11 @@ struct baresdk_account {
 	char                      reg_error_str[256];
 	uint32_t                  retry_attempt;
 	struct tmr                retry_tmr;
+	bool                      retry_policy_set;
+	uint32_t                  retry_initial_ms;
+	uint32_t                  retry_max_ms;
+	float                     retry_backoff;
+	uint32_t                  retry_max_attempts;
 	bool                      destroyed;
 	struct list               custom_hdrs;
 };
@@ -118,6 +123,16 @@ struct baresdk_call {
 	baresdk_media_tap_cb_t     tap_cb;
 	void                      *tap_userdata;
 	mtx_t                      tap_lock;
+	/* Audio recording (WAV) */
+	FILE                      *rec_file;        /* single mixed output file */
+	mtx_t                      rec_lock;
+	uint32_t                   rec_data_bytes;
+	uint32_t                   rec_srate;
+	uint8_t                    rec_ch;
+	bool                       rec_hdr_written;
+	bool                       rec_active;
+	int16_t                    rec_tx_buf[4096]; /* last TX frame for mixing */
+	size_t                     rec_tx_count;
 	/* Per-dialog custom headers (linked list of bsdk_custom_hdr) */
 	struct list                custom_hdrs;
 };
@@ -174,6 +189,11 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct);
 /* ── call.c ────────────────────────────────────────────────────────────── */
 
 void bsdk_call_destructor(void *data);  /* mem_alloc destructor for call wrappers */
+/* ── record.c ──────────────────────────────────────────────────────────── */
+
+void bsdk_record_write_frame(struct baresdk_call *lc, baresdk_media_dir_t dir,
+                              const int16_t *pcm, size_t samples,
+                              uint32_t srate, uint8_t ch);
 struct baresdk_call *bsdk_call_find(const struct call *bc);
 void bsdk_call_register(struct baresdk_call *lc);
 void bsdk_call_unregister(struct baresdk_call *lc);

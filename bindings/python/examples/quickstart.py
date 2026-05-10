@@ -16,13 +16,14 @@ Usage:
 
 import math
 import sys
-import time
 import threading
 
 from baresdk import (
     SDK,
     RegStateEvent, IncomingCallEvent, CallStateEvent, MediaStatsEvent,
-    REG_REGISTERED, CALL_ESTABLISHED, CALL_ENDED, CALL_FAILED, CALL_CANCELLED,
+    REG_REGISTERED, REG_FAILED,
+    CALL_CALLING, CALL_RINGING, CALL_ESTABLISHED, CALL_HELD,
+    CALL_ENDED, CALL_CANCELLED, CALL_FAILED,
     TRANSPORT_UDP,
 )
 
@@ -36,6 +37,16 @@ callee   = sys.argv[3] if len(sys.argv) >= 4 else None
 
 if callee and not callee.startswith("sip:"):
     callee = "sip:" + callee
+
+_STATE_NAMES = {
+    CALL_CALLING:     "CALLING",
+    CALL_RINGING:     "RINGING",
+    CALL_ESTABLISHED: "ESTABLISHED",
+    CALL_HELD:        "HELD",
+    CALL_ENDED:       "ENDED",
+    CALL_CANCELLED:   "CANCELLED",
+    CALL_FAILED:      "FAILED",
+}
 
 
 def print_devices(sdk):
@@ -80,19 +91,27 @@ def print_stats(s: MediaStatsEvent):
     )
 
 
-# ── Start SDK ──────────────────────────────────────────────────────────────────
-incoming_call = threading.Event()
-call_done     = threading.Event()
-active_call   = None
-call_lock     = threading.Lock()
+# ── Shared state ───────────────────────────────────────────────────────────────
+call_done   = threading.Event()
+active_call = None
+call_lock   = threading.Lock()
 
+
+def _stdin_watch(prompt_char, action):
+    """Background thread: read lines from stdin, call action() on prompt_char."""
+    for line in sys.stdin:
+        if line.strip().lower() == prompt_char:
+            action()
+            break
+
+
+# ── Start SDK ──────────────────────────────────────────────────────────────────
 with SDK(log_level=1, stats_interval_ms=5000) as sdk:
-    print(f"baresdk version: {sdk.version}")
 
     account = sdk.create_account(sip_uri, password, TRANSPORT_UDP)
     account.register()
 
-    for ev in account.events(timeout=60):
+    for ev in account.events():
 
         if isinstance(ev, RegStateEvent):
             if ev.state == REG_REGISTERED:
@@ -104,8 +123,8 @@ with SDK(log_level=1, stats_interval_ms=5000) as sdk:
                         active_call = account.call(callee)
                 else:
                     print("Waiting for incoming call ...")
-            elif ev.error_str:
-                print(f"Registration failed: {ev.error_str}")
+            elif ev.state == REG_FAILED:
+                print(f"Registration failed: {ev.error_str or '?'}")
                 break
 
         elif isinstance(ev, IncomingCallEvent):
@@ -113,38 +132,51 @@ with SDK(log_level=1, stats_interval_ms=5000) as sdk:
             print("Press 'a' + Enter to answer, 'r' + Enter to reject")
             with call_lock:
                 active_call = ev.call
-            incoming_call.set()
+
+            def _answer_or_reject():
+                for line in sys.stdin:
+                    ch = line.strip().lower()
+                    if ch == 'a':
+                        with call_lock:
+                            if active_call:
+                                try:
+                                    active_call.answer()
+                                except Exception as e:
+                                    print(f"answer failed: {e}")
+                        break
+                    elif ch == 'r':
+                        with call_lock:
+                            if active_call:
+                                active_call.hangup()
+                        break
+
+            threading.Thread(target=_answer_or_reject, daemon=True).start()
 
         elif isinstance(ev, CallStateEvent):
-            print(f"Call state: {ev.state}"
-                  + (f"  reason={ev.reason!r}" if ev.reason else ""))
+            sname = _STATE_NAMES.get(ev.state, str(ev.state))
+            msg = f"Call state: {sname} ({ev.state})"
+            if ev.reason:
+                msg += f"  reason={ev.reason!r}"
+            print(msg)
+
+            if ev.state == CALL_ESTABLISHED and callee:
+                print("Call active. Press 'h' + Enter to hang up.")
+
+                def _hangup():
+                    with call_lock:
+                        if active_call:
+                            active_call.hangup()
+
+                threading.Thread(
+                    target=_stdin_watch, args=('h', _hangup), daemon=True
+                ).start()
+
             if ev.state in (CALL_ENDED, CALL_FAILED, CALL_CANCELLED):
-                print("Call done.")
                 call_done.set()
                 break
-            if ev.state == CALL_ESTABLISHED:
-                time.sleep(10)
-                with call_lock:
-                    if active_call:
-                        active_call.hangup()
 
         elif isinstance(ev, MediaStatsEvent):
             print_stats(ev)
-
-        if incoming_call.is_set() and not call_done.is_set():
-            choice = input().strip().lower()
-            if choice == 'a':
-                with call_lock:
-                    if active_call:
-                        try:
-                            active_call.answer()
-                        except Exception as e:
-                            print(f"answer failed: {e}")
-            elif choice == 'r':
-                with call_lock:
-                    if active_call:
-                        active_call.hangup()
-            incoming_call.clear()
 
     account.destroy()
 
