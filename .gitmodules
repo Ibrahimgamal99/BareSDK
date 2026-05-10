@@ -16,3 +16,6 @@
 	# to avoid mbedTLS ABI/symbol drift (especially in dtls_srtp).
 	# Recommended: v3.6.x (LTS)
 	branch = v3.6-branch
+[submodule "third_party/opus"]
+	path = third_party/opus
+	url = https://github.com/xiph/opus.git
