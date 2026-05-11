@@ -15,7 +15,7 @@
 	# Pin to a specific release tag — must match what re was compiled with
 	# to avoid mbedTLS ABI/symbol drift (especially in dtls_srtp).
 	# Recommended: v3.6.x (LTS)
-	branch = v3.6-branch
+	branch = mbedtls-3.6
 [submodule "third_party/opus"]
 	path = third_party/opus
 	url = https://github.com/xiph/opus.git
