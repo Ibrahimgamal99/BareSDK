@@ -18,7 +18,7 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 | **Reliability** | PRACK / 100rel (RFC 3262) |
 | **Push notifications** | RFC 8599 Contact URI params (APNs · FCM) · REGISTER-only custom headers for hosted servers |
 | **Custom Headers** | Per-account + per-dialog (call) custom SIP headers |
-| **Media** | PCM tap (TX/RX) · Audio recording to WAV (per-direction) · TX mute · RX mute (speaker) · device enumerate + hot-switch |
+| **Media** | PCM tap (TX/RX) · Audio recording to WAV (per-direction) · TX mute · RX mute (speaker) · device enumerate + hot-switch · mic gain · speaker gain · echo cancellation (half-duplex suppressor or WebRTC full-duplex) |
 | **Observability** | SIP trace · SDP diff · pcap · RTCP/MOS stats (E-model + simplified) · jitter buffer · audio level · bandwidth (instant + avg, TX/RX) |
 | **Multi-account** | Yes — any number of accounts per stack |
 | **Thread safety** | Full — call any API from any thread |
@@ -85,8 +85,11 @@ bash bindings/cpp/build.sh
 
 ```bash
 bash bindings/python/build.sh
-# builds SDK if needed, installs the Python package
-# library is auto-discovered — no LD_LIBRARY_PATH required
+# 1. builds SDK if needed
+# 2. regenerates the cffi header from include/baresdk.h
+# 3. copies .so into the package directory
+# 4. installs the Python package
+# no LD_LIBRARY_PATH required; set it to override the bundled .so
 ```
 
 ### Flutter
@@ -182,6 +185,19 @@ int  baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_
 /* Device selection — takes effect immediately on active calls */
 int  baresdk_audio_set_input_device(const char *name);   // NULL = platform default
 int  baresdk_audio_set_output_device(const char *name);
+
+/* Gain control — dB, clamped to [-20, +20]; 0.0 = unity (fast-path bypass) */
+void baresdk_set_mic_gain_db(float db);      // TX manual gain, safe from any thread
+void baresdk_set_speaker_gain_db(float db);  // RX manual gain, safe from any thread
+
+/* Echo cancellation */
+void baresdk_set_aec(bool enable);                        // simple on/off
+int  baresdk_set_aec_mode(baresdk_aec_mode_t mode);       // AEC_OFF / AEC_SUPPRESSOR / AEC_WEBRTC
+void baresdk_set_aec_suppression_level(float level);      // 0=none .. 1=max (SUPPRESSOR only)
+
+/* Other DSP filters */
+void baresdk_set_ns(bool enable);   // noise suppression
+void baresdk_set_agc(bool enable);  // automatic gain control
 
 /* PCM tap */
 int  baresdk_call_set_media_tap(baresdk_call_handle_t call,
@@ -331,8 +347,8 @@ cfg.audio_codec_name_count = 3;
 
 **Python:**
 ```python
-account = sdk.create_account("alice@pbx.example.com", "secret",
-                             audio_codecs=["ulaw", "alaw", "opus"])
+account = create_account(sdk, "alice@pbx.example.com", "secret",
+                         audio_codecs=["ulaw", "alaw", "opus"])
 ```
 
 **Flutter:**
@@ -430,17 +446,33 @@ target_link_libraries(my_app dist/linux/x86_64/baresdk.so)
 bash bindings/python/build.sh
 ```
 
-Builds the SDK and installs the package. The shared library is auto-discovered from `dist/` — no `LD_LIBRARY_PATH` or manual copy needed. Then:
+Builds the SDK, regenerates the cffi header, copies the `.so` into the package directory, and installs the package. No `LD_LIBRARY_PATH` needed. Set it to override the bundled copy, e.g. to test a different build:
+
+```bash
+export LD_LIBRARY_PATH=/path/to/other/build:$LD_LIBRARY_PATH
+```
+
+Then:
 
 ```python
-from baresdk import SDK, RegStateEvent, IncomingCallEvent, TRANSPORT_TLS
+from baresdk import SDK, create_account, register, dial, hangup, answer
 
-with SDK(log_level=1, transport=TRANSPORT_TLS, server_host="pbx.example.com") as sdk:
-    account = sdk.create_account("alice@pbx.example.com", "secret")
-    account.register()
+with SDK(log_level=1) as sdk:
+    account = create_account(sdk, "alice@pbx.example.com", "secret",
+                             transport="tls", server_host="pbx.example.com")
+    register(account)
+
     for ev in account.events(timeout=30):
-        if isinstance(ev, RegStateEvent):
-            print(f"Registered: {ev.state}")
+        if ev.type == "reg_state" and ev.state == "registered":
+            print("Registered!")
+            call = dial(account, "bob@pbx.example.com")
+
+        elif ev.type == "incoming_call":
+            answer(ev.call)
+
+        elif ev.type == "call_state" and ev.state in ("ended", "failed", "cancelled"):
+            break
+
     account.destroy()
 ```
 

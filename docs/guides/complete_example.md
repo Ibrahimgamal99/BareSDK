@@ -26,7 +26,11 @@ then jump to whichever operation you need.
 | Attended transfer | ✓ | ✓ | — | — |
 | Custom SIP headers | ✓ | ✓ | ✓ | ✓ |
 | Audio devices | ✓ | ✓ | ✓ | ✓ |
-| AEC / NS / AGC (runtime toggle) | ✓ | ✓ | ✓ | ✓ |
+| AEC on/off + mode (SUPPRESSOR/WEBRTC) | ✓ | ✓ | ✓ | ✓ |
+| AEC suppression level tuning | ✓ | ✓ | ✓ | — |
+| Mic gain (dB) | ✓ | ✓ | ✓ | — |
+| Speaker gain (dB) | ✓ | ✓ | ✓ | — |
+| NS / AGC (runtime toggle) | ✓ | ✓ | ✓ | ✓ |
 | Jitter buffer (runtime) | ✓ | ✓ | ✓ | ✓ |
 | Per-call DSCP / QoS | ✓ | ✓ | ✓ | ✓ |
 | Stats (on demand) | ✓ | ✓ | ✓ | — |
@@ -75,9 +79,15 @@ cfg.media_enc         = BARESDK_MEDIA_ENC_SDES;   /* NONE / SDES / DTLS_SRTP */
 cfg.audio_codecs[0]   = BARESDK_CODEC_OPUS;
 cfg.audio_codecs[1]   = BARESDK_CODEC_PCMU;
 cfg.audio_codec_count = 2;
-cfg.aec = true;   /* echo cancellation */
+cfg.aec_mode              = BARESDK_AEC_SUPPRESSOR; /* half-duplex suppressor (default) */
+/* cfg.aec_mode           = BARESDK_AEC_WEBRTC; full-duplex — desktop only, opt-in build */
+cfg.aec_suppression_level = 1.0f;  /* 0=off .. 1=max; default 1.0 */
+cfg.mic_gain_db           = 0.0f;  /* TX gain dB, [-20,+20]; 0=unity */
+cfg.speaker_gain_db       = 0.0f;  /* RX gain dB, [-20,+20]; 0=unity */
 cfg.ns  = true;   /* noise suppression  */
 cfg.agc = true;   /* auto gain control  */
+cfg.jitter_buffer_min_ms = 20;   /* adaptive JB lower bound (0 = fixed 100 ms default) */
+cfg.jitter_buffer_max_ms = 300;  /* adaptive JB upper bound */
 
 /* Observability */
 cfg.stats_interval_ms = 5000;   /* MEDIA_STATS event every 5 s */
@@ -111,7 +121,11 @@ cfg.turn_pass    = "turn_secret";
 cfg.media_enc         = BARESDK_MEDIA_ENC_SDES;
 cfg.audio_codecs[0]   = BARESDK_CODEC_OPUS;
 cfg.audio_codec_count = 1;
-cfg.aec = cfg.ns = cfg.agc = true;
+cfg.aec_mode              = BARESDK_AEC_SUPPRESSOR;
+cfg.aec_suppression_level = 1.0f;
+cfg.ns = cfg.agc = true;
+cfg.jitter_buffer_min_ms = 20;
+cfg.jitter_buffer_max_ms = 300;
 cfg.stats_interval_ms = 5000;
 cfg.log_level         = 1;
 
@@ -124,24 +138,22 @@ sdk.on_event([](const baresdk_event_t& ev) {
 
 **Python**
 ```python
-from baresdk import (SDK, TRANSPORT_TLS, MEDIA_ENC_SDES)
+from baresdk import SDK
+
+from baresdk import SDK, AEC_SUPPRESSOR
 
 sdk = SDK(
-    transport        = TRANSPORT_TLS,
-    server_host      = "pbx.example.com",
-    ca_cert_path     = "/etc/ssl/certs/ca-bundle.crt",
+    log_level        = 1,
+    stats_interval_ms= 5000,
     verify_server    = True,
-    ice_enabled      = True,
-    stun_server      = "stun:stun.l.google.com:19302",
-    turn_server      = "turn:turn.example.com:3478",
-    turn_user        = "alice",
-    turn_pass        = "turn_secret",
-    media_enc        = MEDIA_ENC_SDES,
-    aec              = True,
+    aec_mode         = AEC_SUPPRESSOR,  # or AEC_WEBRTC for full-duplex (desktop opt-in)
+    aec_suppression_level = 1.0,        # 0=off .. 1=max
+    mic_gain_db      = 0.0,             # 0=unity; +6 boosts a quiet USB mic
+    speaker_gain_db  = 0.0,
     ns               = True,
     agc              = True,
-    stats_interval_ms= 5000,
-    log_level        = 1,
+    jitter_buffer_min_ms = 20,
+    jitter_buffer_max_ms = 300,
 )
 # SDK() accepts every field from baresdk_config_t as a keyword argument.
 ```
@@ -255,14 +267,14 @@ acct.register_account();
 
 **Python**
 ```python
-from baresdk import TRANSPORT_TLS, MEDIA_ENC_SDES
+from baresdk import create_account, register
 
-# Pass codec names as a list of strings — aliases are resolved automatically.
-account = sdk.create_account(
+# transport and media_enc accept strings — no constants needed.
+account = create_account(sdk,
     "alice@pbx.example.com", "secret",
-    transport    = TRANSPORT_TLS,
+    transport    = "tls",
     display_name = "Alice",
-    media_enc    = MEDIA_ENC_SDES,
+    media_enc    = "sdes",
     ice_enabled  = True,
     stun_server  = "stun:stun.l.google.com:19302",
     turn_server  = "turn:turn.example.com:3478",
@@ -270,9 +282,9 @@ account = sdk.create_account(
     turn_pass    = "turn_secret",
     verify_tls   = True,
     audio_codecs = ["ulaw", "alaw", "opus"],
+    extra_headers = {"X-Tenant-Id": "42"},
 )
-account.add_header("X-Tenant-Id", "42")
-account.register()
+register(account)
 ```
 
 **Flutter**
@@ -410,59 +422,52 @@ sdk.on_event([&](const baresdk_event_t& ev) {
 
 **Python**
 ```python
-from baresdk import (
-    RegStateEvent, IncomingCallEvent, CallStateEvent, CallDtmfEvent,
-    SdpNegotiationEvent, MediaStatsEvent, TransferRequestEvent,
-    MessageEvent, MwiEvent, PresenceStateEvent, SipTraceEvent,
-    REG_REGISTERED, REG_FAILED,
-    CALL_ENDED, CALL_FAILED, CALL_CANCELLED,
-)
-
+# No constants needed — events have a .type string and string states.
 active_call = None
 
 for ev in account.events():
 
-    if isinstance(ev, RegStateEvent):
-        if ev.state == REG_REGISTERED:
+    if ev.type == "reg_state":
+        if ev.state == "registered":
             print("Registered")
-        elif ev.state == REG_FAILED:
+        elif ev.state == "failed":
             print(f"Reg failed: {ev.error_str}  retry in {ev.retry_delay_ms} ms")
 
-    elif isinstance(ev, IncomingCallEvent):
+    elif ev.type == "incoming_call":
         print(f"Incoming from {ev.from_uri}")
         active_call = ev.call
         active_call.answer()
 
-    elif isinstance(ev, CallStateEvent):
-        print(f"Call state {ev.state}  reason: {ev.reason}")
-        if ev.state in (CALL_ENDED, CALL_FAILED, CALL_CANCELLED):
+    elif ev.type == "call_state":
+        print(f"Call state: {ev.state}  reason: {ev.reason}")
+        if ev.state in ("ended", "failed", "cancelled"):
             active_call = None
             break
 
-    elif isinstance(ev, CallDtmfEvent):
+    elif ev.type == "dtmf":
         print(f"DTMF: {ev.digit}")
 
-    elif isinstance(ev, SdpNegotiationEvent):
+    elif ev.type == "sdp_negotiation":
         print(f"Codec: {ev.negotiated_codec}  Crypto: {ev.negotiated_crypto}")
 
-    elif isinstance(ev, MediaStatsEvent):
+    elif ev.type == "media_stats":
         print(f"MOS-LQ {ev.mos_lq:.2f}  RTT {ev.rtt_ms:.0f} ms  "
               f"loss TX {ev.loss_pct:.1f}%  RX {ev.loss_pct_rx:.1f}%")
 
-    elif isinstance(ev, TransferRequestEvent):
+    elif ev.type == "transfer_request":
         print(f"Transfer to {ev.refer_to_uri}  attended={ev.has_replaces}")
 
-    elif isinstance(ev, MessageEvent):
+    elif ev.type == "message":
         print(f"MESSAGE from {ev.from_uri}: {ev.body}")
 
-    elif isinstance(ev, MwiEvent):
+    elif ev.type == "mwi":
         print(f"Voicemail: {ev.new_voice} new, {ev.old_voice} old")
 
-    elif isinstance(ev, PresenceStateEvent):
+    elif ev.type == "presence_state":
         print(f"Presence {ev.target_uri} → {ev.status}")
 
-    elif isinstance(ev, SipTraceEvent):
-        arrow = ">>>" if ev.direction == 1 else "<<<"
+    elif ev.type == "sip_trace":
+        arrow = ">>>" if ev.direction == "tx" else "<<<"
         print(f"{arrow}\n{ev.raw_message}\n---")
 ```
 
@@ -528,7 +533,9 @@ auto call = acct.call("sip:bob@pbx.example.com");
 
 **Python**
 ```python
-call = account.call("sip:bob@pbx.example.com")
+from baresdk import dial
+
+call = dial(account, "bob@pbx.example.com")   # sip: prefix added automatically
 ```
 
 **Flutter**
@@ -850,14 +857,17 @@ elif isinstance(ev, MediaStatsEvent):
 | `loss_pct_rx` / `packets_lost_rx` | same | `lossPctRx` / `packetsLostRx` | RX-side loss |
 | `bandwidth_kbps_tx/rx` | same | `bandwidthTx/Rx` | Current bitrate |
 | `avg_bandwidth_kbps_tx/rx` | same | `avgBandwidthTx/Rx` | Session-average bitrate |
-| `jitter_buffer_ms` | same | `jitterBufferMs` | Adaptive buffer depth |
+| `jitter_buffer_ms` | same | `jitterBufferMs` | Current buffer depth (ms); 100 ms when FIXED |
+| `jitter_buffer_load` | same | `jitterBufferLoad` | Packets currently held in buffer |
+| `jitter_buffer_target_ms` | same | `jitterBufferTargetMs` | Jitter estimate used to set depth (adaptive only) |
+| `jitter_buffer_adaptive` | same | `jitterBufferAdaptive` | `true` when adaptive mode is active |
 | `late_packets` | same | `latePackets` | Packets arrived too late |
-| `discarded_packets` | same | `discardedPackets` | Packets dropped |
+| `discarded_packets` | same | `discardedPackets` | Packets dropped (overflow or flush) |
 | `codec_name` | same | `codec` | e.g. `"opus"`, `"PCMU"` |
 | `payload_type` | same | `payloadType` | RTP PT number |
 | `ssrc_tx` / `ssrc_rx` | same | `ssrcTx` / `ssrcRx` | RTP SSRCs |
 | `remote_addr` | same | `remoteAddr` | Remote RTP `"ip:port"` |
-| `audio_level_dbov` | same | `audioLevelDbov` | dBov (NaN when unavailable) |
+| `audio_level_dbov` | same | `audioLevelDbov` | Received audio level in dBov (0 = max, −127 = silence); computed from RX PCM — always available |
 
 ---
 
@@ -928,61 +938,141 @@ Output format: PCM S16LE WAV, 48 kHz/2ch (Opus) or 8 kHz/1ch (G.711). Recording 
 
 ## 15. Runtime audio quality controls
 
-Toggle noise suppression, AGC, and the echo suppressor live — no re-dial needed.
-Jitter buffer and DSCP changes are also covered here.
+Gain, echo cancellation, noise suppression, AGC, jitter buffer, and DSCP are all
+adjustable live — no re-dial needed.
+
+### Microphone and speaker gain
 
 **C**
 ```c
-/* Toggle processing filters at any time */
-baresdk_set_aec(true);   /* half-duplex echo suppressor */
-baresdk_set_ns(true);    /* noise suppression           */
-baresdk_set_agc(true);   /* auto gain control           */
-
-/* Change jitter buffer bounds — takes effect on new calls */
-baresdk_set_jitter_buffer(20, 200);   /* widen on poor network */
-baresdk_set_jitter_buffer(10,  80);   /* tighten on local LAN  */
-
-/* Override RTP DSCP on an established call */
-baresdk_call_set_dscp_rtp(call, 46);  /* EF — Expedited Forwarding */
+/* dB, clamped to [-20, +20]. 0.0 = unity (fast-path bypass, zero overhead). */
+baresdk_set_mic_gain_db(6.0f);      /* boost quiet USB mic +6 dB */
+baresdk_set_speaker_gain_db(-3.0f); /* reduce playback -3 dB     */
+baresdk_set_mic_gain_db(0.0f);      /* back to unity              */
 ```
 
 **C++**
 ```cpp
-/* C++ delegates to the same C functions */
-baresdk_set_aec(true);
-baresdk_set_ns(false);
-baresdk_set_agc(true);
-
-baresdk_set_jitter_buffer(20, 200);
-
-baresdk_call_set_dscp_rtp(call.handle(), 46);
+sdk.set_mic_gain(6.0f);
+sdk.set_speaker_gain(-3.0f);
 ```
 
 **Python**
 ```python
-sdk.set_aec(True)
-sdk.set_ns(False)
+sdk.set_mic_gain(6.0)
+sdk.set_speaker_gain(-3.0)
+sdk.set_mic_gain(0.0)   # bypass
+```
+
+> Mic gain applies *before* NS/AGC/AEC on the TX chain — it's a raw pre-boost.
+> AGC then normalises the boosted signal. Safe to call from any thread.
+
+### Echo cancellation
+
+**C**
+```c
+/* Simple on/off — re-enables whichever backend was set at init */
+baresdk_set_aec(true);
+baresdk_set_aec(false);
+
+/* Fine-grained: switch mode (only AEC_OFF ↔ init_mode allowed at runtime) */
+baresdk_set_aec_mode(BARESDK_AEC_OFF);
+baresdk_set_aec_mode(BARESDK_AEC_SUPPRESSOR);  /* restore default */
+
+/* Tune suppressor aggressiveness (SUPPRESSOR mode only)
+ * 0.0 = no TX suppression; 1.0 = max (−16.5 dB floor, default) */
+baresdk_set_aec_suppression_level(0.6f);  /* less ducking on double-talk */
+baresdk_set_aec_suppression_level(1.0f);  /* restore default             */
+```
+
+**C++**
+```cpp
+sdk.set_aec(true);
+sdk.set_aec_mode(BARESDK_AEC_OFF);
+sdk.set_aec_suppression_level(0.6f);
+```
+
+**Python**
+```python
+from baresdk import AEC_OFF, AEC_SUPPRESSOR, AEC_WEBRTC
+
+sdk.set_aec(True)                     # enable
+sdk.set_aec(False)                    # disable
+sdk.set_aec_mode(AEC_OFF)             # explicit off
+sdk.set_aec_mode(AEC_SUPPRESSOR)      # restore suppressor
+sdk.set_aec_suppression_level(0.6)    # tune aggressiveness
+```
+
+**AEC mode comparison**
+
+| | `AEC_SUPPRESSOR` (default) | `AEC_WEBRTC` (opt-in build) |
+|--|--|--|
+| Duplex | Half-duplex (ducks TX when RX loud) | Full-duplex (subtracts echo) |
+| Double-talk | One side goes quiet | Both parties heard |
+| Platform | All | Desktop only |
+| Build | None | `cmake -DBARESDK_WITH_WEBRTC_AEC=ON` + `libwebrtc-audio-processing-1-dev` |
+
+> `AEC_WEBRTC` must be configured at init — switching between SUPPRESSOR and WEBRTC
+> at runtime returns `EINVAL`. Only `AEC_OFF ↔ init_mode` transitions are valid.
+>
+> On **Android** and **iOS**, full-duplex AEC is handled automatically by the OS
+> audio driver — no SDK flag needed.
+
+### Noise suppression and AGC
+
+**C**
+```c
+baresdk_set_ns(true);    /* noise suppression  */
+baresdk_set_agc(true);   /* auto gain control  */
+```
+
+**C++**
+```cpp
+sdk.set_ns(true);
+sdk.set_agc(true);
+```
+
+**Python**
+```python
+sdk.set_ns(True)
 sdk.set_agc(True)
+```
 
+**Flutter**
+```dart
+sdk.setNs(true);
+sdk.setAgc(true);
+```
+
+### Jitter buffer and DSCP
+
+**C**
+```c
+baresdk_set_jitter_buffer(20, 200);   /* widen on poor network — new calls only */
+baresdk_call_set_dscp_rtp(call, 46);  /* EF — takes effect next outgoing packet */
+```
+
+**C++**
+```cpp
+sdk.set_jitter_buffer(20, 200);
+call.set_dscp_rtp(46);
+```
+
+**Python**
+```python
 sdk.set_jitter_buffer(20, 200)
-
 call.set_dscp_rtp(46)
 ```
 
 **Flutter**
 ```dart
-sdk.setAec(true);
-sdk.setNs(false);
-sdk.setAgc(true);
-
 sdk.setJitterBuffer(20, 200);
-
 call.setDscpRtp(46);
 ```
 
-> **AEC note:** `baresdk_set_aec` is a half-duplex gate, not full acoustic echo cancellation. For true AEC use platform voice modes: CoreAudio `VoiceProcessingIO`, AAudio `USAGE_VOICE_COMMUNICATION`, or PulseAudio `module-echo-cancel`.
->
-> **Jitter buffer note:** the bounds apply to newly created audio streams. Active calls are unaffected until they re-negotiate or end and reconnect.
+> **Jitter buffer:** when both bounds are 0 (the default), the buffer runs in **fixed**
+> mode at 100 ms. Setting `min_ms` / `max_ms` switches to **adaptive** mode. Runtime
+> changes take effect on new calls only — active calls are unaffected.
 
 ---
 
@@ -1044,7 +1134,7 @@ case BARESDK_EV_REG_STATE:
 
 **Python**
 ```python
-elif isinstance(ev, RegStateEvent) and ev.state == REG_FAILED:
+elif ev.type == "reg_state" and ev.state == "failed":
     if ev.retry_attempt > 0:
         print(f"retry {ev.retry_attempt} in {ev.retry_delay_ms} ms")
 ```
@@ -1109,8 +1199,14 @@ sdk.shutdown();
 | TURN only | `ice_enabled=true`, `turn_server=…`, `turn_user`, `turn_pass` | — native plugin |
 | STUN + TURN | both — TURN takes priority | — native plugin |
 | WebRTC interop | `media_enc=DTLS_SRTP`, `ice_enabled=true`, STUN+TURN | — native plugin |
-| Voice quality (init) | `aec=true`, `ns=true`, `agc=true` | — native plugin |
-| Voice quality (runtime) | `baresdk_set_aec/ns/agc()` / `sdk.set_aec/ns/agc()` | `sdk.setAec/Ns/Agc()` |
+| Voice quality (init) | `aec_mode=SUPPRESSOR`, `ns=true`, `agc=true` | — native plugin |
+| Echo on/off (runtime) | `baresdk_set_aec(bool)` / `sdk.set_aec(bool)` | `sdk.setAec(bool)` |
+| Echo mode (runtime) | `baresdk_set_aec_mode(mode)` / `sdk.set_aec_mode(mode)` | — native plugin |
+| Echo suppressor strength | `baresdk_set_aec_suppression_level(f)` / `sdk.set_aec_suppression_level(f)` | — |
+| NS / AGC (runtime) | `baresdk_set_ns/agc()` / `sdk.set_ns/agc()` | `sdk.setNs/Agc()` |
+| Mic gain (runtime) | `baresdk_set_mic_gain_db(db)` / `sdk.set_mic_gain(db)` | — native plugin |
+| Speaker gain (runtime) | `baresdk_set_speaker_gain_db(db)` / `sdk.set_speaker_gain(db)` | — native plugin |
+| Jitter buffer (init, adaptive) | `jitter_buffer_min_ms` / `jitter_buffer_max_ms` in `SDKConfig` | — native plugin |
 | Jitter buffer (runtime) | `baresdk_set_jitter_buffer()` / `sdk.set_jitter_buffer()` | `sdk.setJitterBuffer()` |
 | Per-call DSCP | `baresdk_call_set_dscp_rtp()` / `call.set_dscp_rtp()` | `call.setDscpRtp()` |
 | Codec selection (string names) | `audio_codec_names[]`, `audio_codec_name_count` | `audioCodecs: [...]` |

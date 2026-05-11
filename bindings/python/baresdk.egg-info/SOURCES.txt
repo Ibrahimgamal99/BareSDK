@@ -1,0 +1,11 @@
+pyproject.toml
+baresdk/__init__.py
+baresdk/_baresdk_clean.h
+baresdk/_loader.py
+baresdk/baresdk.so
+baresdk/events.py
+baresdk.egg-info/PKG-INFO
+baresdk.egg-info/SOURCES.txt
+baresdk.egg-info/dependency_links.txt
+baresdk.egg-info/requires.txt
+baresdk.egg-info/top_level.txt

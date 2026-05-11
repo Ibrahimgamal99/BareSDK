@@ -4,6 +4,34 @@ All events are delivered via the `event_cb` you set in `baresdk_config_t`. The c
 
 Event payloads are in the `ev->u` union — access the member matching `ev->type`.
 
+## Python
+
+In Python, events are yielded from `account.events()`. Every event object has a `.type` string so you can dispatch without importing event classes or integer constants:
+
+```python
+for ev in account.events():
+    if ev.type == "reg_state" and ev.state == "registered":
+        ...
+    elif ev.type == "incoming_call":
+        answer(ev.call)
+    elif ev.type == "call_state" and ev.state in ("ended", "failed", "cancelled"):
+        break
+    elif ev.type == "media_stats":
+        print(ev.mos_lq, ev.rtt_ms)
+    elif ev.type == "sip_trace":
+        print(">>>" if ev.direction == "tx" else "<<<", ev.raw_message)
+```
+
+State fields use strings instead of integer constants:
+
+| Event | `.state` values |
+|---|---|
+| `reg_state` | `"unregistered"` `"registering"` `"registered"` `"failed"` `"unregistering"` |
+| `call_state` | `"calling"` `"ringing"` `"established"` `"held"` `"ended"` `"cancelled"` `"failed"` |
+| `presence_state` | `.status`: `"unknown"` `"open"` `"closed"` `"busy"` |
+| `quality_alert` | `.issue`: `"mos"` `"loss"` `"jitter"` `"rtt"` |
+| `sip_trace` | `.direction`: `"tx"` or `"rx"` |
+
 ---
 
 ## BARESDK_EV_LOG

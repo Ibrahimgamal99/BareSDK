@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: baresdk
+Version: 1.0.0
+Summary: Python binding for baresdk — SIP/WebRTC/NAT SDK
+License: MIT
+Project-URL: Homepage, https://github.com/Ibrahimgamal99/BareSDK.git
+Requires-Python: >=3.9
+Requires-Dist: cffi>=1.15

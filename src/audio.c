@@ -4,6 +4,7 @@
 
 #include "baresdk_internal.h"
 #include <re_udp.h>
+#include <math.h>
 
 
 /* ── baresdk_audio_mute ──────────────────────────────────────────────────── */
@@ -247,22 +248,74 @@ int baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_c
 
 /* ── Runtime audio processing toggles ───────────────────────────────────── */
 
+/* aufilt_enable() modifies the aufiltl list which the audio thread iterates.
+ * PROTECTED BY RE_MAIN — must run via bsdk_dispatch_sync.
+ * Do NOT make this atomic like the gain setters even though the pattern looks
+ * similar — the asymmetry is intentional. */
 static void set_filter_fn(void *arg)
 {
 	struct { const char *name; bool enable; } *ctx = arg;
+	/* PROTECTED BY RE_MAIN */
 	aufilt_enable(baresip_aufiltl(), ctx->name, ctx->enable);
 }
 
 void baresdk_set_aec(bool enable)
 {
-	struct { const char *name; bool enable; } ctx = { "bsdk_aec", enable };
+	/* Re-enables the aec_mode configured at init; disables all AEC backends
+	 * when enable=false.  Back-compat shim for the former bool aec API. */
+	baresdk_aec_mode_t target = enable ? g_bsdk.cfg.aec_mode : BARESDK_AEC_OFF;
+	baresdk_set_aec_mode(target);
+}
+
+int baresdk_set_aec_mode(baresdk_aec_mode_t mode)
+{
+	/* Only AEC_OFF ↔ init_mode transitions are valid at runtime.
+	 * Switching between SUPPRESSOR and WEBRTC requires re-init. */
+	if (mode != BARESDK_AEC_OFF && mode != g_bsdk.cfg.aec_mode) {
+		warning("baresdk: set_aec_mode: cannot switch from %d to %d at runtime "
+		        "(only OFF ↔ init mode transitions allowed)\n",
+		        (int)g_bsdk.cfg.aec_mode, (int)mode);
+		return EINVAL;
+	}
+
+#if !defined(BARESDK_PROFILE_DESKTOP) || !defined(BARESDK_HAS_WEBRTC_AEC)
+	if (mode == BARESDK_AEC_WEBRTC) {
+		warning("baresdk: set_aec_mode: WEBRTC AEC not available "
+		        "(requires desktop build with BARESDK_WITH_WEBRTC_AEC=ON)\n");
+		return ENOTSUP;
+	}
+#endif
+
+	bool suppressor_on = (mode == BARESDK_AEC_SUPPRESSOR);
+	struct { const char *name; bool enable; } ctx = { "bsdk_aec", suppressor_on };
+	/* PROTECTED BY RE_MAIN */
 	bsdk_dispatch_sync(set_filter_fn, &ctx);
-	g_bsdk.cfg.aec = enable;
+
+#if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
+	bool webrtc_on = (mode == BARESDK_AEC_WEBRTC);
+	struct { const char *name; bool enable; } wctx = { "webrtc_aec", webrtc_on };
+	/* PROTECTED BY RE_MAIN */
+	bsdk_dispatch_sync(set_filter_fn, &wctx);
+#endif
+
+	return 0;
+}
+
+void baresdk_set_aec_suppression_level(float level)
+{
+	if (level < 0.0f) level = 0.0f;
+	if (level > 1.0f) level = 1.0f;
+	/* aec_suppression_level=0 → floor=1.0 (no attenuation)
+	 * aec_suppression_level=1 → floor=0.15 (−16.5 dB, default)
+	 * Mapping inverted because floor is a minimum gain, not a suppression amount. */
+	bsdk_aec_floor_store(1.0f - level * 0.85f);
+	g_bsdk.cfg.aec_suppression_level = level;
 }
 
 void baresdk_set_ns(bool enable)
 {
 	struct { const char *name; bool enable; } ctx = { "bsdk_ns", enable };
+	/* PROTECTED BY RE_MAIN */
 	bsdk_dispatch_sync(set_filter_fn, &ctx);
 	g_bsdk.cfg.ns = enable;
 }
@@ -270,8 +323,25 @@ void baresdk_set_ns(bool enable)
 void baresdk_set_agc(bool enable)
 {
 	struct { const char *name; bool enable; } ctx = { "bsdk_agc", enable };
+	/* PROTECTED BY RE_MAIN */
 	bsdk_dispatch_sync(set_filter_fn, &ctx);
 	g_bsdk.cfg.agc = enable;
+}
+
+void baresdk_set_mic_gain_db(float db)
+{
+	if (db < -20.0f) db = -20.0f;
+	if (db >  20.0f) db =  20.0f;
+	bsdk_mic_gain_store(powf(10.0f, db / 20.0f));
+	g_bsdk.cfg.mic_gain_db = db;
+}
+
+void baresdk_set_speaker_gain_db(float db)
+{
+	if (db < -20.0f) db = -20.0f;
+	if (db >  20.0f) db =  20.0f;
+	bsdk_spk_gain_store(powf(10.0f, db / 20.0f));
+	g_bsdk.cfg.speaker_gain_db = db;
 }
 
 /* ── Per-call DSCP ───────────────────────────────────────────────────────── */

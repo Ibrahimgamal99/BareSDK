@@ -3,6 +3,7 @@ events.py — Python dataclasses mirroring baresdk event payloads.
 
 The raw C event pointer is decoded into one of these objects and put on
 the per-account queue.  All string fields are decoded from bytes to str.
+State fields use human-readable strings instead of integer constants.
 """
 
 from dataclasses import dataclass, field
@@ -11,7 +12,8 @@ from typing import Optional, List
 
 @dataclass
 class RegStateEvent:
-    state: int           # BARESDK_REG_* constant
+    type: str = field(init=False, default="reg_state")
+    state: str           # "unregistered" | "registering" | "registered" | "failed" | "unregistering"
     error: int           # BARESDK_ERR_* or BARESDK_OK
     error_str: Optional[str]
     retry_attempt: int
@@ -20,6 +22,7 @@ class RegStateEvent:
 
 @dataclass
 class IncomingCallEvent:
+    type: str = field(init=False, default="incoming_call")
     call: object         # baresdk.Call (set by Account)
     from_uri: str
     display_name: Optional[str]
@@ -27,20 +30,23 @@ class IncomingCallEvent:
 
 @dataclass
 class CallStateEvent:
+    type: str = field(init=False, default="call_state")
     call: object         # baresdk.Call
-    state: int           # BARESDK_CALL_* constant
+    state: str           # "calling" | "ringing" | "established" | "held" | "ended" | "cancelled" | "failed"
     error: int
     reason: Optional[str]
 
 
 @dataclass
 class CallDtmfEvent:
+    type: str = field(init=False, default="dtmf")
     call: object
     digit: str           # single character
 
 
 @dataclass
 class SdpNegotiationEvent:
+    type: str = field(init=False, default="sdp_negotiation")
     call: object
     local_sdp: str
     remote_sdp: str
@@ -52,7 +58,8 @@ class SdpNegotiationEvent:
 
 @dataclass
 class SipTraceEvent:
-    direction: int       # BARESDK_MEDIA_DIR_TX / RX
+    type: str = field(init=False, default="sip_trace")
+    direction: str       # "tx" | "rx"
     transport: str
     remote_addr: str
     raw_message: str
@@ -61,6 +68,7 @@ class SipTraceEvent:
 
 @dataclass
 class MediaStatsEvent:
+    type: str = field(init=False, default="media_stats")
     call: object
     # Packet counters
     packets_sent: int
@@ -106,7 +114,8 @@ class MediaStatsEvent:
     codec_channels: int
     payload_type: int
     # Audio level
-    audio_level_dbov: float  # dBov; NaN when unavailable
+    audio_level_dbov: float  # speaker (RX) dBov; NaN when unavailable
+    mic_level_dbov: float    # microphone (TX) dBov; NaN when unavailable
     # Stream identity
     ssrc_tx: int
     ssrc_rx: int
@@ -121,16 +130,19 @@ class MediaStatsEvent:
 
 @dataclass
 class LogEvent:
+    type: str = field(init=False, default="log")
     message: str
 
 
 @dataclass
 class RegistrarWarningEvent:
+    type: str = field(init=False, default="registrar_warning")
     message: str
 
 
 @dataclass
 class TransferRequestEvent:
+    type: str = field(init=False, default="transfer_request")
     call: object
     refer_to_uri: str
     has_replaces: bool
@@ -138,6 +150,7 @@ class TransferRequestEvent:
 
 @dataclass
 class MwiEvent:
+    type: str = field(init=False, default="mwi")
     messages_waiting: bool
     new_voice: int
     old_voice: int
@@ -148,6 +161,7 @@ class MwiEvent:
 
 @dataclass
 class MessageEvent:
+    type: str = field(init=False, default="message")
     from_uri: str
     body: str
     content_type: str
@@ -155,14 +169,16 @@ class MessageEvent:
 
 @dataclass
 class PresenceStateEvent:
+    type: str = field(init=False, default="presence_state")
     target_uri: str
-    status: int          # BARESDK_PRESENCE_* constant
+    status: str          # "unknown" | "open" | "closed" | "busy"
 
 
 @dataclass
 class QualityAlertEvent:
+    type: str = field(init=False, default="quality_alert")
     call: object
-    issue: int           # BARESDK_QUALITY_* constant
-    value: float         # current metric value
-    threshold: float     # threshold that was crossed
-    recovering: bool     # True = value returned above threshold
+    issue: str           # "mos" | "loss" | "jitter" | "rtt"
+    value: float
+    threshold: float
+    recovering: bool

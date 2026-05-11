@@ -2,7 +2,11 @@
  * @file core.c  Singleton lifecycle — baresdk_init / baresdk_shutdown
  */
 
+#include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "baresdk_internal.h"
 
 /* ── Global singleton ────────────────────────────────────────────────────── */
@@ -79,6 +83,7 @@ void bsdk_cfg_deep_copy(baresdk_config_t *dst, const baresdk_config_t *src,
 	ctx->cfg_turn_user        = bsdk_strdup(src->turn_user);
 	ctx->cfg_turn_pass        = bsdk_strdup(src->turn_pass);
 	ctx->cfg_pcap_path        = bsdk_strdup(src->pcap_path);
+	ctx->cfg_tmp_dir          = bsdk_strdup(src->tmp_dir);
 
 	dst->local_ip         = ctx->cfg_local_ip;
 	dst->sip_domain       = ctx->cfg_sip_domain;
@@ -97,6 +102,7 @@ void bsdk_cfg_deep_copy(baresdk_config_t *dst, const baresdk_config_t *src,
 	dst->turn_user        = ctx->cfg_turn_user;
 	dst->turn_pass        = ctx->cfg_turn_pass;
 	dst->pcap_path        = ctx->cfg_pcap_path;
+	dst->tmp_dir          = ctx->cfg_tmp_dir;
 }
 
 void bsdk_cfg_deep_free(struct bsdk_ctx *ctx)
@@ -118,6 +124,7 @@ void bsdk_cfg_deep_free(struct bsdk_ctx *ctx)
 	mem_deref(ctx->cfg_turn_user);        ctx->cfg_turn_user = NULL;
 	mem_deref(ctx->cfg_turn_pass);        ctx->cfg_turn_pass = NULL;
 	mem_deref(ctx->cfg_pcap_path);        ctx->cfg_pcap_path = NULL;
+	mem_deref(ctx->cfg_tmp_dir);          ctx->cfg_tmp_dir   = NULL;
 }
 
 /* ── baresdk_config_init ─────────────────────────────────────────────────── */
@@ -148,6 +155,29 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->mos_method            = BARESDK_MOS_EMODEL;
 	cfg->log_level             = 1;
 	cfg->rtcp_mux              = true;
+	cfg->aec_mode              = BARESDK_AEC_SUPPRESSOR;
+	cfg->aec_suppression_level = 1.0f;
+	/* mic_gain_db and speaker_gain_db default to 0.0f (unity) from memset */
+}
+
+/* ── Platform temp-dir helper ────────────────────────────────────────────── */
+
+static void bsdk_resolve_tmpdir(const char *override, char *buf, size_t sz)
+{
+	if (override && *override) {
+		str_ncpy(buf, override, sz);
+		return;
+	}
+#if defined(_WIN32)
+	DWORD n = GetTempPath((DWORD)sz, buf);
+	if (n > 0 && n < (DWORD)sz)
+		return;
+	str_ncpy(buf, "C:\\Temp", sz);
+#else
+	/* $TMPDIR is set by iOS for the app sandbox and may be set on Android */
+	const char *t = getenv("TMPDIR");
+	str_ncpy(buf, (t && *t) ? t : "/tmp", sz);
+#endif
 }
 
 /* ── baresdk_init ────────────────────────────────────────────────────────── */
@@ -198,12 +228,18 @@ int baresdk_init(const baresdk_config_t *cfg)
 	if (err)
 		goto fail;
 
-	/* Redirect baresip's config directory to /tmp so it never finds or reads
+	/* Redirect baresip's config directory so it never finds or reads
 	 * ~/.config/baresip/{config,accounts,contacts,...} from disk.
 	 * All SDK configuration is driven exclusively through baresdk_config_t.
 	 * Directory must exist: the uuid module (required for WSS/outbound) writes into it. */
-	(void)fs_mkdir("/tmp/.baresdk-empty", 0700);
-	conf_path_set("/tmp/.baresdk-empty");
+	{
+		char _tmpbase[512];
+		char _confdir[640];
+		bsdk_resolve_tmpdir(g_bsdk.cfg.tmp_dir, _tmpbase, sizeof(_tmpbase));
+		(void)re_snprintf(_confdir, sizeof(_confdir), "%s/.baresdk", _tmpbase);
+		(void)fs_mkdir(_confdir, 0700);
+		conf_path_set(_confdir);
+	}
 	conf_configure_buf((const uint8_t *)"#\n", 2);
 
 	err = baresip_init(conf_config());
@@ -254,7 +290,12 @@ int baresdk_init(const baresdk_config_t *cfg)
 	if (err)
 		goto fail;
 
-	bsdk_audio_processing_init(g_bsdk.cfg.ns, g_bsdk.cfg.agc, g_bsdk.cfg.aec);
+	bsdk_audio_processing_init(g_bsdk.cfg.ns, g_bsdk.cfg.agc,
+	                           g_bsdk.cfg.aec_mode,
+	                           g_bsdk.cfg.aec_suppression_level,
+	                           g_bsdk.cfg.mic_gain_db,
+	                           g_bsdk.cfg.speaker_gain_db);
+	bsdk_tap_global_init();
 
 	err = bsdk_message_init();
 	if (err)

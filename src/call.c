@@ -7,6 +7,7 @@
  */
 
 #include "baresdk_internal.h"
+#include <math.h>
 
 static struct list s_calls;
 static mtx_t       s_calls_lock;
@@ -139,6 +140,7 @@ static void invite_fn(void *arg)
 	lc->bc    = bc;
 	lc->acct  = ctx->acct;
 	lc->state = BARESDK_CALL_CALLING;
+	float _nan = NAN; memcpy(&lc->rx_level_bits, &_nan, 4);
 
 	struct le *le;
 	LIST_FOREACH(&ctx->acct->custom_hdrs, le) {

@@ -52,6 +52,11 @@ if(BARESDK_SRC_MODE)
     target_compile_definitions(baresdk_core PRIVATE BARESDK_PROFILE_DESKTOP=1)
   endif()
 
+  # WebRTC AEC opt-in
+  if(BARESDK_WITH_WEBRTC_AEC)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_HAS_WEBRTC_AEC=1)
+  endif()
+
   # Platform audio define so modules_init.c picks the right audio module
   if(ANDROID_ABI)
     target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_AAUDIO=1)
@@ -78,9 +83,27 @@ endif()
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Generate bindings/cpp/baresdk.hpp from include/baresdk.h
+# ---------------------------------------------------------------------------
+add_custom_command(
+  OUTPUT  "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/baresdk.hpp"
+  COMMAND "${CMAKE_COMMAND}"
+          -D "C_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/include/baresdk.h"
+          -D "CPP_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/baresdk.hpp"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_hpp.cmake"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/baresdk.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_hpp.cmake"
+  COMMENT "Regenerating baresdk.hpp from baresdk.h"
+  VERBATIM
+)
+add_custom_target(gen_hpp ALL
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/baresdk.hpp")
+
 set(BARESDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
 set(BARESDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
 option(BARESDK_SHARED "Also produce a shared library (.so/.dylib/.dll) from the merged archive" OFF)
+option(BARESDK_WITH_WEBRTC_AEC "Include WebRTC AEC module (desktop only; requires libwebrtc-audio-processing-1)" OFF)
 
 set(BARESDK_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
     CACHE PATH "Path to libre source tree")
@@ -321,6 +344,7 @@ ExternalProject_Add(baresip_project
     -DSTATIC=ON
     "-DMODULES=${BARESDK_MODULES_SEP}"
     -DBUILD_TESTING=OFF
+    "-DCMAKE_C_FLAGS=-DJBUF_STAT=1"
     ${MBEDTLS_ARGS}
     ${OPUS_ARGS}
     ${CROSS_ARGS}
@@ -428,6 +452,7 @@ if(BARESDK_SHARED AND DEFINED _SHARED_OUT)
   install(FILES "${_SHARED_OUT}" DESTINATION "${_DIST}")
 endif()
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/baresdk.h"
+              "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/baresdk.hpp"
               DESTINATION "${_DIST}/include")
 install(DIRECTORY "${SYSROOT}/include/re/"  DESTINATION "${_DIST}/include/re")
 install(FILES     "${SYSROOT}/include/baresip.h" DESTINATION "${_DIST}/include")

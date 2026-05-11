@@ -50,6 +50,7 @@ struct bsdk_ctx {
 	char              *cfg_turn_user;
 	char              *cfg_turn_pass;
 	char              *cfg_pcap_path;
+	char              *cfg_tmp_dir;
 
 	/* re_main thread */
 	thrd_t             re_thread;
@@ -156,6 +157,10 @@ struct baresdk_call {
 	float                      last_mos_lq;
 	float                      last_loss_pct;
 	float                      last_jitter_ms;
+	/* RX/TX audio levels — written by audio thread, read by stats timer.
+	 * Stored as bit-pattern of float dBov (0=max, -127=silence, NAN=no data). */
+	uint32_t                   rx_level_bits;
+	uint32_t                   tx_level_bits;
 };
 
 /* ── Event queue entry ─────────────────────────────────────────────────── */
@@ -258,8 +263,16 @@ void bsdk_pcap_write_sip(const char *data, size_t len,
 
 /* ── audio_processing.c ────────────────────────────────────────────────── */
 
-void bsdk_audio_processing_init(bool ns, bool agc, bool aec);
+void bsdk_audio_processing_init(bool ns, bool agc,
+                                baresdk_aec_mode_t aec_mode,
+                                float aec_suppression_level,
+                                float mic_db, float spk_db);
 void bsdk_audio_processing_close(void);
+
+/* Atomic gain accessors used by the setters in audio.c. */
+void bsdk_mic_gain_store(float linear);
+void bsdk_spk_gain_store(float linear);
+void bsdk_aec_floor_store(float floor);
 
 /* ── stats.c ───────────────────────────────────────────────────────────── */
 
@@ -335,6 +348,7 @@ void bsdk_acct_cfg_deep_free(struct baresdk_account *acct);
 
 void bsdk_call_global_init(void);   /* call once from baresdk_init */
 void bsdk_call_global_reset(void);  /* call from baresdk_shutdown / fail path */
+void bsdk_tap_global_init(void);
 void bsdk_tap_global_reset(void);
 
 #endif /* BARESDK_INTERNAL_H */

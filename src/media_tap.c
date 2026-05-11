@@ -13,6 +13,8 @@
 #include <rem_au.h>
 #include <rem_aulevel.h>
 #include <rem_auframe.h>
+#include <math.h>
+#include <string.h>
 
 /* ── Filter state ────────────────────────────────────────────────────────── */
 
@@ -83,6 +85,18 @@ static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 	struct baresdk_call *lc = ts->lc;
 	if (!lc) return 0;
 
+	const int16_t *samples = (const int16_t *)af->sampv;
+	size_t n = af->sampc;
+	if (n > 0) {
+		double sum_sq = 0.0;
+		for (size_t i = 0; i < n; i++)
+			sum_sq += (double)samples[i] * (double)samples[i];
+		double rms = sqrt(sum_sq / (double)n);
+		float dbov = (rms > 0.0) ? (float)(20.0 * log10(rms / 32768.0)) : -127.0f;
+		uint32_t bits; memcpy(&bits, &dbov, 4);
+		re_atomic_rlx_set(&lc->tx_level_bits, bits);
+	}
+
 	mtx_lock(&lc->tap_lock);
 	baresdk_media_tap_cb_t cb = lc->tap_cb;
 	void *ud = lc->tap_userdata;
@@ -108,6 +122,19 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 	struct baresdk_call *lc = ts->lc;
 	if (!lc) return 0;
 
+	const int16_t *samples = (const int16_t *)af->sampv;
+	size_t n = af->sampc;
+
+	if (n > 0) {
+		double sum_sq = 0.0;
+		for (size_t i = 0; i < n; i++)
+			sum_sq += (double)samples[i] * (double)samples[i];
+		double rms = sqrt(sum_sq / (double)n);
+		float dbov = (rms > 0.0) ? (float)(20.0 * log10(rms / 32768.0)) : -127.0f;
+		uint32_t bits; memcpy(&bits, &dbov, 4);
+		re_atomic_rlx_set(&lc->rx_level_bits, bits);
+	}
+
 	mtx_lock(&lc->tap_lock);
 	baresdk_media_tap_cb_t cb = lc->tap_cb;
 	void *ud = lc->tap_userdata;
@@ -115,13 +142,11 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 
 	if (cb) {
 		cb(lc, BARESDK_MEDIA_DIR_RX,
-		   (const int16_t *)af->sampv,
-		   af->sampc, af->srate, af->ch,
+		   samples, n, af->srate, af->ch,
 		   af->timestamp, ud);
 	}
 	bsdk_record_write_frame(lc, BARESDK_MEDIA_DIR_RX,
-	                        (const int16_t *)af->sampv,
-	                        af->sampc, af->srate, af->ch);
+	                        samples, n, af->srate, af->ch);
 	return 0;
 }
 
@@ -142,6 +167,11 @@ static void ensure_tap_registered(void)
 	if (s_tap_registered) return;
 	aufilt_register(baresip_aufiltl(), &s_tap_filter);
 	s_tap_registered = true;
+}
+
+void bsdk_tap_global_init(void)
+{
+	ensure_tap_registered();
 }
 
 void bsdk_tap_global_reset(void)

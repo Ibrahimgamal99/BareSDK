@@ -187,12 +187,11 @@ static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
 		              ? (float)jb.n_lost / (float)jb.n_get : 0.f;
 	}
 
-	/* ── Audio level (dBov) ──────────────────────────────────────────── */
-	double level = 0.0;
-	if (audio_level_get(au, &level) == 0)
-		s->audio_level_dbov = (float)level;
-	else
-		s->audio_level_dbov = (float)NAN;
+	/* ── Audio levels (dBov) — computed from PCM in media_tap.c ────── */
+	uint32_t rx_bits = re_atomic_rlx(&lc->rx_level_bits);
+	memcpy(&s->audio_level_dbov, &rx_bits, 4);
+	uint32_t tx_bits = re_atomic_rlx(&lc->tx_level_bits);
+	memcpy(&s->mic_level_dbov, &tx_bits, 4);
 
 	/* ── Stream identity ─────────────────────────────────────────────── */
 	struct rtp_sock *rsock = stream_rtp_sock(strm);

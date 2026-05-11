@@ -75,6 +75,10 @@ CODEC_PCMU = 1
 CODEC_PCMA = 2
 CODEC_G722 = 3
 
+AEC_OFF        = 0
+AEC_SUPPRESSOR = 1
+AEC_WEBRTC     = 2
+
 
 def _s(cptr) -> Optional[str]:
     """Decode a C const char * to str (or None if NULL)."""
@@ -125,6 +129,13 @@ def _global_event_cb(ev_ptr, _userdata):
         acct_handle = ffi.NULL
         call_handle = ffi.NULL
 
+        _REG_STATES  = ("unregistered", "registering", "registered",
+                        "failed", "unregistering")
+        _CALL_STATES = ("calling", "ringing", "established", "held",
+                        "ended", "cancelled", "failed")
+        _PRESENCE    = ("unknown", "open", "closed", "busy")
+        _QUALITY     = ("mos", "loss", "jitter", "rtt")
+
         if typ == 0:    # LOG — broadcast to all accounts
             obj = LogEvent(message=_s(ev.u.log.message) or "")
             with _accounts_lock:
@@ -137,7 +148,7 @@ def _global_event_cb(ev_ptr, _userdata):
             acct_handle = ev.u.reg.account
             call_handle = ffi.NULL
             obj = RegStateEvent(
-                state        = ev.u.reg.state,
+                state        = _REG_STATES[ev.u.reg.state],
                 error        = ev.u.reg.error,
                 error_str    = _s(ev.u.reg.error_str),
                 retry_attempt= ev.u.reg.retry_attempt,
@@ -158,7 +169,7 @@ def _global_event_cb(ev_ptr, _userdata):
             call_handle = ev.u.call_state.call
             obj = CallStateEvent(
                 call=None,
-                state  = ev.u.call_state.state,
+                state  = _CALL_STATES[ev.u.call_state.state],
                 error  = ev.u.call_state.error,
                 reason = _s(ev.u.call_state.reason),
             )
@@ -181,7 +192,7 @@ def _global_event_cb(ev_ptr, _userdata):
 
         elif typ == 6:  # SIP_TRACE
             obj = SipTraceEvent(
-                direction  = ev.u.sip_trace.dir,
+                direction  = "tx" if ev.u.sip_trace.dir == 1 else "rx",
                 transport  = _s(ev.u.sip_trace.transport) or "",
                 remote_addr= _s(ev.u.sip_trace.remote_addr) or "",
                 raw_message= _s(ev.u.sip_trace.raw_message) or "",
@@ -234,6 +245,7 @@ def _global_event_cb(ev_ptr, _userdata):
                 codec_channels        = s.codec_channels,
                 payload_type          = s.payload_type,
                 audio_level_dbov      = s.audio_level_dbov,
+                mic_level_dbov        = s.mic_level_dbov,
                 ssrc_tx               = s.ssrc_tx,
                 ssrc_rx               = s.ssrc_rx,
                 remote_addr           = ffi.string(s.remote_addr).decode("utf-8", errors="replace"),
@@ -279,7 +291,7 @@ def _global_event_cb(ev_ptr, _userdata):
             acct_handle = ev.u.presence.account
             obj = PresenceStateEvent(
                 target_uri = _s(ev.u.presence.target_uri) or "",
-                status     = ev.u.presence.status,
+                status     = _PRESENCE[ev.u.presence.status],
             )
 
         elif typ == 13: # QUALITY_ALERT
@@ -287,7 +299,7 @@ def _global_event_cb(ev_ptr, _userdata):
             q = ev.u.quality_alert
             obj = QualityAlertEvent(
                 call       = None,
-                issue      = q.issue,
+                issue      = _QUALITY[q.issue],
                 value      = q.value,
                 threshold  = q.threshold,
                 recovering = bool(q.recovering),
@@ -417,6 +429,12 @@ class Account:
         ch = ffi.new("baresdk_call_handle_t *")
         _check(lib.baresdk_call_invite(self._h, uri.encode(), ch), "call_invite")
         return Call(ch[0])
+
+    def dial(self, uri: str) -> Call:
+        """Alias for call(); auto-prefixes sip: if missing."""
+        if not uri.startswith("sip:"):
+            uri = "sip:" + uri
+        return self.call(uri)
 
     def send_message(self, to: str, body: str, content_type: str = "text/plain"):
         _check(
@@ -555,8 +573,8 @@ class SDK:
                 for i, name in enumerate(str_codecs[:count]):
                     encoded = name.encode()[:31]
                     for j, b in enumerate(encoded):
-                        cfg.audio_codec_names[i][j] = b
-                    cfg.audio_codec_names[i][len(encoded)] = 0
+                        cfg.audio_codec_names[i][j] = bytes([b])
+                    cfg.audio_codec_names[i][len(encoded)] = b'\x00'
                 cfg.audio_codec_name_count = count
             elif int_codecs:
                 count = min(len(int_codecs), 8)
@@ -573,7 +591,9 @@ class SDK:
 
         h = ffi.new("baresdk_account_handle_t *")
         _check(lib.baresdk_account_create(cfg, h), "account_create")
-        return Account(h[0])
+        account = Account(h[0])
+        account._uri = uri
+        return account
 
     def list_input_devices(self):
         """Return a list of dicts with keys: name, description, is_default."""
@@ -590,13 +610,33 @@ class SDK:
         lib.baresdk_audio_set_output_device(name.encode())
 
     def set_aec(self, enable: bool):
+        """Enable or disable echo cancellation. Re-enables the aec_mode set at init."""
         lib.baresdk_set_aec(int(enable))
+
+    def set_aec_mode(self, mode: int):
+        """Switch AEC backend: AEC_OFF / AEC_SUPPRESSOR / AEC_WEBRTC.
+        Only AEC_OFF ↔ init_mode transitions are valid at runtime.
+        AEC_WEBRTC requires a desktop build with BARESDK_WITH_WEBRTC_AEC=ON."""
+        _check(lib.baresdk_set_aec_mode(mode), "set_aec_mode")
+
+    def set_aec_suppression_level(self, level: float):
+        """Tune the half-duplex echo suppressor aggressiveness (SUPPRESSOR mode only).
+        0.0 = no TX suppression; 1.0 = maximum suppression (default)."""
+        lib.baresdk_set_aec_suppression_level(float(level))
 
     def set_ns(self, enable: bool):
         lib.baresdk_set_ns(int(enable))
 
     def set_agc(self, enable: bool):
         lib.baresdk_set_agc(int(enable))
+
+    def set_mic_gain(self, db: float):
+        """Set microphone (TX) gain in dB. Range: -20 to +20. 0 = unity (no processing)."""
+        lib.baresdk_set_mic_gain_db(float(db))
+
+    def set_speaker_gain(self, db: float):
+        """Set speaker (RX) gain in dB. Range: -20 to +20. 0 = unity (no processing)."""
+        lib.baresdk_set_speaker_gain_db(float(db))
 
     def set_jitter_buffer(self, min_ms: int, max_ms: int):
         lib.baresdk_set_jitter_buffer(min_ms, max_ms)
@@ -621,8 +661,81 @@ class SDK:
         self.shutdown()
 
 
+# ── Top-level convenience functions ──────────────────────────────────────────
+
+
+_STR_TRANSPORT = {"udp": TRANSPORT_UDP, "tcp": TRANSPORT_TCP,
+                  "tls": TRANSPORT_TLS, "ws": TRANSPORT_WS, "wss": TRANSPORT_WSS}
+_STR_MEDIA_ENC = {"none": MEDIA_ENC_NONE, "sdes": MEDIA_ENC_SDES,
+                  "dtls_srtp": MEDIA_ENC_DTLS_SRTP}
+_STR_REL100    = {"disabled": 0, "enabled": 1, "required": 2}
+
+
+def create_account(sdk: SDK, uri: str, password: str, **kwargs) -> Account:
+    """
+    Create a SIP account.  All kwargs pass directly to sdk.create_account():
+      transport    — int constant OR string: "udp" | "tcp" | "tls" | "ws" | "wss"
+      media_enc    — int constant OR string: "none" | "sdes" | "dtls_srtp"
+      rel100       — int (0/1/2)  OR string: "disabled" | "enabled" | "required"
+      display_name, auth_user, server_url, server_host, server_port,
+      ice_enabled, stun_server, turn_server, turn_user, turn_pass,
+      verify_tls, audio_codecs, push_provider, push_token, push_param, …
+
+    One extra convenience key (not a C field):
+      extra_headers (dict[str, str]) — calls account.add_header() for each pair.
+    """
+    if isinstance(kwargs.get("transport"), str):
+        kwargs["transport"] = _STR_TRANSPORT[kwargs["transport"]]
+    if isinstance(kwargs.get("media_enc"), str):
+        kwargs["media_enc"] = _STR_MEDIA_ENC[kwargs["media_enc"]]
+    rel100_val = kwargs.pop("rel100", None)
+    if isinstance(rel100_val, str):
+        rel100_val = _STR_REL100[rel100_val]
+    extra_headers = kwargs.pop("extra_headers", {})
+    account = sdk.create_account(uri, password, **kwargs)
+    if rel100_val is not None:
+        lib.baresdk_account_set_100rel(account._h, rel100_val)
+    for k, v in extra_headers.items():
+        account.add_header(k, v)
+    return account
+
+
+def register(account: Account) -> Account:
+    """Register the account and return it (chainable)."""
+    account.register()
+    return account
+
+
+def dial(account: Account, uri: str) -> Call:
+    """Place an outbound call.
+    - Auto-prefixes sip: if missing.
+    - Auto-appends @domain from the account URI if no @ is present (e.g. "*43" → "*43@pbx.example.com").
+    """
+    if not uri.startswith("sip:"):
+        uri = "sip:" + uri
+    if "@" not in uri:
+        acct_uri = getattr(account, "_uri", "")
+        if acct_uri.startswith("sip:"):
+            acct_uri = acct_uri[4:]
+        if "@" in acct_uri:
+            domain = acct_uri.split("@", 1)[1].split(":")[0]
+            uri = f"{uri}@{domain}"
+    return account.call(uri)
+
+
+def hangup(call: Call):
+    """Hang up or reject a call."""
+    call.hangup()
+
+
+def answer(call: Call):
+    """Answer an incoming call."""
+    call.answer()
+
+
 __all__ = [
     "SDK", "Account", "Call", "strerror",
+    "create_account", "register", "dial", "hangup", "answer",
     "RegStateEvent", "IncomingCallEvent", "CallStateEvent", "CallDtmfEvent",
     "SdpNegotiationEvent", "SipTraceEvent", "MediaStatsEvent", "LogEvent",
     "RegistrarWarningEvent", "TransferRequestEvent", "MwiEvent",

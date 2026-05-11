@@ -45,6 +45,12 @@ static const char *DESKTOP_EXTRA[] = {
 	NULL
 };
 
+#if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
+/* Loaded only when aec_mode == WEBRTC at init time.
+ * module_load is one-way — we don't unload at runtime. */
+static const char *WEBRTC_AEC_LIST[] = { "webrtc_aec", NULL };
+#endif
+
 /* Platform audio module selected at compile time */
 #if defined(BARESDK_AUDIO_AAUDIO)
 static const char *PLATFORM_AUDIO[] = { "aaudio", NULL };
@@ -80,6 +86,11 @@ int modules_init(void)
 #endif
 
 	load_list(PLATFORM_AUDIO);
+
+#if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
+	if (g_bsdk.cfg.aec_mode == BARESDK_AEC_WEBRTC)
+		load_list(WEBRTC_AEC_LIST);
+#endif
 
 	/* Wire the platform audio module name into baresip config so audio_alloc
 	 * can find the right module when opening devices. We use PLATFORM_AUDIO[0]

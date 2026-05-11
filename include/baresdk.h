@@ -76,6 +76,31 @@ typedef enum {
 	BARESDK_MOS_SIMPLIFIED,
 } baresdk_mos_method_t;
 
+/**
+ * AEC backend selection.
+ * Stored as uint8_t to occupy exactly 1 byte (same as the former bool aec),
+ * preserving baresdk_config_t memory layout.
+ *
+ * BARESDK_AEC_SUPPRESSOR (default): built-in half-duplex TX suppressor.
+ *   Works on all platforms, zero external dependencies.
+ * BARESDK_AEC_WEBRTC: full-duplex WebRTC acoustic echo cancellation.
+ *   Desktop only; requires BARESDK_WITH_WEBRTC_AEC build option and
+ *   libwebrtc-audio-processing-1.  Returns ENOTSUP on mobile builds and
+ *   when the option is off.
+ */
+#if defined(_MSC_VER)
+typedef uint8_t baresdk_aec_mode_t;
+#  define BARESDK_AEC_OFF        ((baresdk_aec_mode_t)0)
+#  define BARESDK_AEC_SUPPRESSOR ((baresdk_aec_mode_t)1)
+#  define BARESDK_AEC_WEBRTC     ((baresdk_aec_mode_t)2)
+#else
+typedef enum __attribute__((packed)) {
+	BARESDK_AEC_OFF        = 0,
+	BARESDK_AEC_SUPPRESSOR = 1,
+	BARESDK_AEC_WEBRTC     = 2,
+} baresdk_aec_mode_t;
+#endif
+
 typedef enum {
 	BARESDK_MEDIA_DIR_RX = 0,
 	BARESDK_MEDIA_DIR_TX,
@@ -268,7 +293,9 @@ typedef struct {
 	int         payload_type;   /* RTP payload type number (0-127) */
 
 	/* ── Audio level ───────────────────────────────────────────────────── */
-	float    audio_level_dbov;  /* received audio level dBov (0=max, -127=silent);
+	float    audio_level_dbov;  /* speaker (RX) level dBov (0=max, -127=silent);
+	                               NaN when unavailable */
+	float    mic_level_dbov;    /* microphone (TX) level dBov (0=max, -127=silent);
 	                               NaN when unavailable */
 
 	/* ── Stream identity ───────────────────────────────────────────────── */
@@ -463,9 +490,12 @@ typedef struct {
 	bool                 enable_video; /* reserved for future video support */
 
 	/* ── Audio processing ─────────────────────────────────────────── */
-	bool  aec;  /* acoustic echo cancellation */
+	baresdk_aec_mode_t aec_mode;  /* echo cancellation backend; default SUPPRESSOR */
 	bool  ns;   /* noise suppression */
 	bool  agc;  /* automatic gain control */
+	float aec_suppression_level;  /* 0=no suppression .. 1=maximum; default 1.0; SUPPRESSOR only */
+	float mic_gain_db;            /* TX manual gain dB, clamped [-20,+20]; 0=unity */
+	float speaker_gain_db;        /* RX manual gain dB, clamped [-20,+20]; 0=unity */
 
 	/* ── Jitter buffer ────────────────────────────────────────────── */
 	uint32_t jitter_buffer_min_ms; /* minimum adaptive buffer depth; 0 = baresip default */
@@ -500,6 +530,16 @@ typedef struct {
 	float  mos_alert_threshold;     /* fire QUALITY_ALERT when mos_lq < this (recommended 3.5) */
 	float  loss_alert_threshold;    /* fire QUALITY_ALERT when loss_pct > this (recommended 5.0) */
 	float  jitter_alert_threshold;  /* fire QUALITY_ALERT when jitter_ms > this (recommended 40.0) */
+
+	/* ── Platform ────────────────────────────────────────────────── */
+	/**
+	 * Writable temporary directory for internal SDK state (e.g. uuid cache).
+	 * NULL = auto-detect: $TMPDIR on POSIX/iOS, GetTempPath() on Windows,
+	 * /tmp on Linux.  Android callers MUST set this to the app cache dir
+	 * (e.g. context.getCacheDir().getAbsolutePath()) because /tmp does not
+	 * exist on Android and $TMPDIR is not reliably set from native code.
+	 */
+	const char *tmp_dir;
 
 	/* ── Tracing ─────────────────────────────────────────────────── */
 	bool        trace_sip;      /* emit BARESDK_EV_SIP_TRACE per message */
@@ -862,14 +902,52 @@ BARESDK_EXPORT int baresdk_audio_list_output_devices(baresdk_audio_device_t *dev
 
 /* ── Audio processing — runtime toggles ──────────────────────────────────── */
 
-/** Enable/disable acoustic echo suppression globally (takes effect next frame). */
+/**
+ * Enable or disable echo cancellation (takes effect on next audio frame).
+ * Re-enables the aec_mode that was configured at baresdk_init().
+ * set_aec(false) → AEC_OFF; set_aec(true) → restores init mode.
+ * Back-compat: behavior is identical to the former bool aec API.
+ */
 BARESDK_EXPORT void baresdk_set_aec(bool enable);
+
+/**
+ * Switch the AEC backend.  Only AEC_OFF ↔ init_mode transitions are valid
+ * at runtime — module_load is one-way.  Switching between SUPPRESSOR and
+ * WEBRTC at runtime returns EINVAL.  WEBRTC returns ENOTSUP on mobile builds
+ * and when BARESDK_WITH_WEBRTC_AEC was not set at build time.
+ * Requires bsdk_dispatch_sync — NOT safe to call from the audio thread.
+ */
+BARESDK_EXPORT int baresdk_set_aec_mode(baresdk_aec_mode_t mode);
+
+/**
+ * Tune the built-in TX echo suppressor aggressiveness.  SUPPRESSOR mode only.
+ * 0.0 = no TX suppression (passes through even when far end is loud).
+ * 1.0 = maximum suppression (default — −16.5 dB floor on TX when RX active).
+ * Takes effect on the next audio frame via atomic store; safe from any thread.
+ */
+BARESDK_EXPORT void baresdk_set_aec_suppression_level(float level);
 
 /** Enable/disable noise suppression globally (takes effect next frame). */
 BARESDK_EXPORT void baresdk_set_ns(bool enable);
 
 /** Enable/disable automatic gain control globally (takes effect next frame). */
 BARESDK_EXPORT void baresdk_set_agc(bool enable);
+
+/**
+ * Set manual microphone (TX) gain in dB.  Clamped to [-20, +20].
+ * 0.0 = unity — fast-path bypass, no per-sample work.
+ * Applied before NS/AGC/AEC in the encode chain (raw pre-boost).
+ * Takes effect on the next audio frame via atomic store; safe from any thread.
+ */
+BARESDK_EXPORT void baresdk_set_mic_gain_db(float db);
+
+/**
+ * Set manual speaker (RX) gain in dB.  Clamped to [-20, +20].
+ * 0.0 = unity — fast-path bypass.
+ * Applied after the jitter buffer, before playback.
+ * Takes effect on the next audio frame via atomic store; safe from any thread.
+ */
+BARESDK_EXPORT void baresdk_set_speaker_gain_db(float db);
 
 /**
  * Change DSCP/TOS on the RTP socket of an active call.
