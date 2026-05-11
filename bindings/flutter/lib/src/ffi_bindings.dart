@@ -30,6 +30,20 @@ class BareSDKBindings {
   late final _baresdk_version =
       _baresdk_versionPtr.asFunction<ffi.Pointer<ffi.Char> Function()>();
 
+  ffi.Pointer<ffi.Char> baresdk_strerror(
+    int err,
+  ) {
+    return _baresdk_strerror(
+      err,
+    );
+  }
+
+  late final _baresdk_strerrorPtr =
+      _lookup<ffi.NativeFunction<ffi.Pointer<ffi.Char> Function(ffi.Int)>>(
+          'baresdk_strerror');
+  late final _baresdk_strerror =
+      _baresdk_strerrorPtr.asFunction<ffi.Pointer<ffi.Char> Function(int)>();
+
   /// Zero-fill cfg and set version/struct_size correctly. Call before populating.
   void baresdk_config_init(
     ffi.Pointer<baresdk_config_t> cfg,
@@ -200,6 +214,71 @@ class BareSDKBindings {
           'baresdk_account_retry_now');
   late final _baresdk_account_retry_now = _baresdk_account_retry_nowPtr
       .asFunction<int Function(baresdk_account_handle_t)>();
+
+  /// Update the push token for an account at runtime (e.g. on OS token rotation).
+  ///
+  /// The new token is stored and the Contact URI params are updated.  A new
+  /// REGISTER is sent immediately unless the account is mid-call, mid-transaction,
+  /// or in retry backoff — in those cases the update is deferred to the next
+  /// natural re-registration.  Callers that need the token applied before the
+  /// next call should wait for BARESDK_EV_CALL_STATE ENDED first.
+  ///
+  /// Pass NULL to clear push params and re-register without pn-* Contact params.
+  ///
+  /// @param acct        Account handle (must have push_provider set in config)
+  /// @param push_token  New device token string, or NULL to clear
+  /// @return BARESDK_OK on success, BARESDK_ERR_STATE if account has no UA yet
+  int baresdk_account_set_push_token(
+    baresdk_account_handle_t acct,
+    ffi.Pointer<ffi.Char> push_token,
+  ) {
+    return _baresdk_account_set_push_token(
+      acct,
+      push_token,
+    );
+  }
+
+  late final _baresdk_account_set_push_tokenPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(baresdk_account_handle_t,
+              ffi.Pointer<ffi.Char>)>>('baresdk_account_set_push_token');
+  late final _baresdk_account_set_push_token =
+      _baresdk_account_set_push_tokenPtr.asFunction<
+          int Function(baresdk_account_handle_t, ffi.Pointer<ffi.Char>)>();
+
+  /// Add a custom SIP header that is sent on REGISTER requests only.
+  ///
+  /// Use this for vendor push schemes that use non-standard headers (e.g.
+  /// "X-Push-Token", "X-Apple-Push-Bundle-Id") on hosted servers where you
+  /// cannot configure server-side push dispatch.  Unlike
+  /// baresdk_account_add_header(), this header is NOT included on INVITE,
+  /// BYE, or REFER — the token is not leaked to call peers.
+  ///
+  /// Multiple calls accumulate headers.  The list is append-only for the
+  /// lifetime of the account; recreate the account to clear it.
+  ///
+  /// @param name   Header field name  (e.g. "X-Push-Token")
+  /// @param value  Header field value (e.g. "a1b2c3...")
+  int baresdk_account_add_register_header(
+    baresdk_account_handle_t acct,
+    ffi.Pointer<ffi.Char> name,
+    ffi.Pointer<ffi.Char> value,
+  ) {
+    return _baresdk_account_add_register_header(
+      acct,
+      name,
+      value,
+    );
+  }
+
+  late final _baresdk_account_add_register_headerPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(baresdk_account_handle_t, ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.Char>)>>('baresdk_account_add_register_header');
+  late final _baresdk_account_add_register_header =
+      _baresdk_account_add_register_headerPtr.asFunction<
+          int Function(baresdk_account_handle_t, ffi.Pointer<ffi.Char>,
+              ffi.Pointer<ffi.Char>)>();
 
   /// Add a custom SIP header to all outgoing requests for this account.
   /// @param name   Header field name  (e.g. "X-Tenant-Id")
@@ -904,6 +983,23 @@ abstract class baresdk_100rel_mode_t {
   static const int BARESDK_100REL_REQUIRED = 2;
 }
 
+/// Push notification provider — determines the pn-provider URI parameter
+/// value placed in the SIP REGISTER Contact header per RFC 8599, or the
+/// server-side push dispatch type for non-RFC-8599 servers.
+abstract class baresdk_push_provider_t {
+  /// no push params (default)
+  static const int BARESDK_PUSH_PROVIDER_NONE = 0;
+
+  /// Apple APNs production
+  static const int BARESDK_PUSH_PROVIDER_APNS = 1;
+
+  /// Apple APNs development
+  static const int BARESDK_PUSH_PROVIDER_APNS_SANDBOX = 2;
+
+  /// Firebase Cloud Messaging
+  static const int BARESDK_PUSH_PROVIDER_FCM = 3;
+}
+
 /// ── Event types ────────────────────────────────────────────────────────────
 abstract class baresdk_event_type_t {
   static const int BARESDK_EV_LOG = 0;
@@ -919,6 +1015,7 @@ abstract class baresdk_event_type_t {
   static const int BARESDK_EV_MWI = 10;
   static const int BARESDK_EV_MESSAGE = 11;
   static const int BARESDK_EV_PRESENCE_STATE = 12;
+  static const int BARESDK_EV_QUALITY_ALERT = 13;
 }
 
 /// ── Event payload structs ──────────────────────────────────────────────────
@@ -1083,6 +1180,22 @@ final class baresdk_ev_media_stats_t extends ffi.Struct {
   @ffi.Uint32()
   external int discarded_packets;
 
+  /// JB current jitter estimate (ms)
+  @ffi.Uint32()
+  external int jitter_buffer_target_ms;
+
+  /// true when JB is in adaptive mode
+  @ffi.Bool()
+  external bool jitter_buffer_adaptive;
+
+  /// frames lost at jitter buffer (PLC trigger count)
+  @ffi.Uint32()
+  external int plc_frames;
+
+  /// plc_frames / total_rx_frames (0.0–1.0)
+  @ffi.Float()
+  external double plc_ratio;
+
   /// current TX bitrate (kbps)
   @ffi.Uint32()
   external int bandwidth_kbps_tx;
@@ -1099,13 +1212,21 @@ final class baresdk_ev_media_stats_t extends ffi.Struct {
   @ffi.Uint32()
   external int avg_bandwidth_kbps_rx;
 
-  /// listening quality  (1.0–4.5)
+  /// TX-path listening quality  (1.0–4.5)
   @ffi.Float()
   external double mos_lq;
 
-  /// conversational quality (1.0–4.5)
+  /// TX-path conversational quality (1.0–4.5)
   @ffi.Float()
   external double mos_cq;
+
+  /// RX-path listening quality (patient → you)
+  @ffi.Float()
+  external double mos_lq_rx;
+
+  /// RX-path conversational quality
+  @ffi.Float()
+  external double mos_cq_rx;
 
   @ffi.Int32()
   external int mos_method;
@@ -1145,6 +1266,26 @@ final class baresdk_ev_media_stats_t extends ffi.Struct {
   /// remote RTP address "ip:port\0"
   @ffi.Array.multi([64])
   external ffi.Array<ffi.Char> remote_addr;
+
+  /// worst mos_lq tick this call
+  @ffi.Float()
+  external double mos_lq_min;
+
+  /// session average mos_lq
+  @ffi.Float()
+  external double mos_lq_avg;
+
+  /// which poll this is (1-based)
+  @ffi.Uint32()
+  external int stats_tick;
+
+  /// elapsed ms since CALL_ESTABLISHED
+  @ffi.Uint64()
+  external int call_duration_ms;
+
+  /// true on the last event before teardown
+  @ffi.Bool()
+  external bool is_final;
 }
 
 final class baresdk_ev_log_t extends ffi.Struct {
@@ -1215,6 +1356,32 @@ final class baresdk_ev_presence_state_t extends ffi.Struct {
   external int status;
 }
 
+abstract class baresdk_quality_issue_t {
+  static const int BARESDK_QUALITY_MOS = 0;
+  static const int BARESDK_QUALITY_LOSS = 1;
+  static const int BARESDK_QUALITY_JITTER = 2;
+  static const int BARESDK_QUALITY_RTT = 3;
+}
+
+final class baresdk_ev_quality_alert_t extends ffi.Struct {
+  external baresdk_call_handle_t call;
+
+  @ffi.Int32()
+  external int issue;
+
+  /// current metric value
+  @ffi.Float()
+  external double value;
+
+  /// threshold that was crossed
+  @ffi.Float()
+  external double threshold;
+
+  /// true = value returned above threshold
+  @ffi.Bool()
+  external bool recovering;
+}
+
 /// ── Master event union ─────────────────────────────────────────────────────
 final class baresdk_event_t extends ffi.Struct {
   @ffi.Int32()
@@ -1249,6 +1416,8 @@ final class UnnamedUnion1 extends ffi.Union {
   external baresdk_ev_message_t msg;
 
   external baresdk_ev_presence_state_t presence;
+
+  external baresdk_ev_quality_alert_t quality_alert;
 }
 
 final class baresdk_config_t extends ffi.Struct {
@@ -1329,6 +1498,9 @@ final class baresdk_config_t extends ffi.Struct {
 
   @ffi.Bool()
   external bool ice_enabled;
+
+  @ffi.Bool()
+  external bool rtcp_mux;
 
   /// ── Media ──────────────────────────────────────────────────────
   @ffi.Int32()
@@ -1436,6 +1608,18 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Int32()
   external int mos_method;
 
+  /// fire QUALITY_ALERT when mos_lq < this (recommended 3.5)
+  @ffi.Float()
+  external double mos_alert_threshold;
+
+  /// fire QUALITY_ALERT when loss_pct > this (recommended 5.0)
+  @ffi.Float()
+  external double loss_alert_threshold;
+
+  /// fire QUALITY_ALERT when jitter_ms > this (recommended 40.0)
+  @ffi.Float()
+  external double jitter_alert_threshold;
+
   /// emit BARESDK_EV_SIP_TRACE per message
   @ffi.Bool()
   external bool trace_sip;
@@ -1529,6 +1713,45 @@ final class baresdk_account_config_t extends ffi.Struct {
   /// false = skip TLS cert verification
   @ffi.Bool()
   external bool verify_tls;
+
+  /// Push notification provider.  NONE (0) disables push params (default).
+  ///
+  /// When set, pn-provider/pn-prid/pn-param URI parameters are added to
+  /// the Contact header of every REGISTER per RFC 8599.  The server reads
+  /// these and sends an APNs/FCM push when a SIP INVITE arrives for an
+  /// offline device.
+  ///
+  /// The host app is responsible for obtaining the OS push token
+  /// (PKPushRegistry on iOS, FirebaseMessaging on Android) and passing it
+  /// here before calling baresdk_account_register().
+  @ffi.Int32()
+  external int push_provider;
+
+  /// Device push token string.
+  /// APNs: hex-encoded device token (128 hex chars, 64 bytes).
+  /// FCM:  registration token (~152 chars).
+  /// NULL or empty → push params omitted from Contact URI.
+  external ffi.Pointer<ffi.Char> push_token;
+
+  /// Provider-specific parameter (pn-param).
+  /// APNs: app bundle ID, e.g. "com.example.MyApp".
+  /// FCM:  app package name, e.g. "com.example.myapp".
+  /// NULL → pn-param omitted.
+  external ffi.Pointer<ffi.Char> push_param;
+
+  /// Per-account audio codec preference list (ordered, highest priority first).
+  /// 0 count = use global cfg codecs.
+  @ffi.Array.multi([8])
+  external ffi.Array<ffi.Int32> audio_codecs;
+
+  @ffi.Int32()
+  external int audio_codec_count;
+
+  @ffi.Array.multi([8, 32])
+  external ffi.Array<ffi.Array<ffi.Char>> audio_codec_names;
+
+  @ffi.Int32()
+  external int audio_codec_name_count;
 }
 
 /// ── Audio device enumeration ───────────────────────────────────────────────

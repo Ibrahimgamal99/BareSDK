@@ -27,7 +27,7 @@ from .events import (
     RegStateEvent, IncomingCallEvent, CallStateEvent, CallDtmfEvent,
     SdpNegotiationEvent, SipTraceEvent, MediaStatsEvent, LogEvent,
     RegistrarWarningEvent, TransferRequestEvent, MwiEvent,
-    MessageEvent, PresenceStateEvent,
+    MessageEvent, PresenceStateEvent, QualityAlertEvent,
 )
 
 # ── C constant mirrors ────────────────────────────────────────────────────────
@@ -59,6 +59,21 @@ PRESENCE_UNKNOWN = 0
 PRESENCE_OPEN    = 1
 PRESENCE_CLOSED  = 2
 PRESENCE_BUSY    = 3
+
+PUSH_PROVIDER_NONE         = 0
+PUSH_PROVIDER_APNS         = 1
+PUSH_PROVIDER_APNS_SANDBOX = 2
+PUSH_PROVIDER_FCM          = 3
+
+QUALITY_MOS    = 0
+QUALITY_LOSS   = 1
+QUALITY_JITTER = 2
+QUALITY_RTT    = 3
+
+CODEC_OPUS = 0
+CODEC_PCMU = 1
+CODEC_PCMA = 2
+CODEC_G722 = 3
 
 
 def _s(cptr) -> Optional[str]:
@@ -183,39 +198,50 @@ def _global_event_cb(ev_ptr, _userdata):
             s = ev.u.stats
             obj = MediaStatsEvent(
                 call=None,
-                packets_sent       = s.packets_sent,
-                packets_received   = s.packets_received,
-                packets_lost       = s.packets_lost,
-                packets_lost_rx    = s.packets_lost_rx,
-                bytes_sent         = s.bytes_sent,
-                bytes_received     = s.bytes_received,
-                tx_errors          = s.tx_errors,
-                rx_errors          = s.rx_errors,
-                loss_pct           = s.loss_pct,
-                loss_pct_rx        = s.loss_pct_rx,
-                jitter_ms          = s.jitter_ms,
-                tx_jitter_ms       = s.tx_jitter_ms,
-                rtt_ms             = s.rtt_ms,
-                jitter_buffer_ms   = s.jitter_buffer_ms,
-                jitter_buffer_load = s.jitter_buffer_load,
-                late_packets       = s.late_packets,
-                discarded_packets  = s.discarded_packets,
-                bandwidth_kbps_tx  = s.bandwidth_kbps_tx,
-                bandwidth_kbps_rx  = s.bandwidth_kbps_rx,
+                packets_sent          = s.packets_sent,
+                packets_received      = s.packets_received,
+                packets_lost          = s.packets_lost,
+                packets_lost_rx       = s.packets_lost_rx,
+                bytes_sent            = s.bytes_sent,
+                bytes_received        = s.bytes_received,
+                tx_errors             = s.tx_errors,
+                rx_errors             = s.rx_errors,
+                loss_pct              = s.loss_pct,
+                loss_pct_rx           = s.loss_pct_rx,
+                jitter_ms             = s.jitter_ms,
+                tx_jitter_ms          = s.tx_jitter_ms,
+                rtt_ms                = s.rtt_ms,
+                jitter_buffer_ms      = s.jitter_buffer_ms,
+                jitter_buffer_load    = s.jitter_buffer_load,
+                late_packets          = s.late_packets,
+                discarded_packets     = s.discarded_packets,
+                jitter_buffer_target_ms = s.jitter_buffer_target_ms,
+                jitter_buffer_adaptive  = bool(s.jitter_buffer_adaptive),
+                plc_frames            = s.plc_frames,
+                plc_ratio             = s.plc_ratio,
+                bandwidth_kbps_tx     = s.bandwidth_kbps_tx,
+                bandwidth_kbps_rx     = s.bandwidth_kbps_rx,
                 avg_bandwidth_kbps_tx = s.avg_bandwidth_kbps_tx,
                 avg_bandwidth_kbps_rx = s.avg_bandwidth_kbps_rx,
-                mos_lq             = s.mos_lq,
-                mos_cq             = s.mos_cq,
-                mos_method         = s.mos_method,
-                codec_name         = _s(s.codec_name) or "",
-                codec_clock_rate   = s.codec_clock_rate,
-                codec_sample_rate  = s.codec_sample_rate,
-                codec_channels     = s.codec_channels,
-                payload_type       = s.payload_type,
-                audio_level_dbov   = s.audio_level_dbov,
-                ssrc_tx            = s.ssrc_tx,
-                ssrc_rx            = s.ssrc_rx,
-                remote_addr        = ffi.string(s.remote_addr).decode("utf-8", errors="replace"),
+                mos_lq                = s.mos_lq,
+                mos_cq                = s.mos_cq,
+                mos_lq_rx             = s.mos_lq_rx,
+                mos_cq_rx             = s.mos_cq_rx,
+                mos_method            = s.mos_method,
+                codec_name            = _s(s.codec_name) or "",
+                codec_clock_rate      = s.codec_clock_rate,
+                codec_sample_rate     = s.codec_sample_rate,
+                codec_channels        = s.codec_channels,
+                payload_type          = s.payload_type,
+                audio_level_dbov      = s.audio_level_dbov,
+                ssrc_tx               = s.ssrc_tx,
+                ssrc_rx               = s.ssrc_rx,
+                remote_addr           = ffi.string(s.remote_addr).decode("utf-8", errors="replace"),
+                mos_lq_min            = s.mos_lq_min,
+                mos_lq_avg            = s.mos_lq_avg,
+                stats_tick            = s.stats_tick,
+                call_duration_ms      = s.call_duration_ms,
+                is_final              = bool(s.is_final),
             )
 
         elif typ == 8:  # REGISTRAR_WARNING
@@ -255,6 +281,18 @@ def _global_event_cb(ev_ptr, _userdata):
                 target_uri = _s(ev.u.presence.target_uri) or "",
                 status     = ev.u.presence.status,
             )
+
+        elif typ == 13: # QUALITY_ALERT
+            call_handle = ev.u.quality_alert.call
+            q = ev.u.quality_alert
+            obj = QualityAlertEvent(
+                call       = None,
+                issue      = q.issue,
+                value      = q.value,
+                threshold  = q.threshold,
+                recovering = bool(q.recovering),
+            )
+
         else:
             return
 
@@ -331,6 +369,11 @@ class Call:
         return self._h
 
 
+def strerror(err: int) -> str:
+    """Return a human-readable string for a BARESDK_ERR_* code."""
+    return ffi.string(lib.baresdk_strerror(err)).decode("utf-8", errors="replace")
+
+
 def _check(rc, what):
     if rc != 0:
         raise RuntimeError(f"baresdk.{what} failed (code {rc})")
@@ -391,6 +434,26 @@ class Account:
     def add_header(self, name: str, value: str):
         _check(lib.baresdk_account_add_header(self._h, name.encode(), value.encode()),
                "add_header")
+
+    def add_register_header(self, name: str, value: str):
+        """Add a custom SIP header sent on REGISTER requests only.
+
+        Unlike add_header(), this header is NOT included on INVITE, BYE, or
+        REFER — the push token is not leaked to call peers. Use for vendor push
+        schemes (X-Push-Token, etc.) on hosted servers.
+        """
+        _check(lib.baresdk_account_add_register_header(
+            self._h, name.encode(), value.encode()), "add_register_header")
+
+    def set_push_token(self, push_token: Optional[str]) -> int:
+        """Update the push notification token at runtime (e.g. on token rotation).
+
+        Stores the new token and triggers a fresh REGISTER unless a call is
+        active or a transaction is in flight (deferred to next natural
+        re-registration). Pass None to clear push params.
+        """
+        tok = push_token.encode() if push_token is not None else ffi.NULL
+        return lib.baresdk_account_set_push_token(self._h, tok)
 
     def events(self, timeout: Optional[float] = None) -> Iterator:
         """
@@ -465,14 +528,41 @@ class SDK:
 
     def create_account(self, uri: str, password: str,
                        transport: int = TRANSPORT_UDP,
+                       push_provider: int = PUSH_PROVIDER_NONE,
+                       push_token: Optional[str] = None,
+                       push_param: Optional[str] = None,
+                       audio_codecs: Optional[list] = None,
                        **kwargs) -> Account:
         cfg = ffi.new("baresdk_account_config_t *")
         # keep cdata alive
         self._acfg_uri  = ffi.new("char[]", uri.encode())
         self._acfg_pass = ffi.new("char[]", password.encode())
-        cfg.uri       = self._acfg_uri
-        cfg.password  = self._acfg_pass
-        cfg.transport = transport
+        cfg.uri           = self._acfg_uri
+        cfg.password      = self._acfg_pass
+        cfg.transport     = transport
+        cfg.push_provider = push_provider
+        if push_token is not None:
+            self._acfg_push_token = ffi.new("char[]", push_token.encode())
+            cfg.push_token = self._acfg_push_token
+        if push_param is not None:
+            self._acfg_push_param = ffi.new("char[]", push_param.encode())
+            cfg.push_param = self._acfg_push_param
+        if audio_codecs:
+            str_codecs = [c for c in audio_codecs if isinstance(c, str)]
+            int_codecs = [c for c in audio_codecs if isinstance(c, int)]
+            if str_codecs:
+                count = min(len(str_codecs), 8)
+                for i, name in enumerate(str_codecs[:count]):
+                    encoded = name.encode()[:31]
+                    for j, b in enumerate(encoded):
+                        cfg.audio_codec_names[i][j] = b
+                    cfg.audio_codec_names[i][len(encoded)] = 0
+                cfg.audio_codec_name_count = count
+            elif int_codecs:
+                count = min(len(int_codecs), 8)
+                for i, c in enumerate(int_codecs[:count]):
+                    cfg.audio_codecs[i] = c
+                cfg.audio_codec_count = count
         for key, val in kwargs.items():
             if isinstance(val, str):
                 ref = ffi.new("char[]", val.encode())
@@ -532,11 +622,11 @@ class SDK:
 
 
 __all__ = [
-    "SDK", "Account", "Call",
+    "SDK", "Account", "Call", "strerror",
     "RegStateEvent", "IncomingCallEvent", "CallStateEvent", "CallDtmfEvent",
     "SdpNegotiationEvent", "SipTraceEvent", "MediaStatsEvent", "LogEvent",
     "RegistrarWarningEvent", "TransferRequestEvent", "MwiEvent",
-    "MessageEvent", "PresenceStateEvent",
+    "MessageEvent", "PresenceStateEvent", "QualityAlertEvent",
     "REG_UNREGISTERED", "REG_REGISTERING", "REG_REGISTERED",
     "REG_FAILED", "REG_UNREGISTERING",
     "CALL_CALLING", "CALL_RINGING", "CALL_ESTABLISHED", "CALL_HELD",
@@ -544,4 +634,8 @@ __all__ = [
     "TRANSPORT_UDP", "TRANSPORT_TCP", "TRANSPORT_TLS", "TRANSPORT_WS", "TRANSPORT_WSS",
     "MEDIA_ENC_NONE", "MEDIA_ENC_SDES", "MEDIA_ENC_DTLS_SRTP",
     "PRESENCE_UNKNOWN", "PRESENCE_OPEN", "PRESENCE_CLOSED", "PRESENCE_BUSY",
+    "PUSH_PROVIDER_NONE", "PUSH_PROVIDER_APNS", "PUSH_PROVIDER_APNS_SANDBOX",
+    "PUSH_PROVIDER_FCM",
+    "QUALITY_MOS", "QUALITY_LOSS", "QUALITY_JITTER", "QUALITY_RTT",
+    "CODEC_OPUS", "CODEC_PCMU", "CODEC_PCMA", "CODEC_G722",
 ]

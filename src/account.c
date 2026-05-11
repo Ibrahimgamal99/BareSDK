@@ -99,6 +99,8 @@ void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
 	acct->cfg_turn_user   = bsdk_strdup(src->turn_user);
 	acct->cfg_turn_pass   = bsdk_strdup(src->turn_pass);
 	acct->cfg_outbound    = bsdk_strdup(src->outbound);
+	acct->cfg_push_token  = bsdk_strdup(src->push_token);
+	acct->cfg_push_param  = bsdk_strdup(src->push_param);
 
 	dst->uri          = acct->cfg_uri;
 	dst->password     = acct->cfg_password;
@@ -111,6 +113,8 @@ void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
 	dst->turn_user    = acct->cfg_turn_user;
 	dst->turn_pass    = acct->cfg_turn_pass;
 	dst->outbound     = acct->cfg_outbound;
+	dst->push_token   = acct->cfg_push_token;
+	dst->push_param   = acct->cfg_push_param;
 }
 
 void bsdk_acct_cfg_deep_free(struct baresdk_account *acct)
@@ -126,11 +130,33 @@ void bsdk_acct_cfg_deep_free(struct baresdk_account *acct)
 	mem_deref(acct->cfg_turn_user);    acct->cfg_turn_user = NULL;
 	mem_deref(acct->cfg_turn_pass);    acct->cfg_turn_pass = NULL;
 	mem_deref(acct->cfg_outbound);     acct->cfg_outbound = NULL;
+	mem_deref(acct->cfg_push_token);   acct->cfg_push_token = NULL;
+	mem_deref(acct->cfg_push_param);   acct->cfg_push_param = NULL;
 }
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 
-/* Build codec list string: "opus/48000/2,PCMU/8000/1" */
+/* Normalize a codec name/alias to the "name/rate/channels" format baresip expects.
+ * Returns a static or caller-guaranteed string, or NULL for empty input. */
+static const char *normalize_codec_name(const char *name)
+{
+	if (!name || !name[0]) return NULL;
+	if (strcasecmp(name, "opus")               == 0) return "opus/48000/2";
+	if (strcasecmp(name, "ulaw")               == 0 ||
+	    strcasecmp(name, "g711u")              == 0 ||
+	    strcasecmp(name, "pcmu")               == 0) return "PCMU/8000/1";
+	if (strcasecmp(name, "alaw")               == 0 ||
+	    strcasecmp(name, "g711a")              == 0 ||
+	    strcasecmp(name, "pcma")               == 0) return "PCMA/8000/1";
+	if (strcasecmp(name, "g722")               == 0) return "G722/8000/1";
+	if (strcasecmp(name, "g729")               == 0) return "G729/8000/1";
+	if (strcasecmp(name, "g726")               == 0 ||
+	    strcasecmp(name, "g726-32")            == 0) return "G726-32/8000/1";
+	/* Unknown name passed as-is — lets callers use any codec baresip has loaded */
+	return name;
+}
+
+/* Build codec list string from enum array: "opus/48000/2,PCMU/8000/1" */
 static void codec_list_str(const baresdk_codec_t *codecs, int count,
                              char *buf, size_t sz)
 {
@@ -149,6 +175,69 @@ static void codec_list_str(const baresdk_codec_t *codecs, int count,
 		strncat(buf, name, sz - strlen(buf) - 1);
 	}
 }
+
+/* Build codec list string from name array: "opus/48000/2,PCMU/8000/1" */
+static void codec_names_list_str(const char names[][32], int count,
+                                  char *buf, size_t sz)
+{
+	buf[0] = '\0';
+	for (int i = 0; i < count && i < 8; i++) {
+		const char *resolved = normalize_codec_name(names[i]);
+		if (!resolved) continue;
+		if (buf[0]) strncat(buf, ",", sz - strlen(buf) - 1);
+		strncat(buf, resolved, sz - strlen(buf) - 1);
+	}
+}
+
+/* Maximum buffer for the RFC 8599 Contact URI params string.
+ * Worst case: "pn-provider=apns-sandbox" (24) + ";pn-prid=" (9) +
+ * token (~256) + ";pn-param=" (10) + param (~200) + NUL. */
+#define BSDK_PUSH_PARAMS_BUFSZ 1024
+
+/* Build the RFC 8599 Contact URI params string into buf.
+ * Returns length written (>0), 0 if push is disabled/unconfigured,
+ * or -1 on overflow. */
+static int build_push_contact_params(const struct baresdk_account *acct,
+                                      char *buf, size_t buf_sz)
+{
+	const char *provider_str;
+
+	if (acct->cfg.push_provider == BARESDK_PUSH_PROVIDER_NONE)
+		return 0;
+	if (!acct->cfg.push_token || !acct->cfg.push_token[0])
+		return 0;
+
+	switch (acct->cfg.push_provider) {
+	case BARESDK_PUSH_PROVIDER_APNS:         provider_str = "apns";         break;
+	case BARESDK_PUSH_PROVIDER_APNS_SANDBOX: provider_str = "apns-sandbox"; break;
+	case BARESDK_PUSH_PROVIDER_FCM:          provider_str = "fcm";          break;
+	default: return 0;
+	}
+
+	/* Pre-flight length check — refuse silent truncation */
+	size_t need = strlen("pn-provider=") + strlen(provider_str)
+	            + strlen(";pn-prid=") + strlen(acct->cfg.push_token) + 1;
+	if (acct->cfg.push_param && acct->cfg.push_param[0])
+		need += strlen(";pn-param=") + strlen(acct->cfg.push_param);
+	if (need > buf_sz)
+		return -1;
+
+	int n;
+	if (acct->cfg.push_param && acct->cfg.push_param[0])
+		n = re_snprintf(buf, buf_sz,
+		                "pn-provider=%s;pn-prid=%s;pn-param=%s",
+		                provider_str,
+		                acct->cfg.push_token,
+		                acct->cfg.push_param);
+	else
+		n = re_snprintf(buf, buf_sz,
+		                "pn-provider=%s;pn-prid=%s",
+		                provider_str,
+		                acct->cfg.push_token);
+
+	return (n > 0) ? n : -1;
+}
+
 
 /* Configure a baresip account object.
  * acct->parsed_* fields (user, host, port, transport) must be set first. */
@@ -205,6 +294,10 @@ static void configure_baresip_account(struct baresdk_account *acct)
 	if (acct->cfg.ice_enabled || cfg->ice_enabled)
 		account_set_medianat(ba, "ice");
 
+	/* RTCP multiplexing (RFC 5761) — eliminates the separate RTCP ICE session
+	 * that crashes on incoming calls when ICE is active. */
+	account_set_rtcp_mux(ba, cfg->rtcp_mux);
+
 	/* STUN/TURN — account overrides global */
 	{
 		const char *stun = acct->cfg.stun_server
@@ -226,11 +319,25 @@ static void configure_baresip_account(struct baresdk_account *acct)
 		if (tp)   account_set_stun_pass(ba, tp);
 	}
 
-	/* Audio codecs */
-	if (cfg->audio_codec_count > 0) {
+	/* Audio codecs — string names > account enum list > global enum list */
+	{
 		char codecs[256];
-		codec_list_str(cfg->audio_codecs, cfg->audio_codec_count,
-		               codecs, sizeof(codecs));
+		codecs[0] = '\0';
+
+		if (acct->cfg.audio_codec_name_count > 0) {
+			codec_names_list_str(acct->cfg.audio_codec_names,
+			                     acct->cfg.audio_codec_name_count,
+			                     codecs, sizeof(codecs));
+		} else if (acct->cfg.audio_codec_count > 0) {
+			codec_list_str(acct->cfg.audio_codecs,
+			               acct->cfg.audio_codec_count,
+			               codecs, sizeof(codecs));
+		} else if (cfg->audio_codec_count > 0) {
+			codec_list_str(cfg->audio_codecs,
+			               cfg->audio_codec_count,
+			               codecs, sizeof(codecs));
+		}
+
 		if (codecs[0])
 			account_set_audio_codecs(ba, codecs);
 	}
@@ -240,6 +347,14 @@ static void configure_baresip_account(struct baresdk_account *acct)
 
 	/* Call transfer support */
 	account_set_call_transfer(ba, true);
+
+	/* RFC 8599: store push Contact URI params on the UA.
+	 * They are propagated to each reg client inside ua_register(). */
+	if (acct->cfg.push_provider != BARESDK_PUSH_PROVIDER_NONE) {
+		char pn_params[BSDK_PUSH_PARAMS_BUFSZ];
+		if (build_push_contact_params(acct, pn_params, sizeof(pn_params)) > 0)
+			ua_set_contact_params(acct->ua, pn_params);
+	}
 }
 
 /* ── Retry timer (fires on re_main) ─────────────────────────────────────── */
@@ -521,4 +636,61 @@ int baresdk_account_retry_now(baresdk_account_handle_t acct)
 {
 	if (!acct) return BARESDK_ERR_INVAL;
 	return bsdk_dispatch_sync(retry_now_fn, acct);
+}
+
+/* ── Push token runtime update ──────────────────────────────────────────── */
+
+typedef struct {
+	baresdk_account_handle_t  acct;
+	/* Caller-owned string pointer. Safe because bsdk_dispatch_sync blocks
+	 * the caller until set_push_token_fn returns, so the string cannot be
+	 * freed before bsdk_strdup() copies it. */
+	const char               *push_token;
+	int                       result;
+} push_token_ctx_t;
+
+static void set_push_token_fn(void *arg)
+{
+	push_token_ctx_t *ctx = arg;
+	struct baresdk_account *acct = ctx->acct;
+
+	if (!acct->ua) {
+		ctx->result = BARESDK_ERR_STATE;
+		return;
+	}
+
+	mem_deref(acct->cfg_push_token);
+	acct->cfg_push_token = bsdk_strdup(ctx->push_token);
+	acct->cfg.push_token = acct->cfg_push_token;
+
+	char pn_params[BSDK_PUSH_PARAMS_BUFSZ];
+	int n = build_push_contact_params(acct, pn_params, sizeof(pn_params));
+	if (n < 0) {
+		ctx->result = BARESDK_ERR_INVAL;  /* token too long */
+		return;
+	}
+
+	ctx->result = ua_set_contact_params(acct->ua, n > 0 ? pn_params : NULL);
+	if (ctx->result)
+		return;
+
+	/* Re-register only when safe: skip if mid-transaction or mid-retry.
+	 * The new cparams are already stored on the UA; the next natural
+	 * ua_register() call will pick them up. */
+	bool reg_in_flight = (acct->reg_state == BARESDK_REG_REGISTERING ||
+	                      acct->reg_state == BARESDK_REG_UNREGISTERING);
+	bool retry_pending = tmr_isrunning(&acct->retry_tmr);
+
+	if (!reg_in_flight && !retry_pending)
+		ua_register(acct->ua);
+}
+
+int baresdk_account_set_push_token(baresdk_account_handle_t acct,
+                                    const char *push_token)
+{
+	if (!acct) return BARESDK_ERR_INVAL;
+	push_token_ctx_t ctx = { .acct = acct, .push_token = push_token,
+	                          .result = 0 };
+	int err = bsdk_dispatch_sync(set_push_token_fn, &ctx);
+	return err ? err : ctx.result;
 }

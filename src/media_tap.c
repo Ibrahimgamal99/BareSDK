@@ -17,14 +17,19 @@
 /* ── Filter state ────────────────────────────────────────────────────────── */
 
 struct tap_enc_st {
-	struct aufilt_enc_st base;
-	const struct audio  *au;
+	struct aufilt_enc_st  base;
+	const struct audio   *au;
+	struct baresdk_call  *lc;
 };
 
 struct tap_dec_st {
-	struct aufilt_dec_st base;
-	const struct audio  *au;
+	struct aufilt_dec_st  base;
+	const struct audio   *au;
+	struct baresdk_call  *lc;
 };
+
+/* ── Forward declaration ─────────────────────────────────────────────────── */
+static struct baresdk_call *tap_find_call(const struct audio *au);
 
 /* ── Filter callbacks ────────────────────────────────────────────────────── */
 
@@ -36,6 +41,7 @@ static int tap_encupd(struct aufilt_enc_st **stp, void **ctx,
 	struct tap_enc_st *st = mem_alloc(sizeof(*st), NULL);
 	if (!st) return ENOMEM;
 	st->au = au;
+	st->lc = tap_find_call(au);
 	*stp = (struct aufilt_enc_st *)st;
 	return 0;
 }
@@ -48,6 +54,7 @@ static int tap_decupd(struct aufilt_dec_st **stp, void **ctx,
 	struct tap_dec_st *st = mem_alloc(sizeof(*st), NULL);
 	if (!st) return ENOMEM;
 	st->au = au;
+	st->lc = tap_find_call(au);
 	*stp = (struct aufilt_dec_st *)st;
 	return 0;
 }
@@ -73,7 +80,7 @@ static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 	struct tap_enc_st *ts = (struct tap_enc_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
-	struct baresdk_call *lc = tap_find_call(ts->au);
+	struct baresdk_call *lc = ts->lc;
 	if (!lc) return 0;
 
 	mtx_lock(&lc->tap_lock);
@@ -98,7 +105,7 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 	struct tap_dec_st *ts = (struct tap_dec_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
-	struct baresdk_call *lc = tap_find_call(ts->au);
+	struct baresdk_call *lc = ts->lc;
 	if (!lc) return 0;
 
 	mtx_lock(&lc->tap_lock);

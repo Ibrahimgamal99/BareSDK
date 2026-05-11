@@ -307,18 +307,54 @@ class BareSDK {
 
   Account createAccount(String uri, String password, {
     int transport = baresdk_transport_t.BARESDK_TRANSPORT_UDP,
+    int pushProvider = baresdk_push_provider_t.BARESDK_PUSH_PROVIDER_NONE,
+    String? pushToken,
+    String? pushParam,
+    List<String>? audioCodecs,
   }) {
-    final cfg = calloc<baresdk_account_config_t>();
+    final cfg     = calloc<baresdk_account_config_t>();
     final uriPtr  = uri.toNativeUtf8().cast<Char>();
     final passPtr = password.toNativeUtf8().cast<Char>();
-    cfg.ref.uri       = uriPtr;
-    cfg.ref.password  = passPtr;
-    cfg.ref.transport = transport;
-    final out = calloc<Pointer<baresdk_account>>();
-    internal.nativeBindings.baresdk_account_create(cfg, out);
-    final handle = out.value;
-    calloc.free(out); calloc.free(uriPtr); calloc.free(passPtr); calloc.free(cfg);
+    final tokenPtr = pushToken != null
+        ? pushToken.toNativeUtf8().cast<Char>()
+        : nullptr;
+    final paramPtr = pushParam != null
+        ? pushParam.toNativeUtf8().cast<Char>()
+        : nullptr;
 
+    cfg.ref.uri           = uriPtr;
+    cfg.ref.password      = passPtr;
+    cfg.ref.transport     = transport;
+    cfg.ref.push_provider = pushProvider;
+    cfg.ref.push_token    = tokenPtr;
+    cfg.ref.push_param    = paramPtr;
+
+    if (audioCodecs != null && audioCodecs.isNotEmpty) {
+      final count = audioCodecs.length > 8 ? 8 : audioCodecs.length;
+      for (int i = 0; i < count; i++) {
+        final bytes = audioCodecs[i].codeUnits;
+        final len = bytes.length > 31 ? 31 : bytes.length;
+        for (int j = 0; j < len; j++) {
+          cfg.ref.audio_codec_names[i][j] = bytes[j];
+        }
+        cfg.ref.audio_codec_names[i][len] = 0;
+      }
+      cfg.ref.audio_codec_name_count = count;
+    }
+
+    final out = calloc<Pointer<baresdk_account>>();
+    try {
+      internal.nativeBindings.baresdk_account_create(cfg, out);
+    } finally {
+      calloc.free(uriPtr);
+      calloc.free(passPtr);
+      if (tokenPtr != nullptr) calloc.free(tokenPtr);
+      if (paramPtr != nullptr) calloc.free(paramPtr);
+      calloc.free(cfg);
+    }
+
+    final handle = out.value;
+    calloc.free(out);
     final account = Account(handle);
     _accounts[handle.address] = account;
     return account;
@@ -342,9 +378,9 @@ class BareSDK {
     return out;
   }
 
-  void setAec(bool enable) => internal.nativeBindings.baresdk_set_aec(enable ? 1 : 0);
-  void setNs(bool enable)  => internal.nativeBindings.baresdk_set_ns(enable ? 1 : 0);
-  void setAgc(bool enable) => internal.nativeBindings.baresdk_set_agc(enable ? 1 : 0);
+  void setAec(bool enable) => internal.nativeBindings.baresdk_set_aec(enable);
+  void setNs(bool enable)  => internal.nativeBindings.baresdk_set_ns(enable);
+  void setAgc(bool enable) => internal.nativeBindings.baresdk_set_agc(enable);
 
   void setJitterBuffer(int minMs, int maxMs) {
     internal.nativeBindings.baresdk_set_jitter_buffer(minMs, maxMs);
@@ -366,7 +402,7 @@ class BareSDK {
     switch (type) {
       case baresdk_event_type_t.BARESDK_EV_LOG:
         decoded = LogEvent(ev.ref.u.log.message.cast<Utf8>().toDartString());
-        for (final a in _accounts.values) a._add(decoded!);
+        for (final a in _accounts.values) a._add(decoded);
         return;
 
       case baresdk_event_type_t.BARESDK_EV_REG_STATE:
@@ -442,7 +478,7 @@ class BareSDK {
           ssrcRx:             s.ssrc_rx,
           remoteAddr:         addrStr,
         );
-        for (final a in _accounts.values) a._add(decoded!);
+        for (final a in _accounts.values) a._add(decoded);
         return;
 
       case baresdk_event_type_t.BARESDK_EV_MESSAGE:
@@ -459,7 +495,7 @@ class BareSDK {
         return;
     }
 
-    if (decoded != null && target != null) {
+    if (target != null) {
       target._add(decoded);
     }
   }

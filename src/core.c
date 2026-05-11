@@ -147,6 +147,7 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->session_min_se_s      = 90;
 	cfg->mos_method            = BARESDK_MOS_EMODEL;
 	cfg->log_level             = 1;
+	cfg->rtcp_mux              = true;
 }
 
 /* ── baresdk_init ────────────────────────────────────────────────────────── */

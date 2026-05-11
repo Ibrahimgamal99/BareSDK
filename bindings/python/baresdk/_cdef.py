@@ -9,6 +9,7 @@ cffi's pycparser cannot handle all gcc/clang builtins and system typedefs.
 CDEF = r"""
 /* ── Version ──────────────────────────────────────────────────────────────── */
 const char *baresdk_version(void);
+const char *baresdk_strerror(int err);
 
 /* ── Opaque handles ───────────────────────────────────────────────────────── */
 typedef struct baresdk_account  *baresdk_account_handle_t;
@@ -92,6 +93,13 @@ typedef enum {
 } baresdk_100rel_mode_t;
 
 typedef enum {
+    BARESDK_PUSH_PROVIDER_NONE         = 0,
+    BARESDK_PUSH_PROVIDER_APNS         = 1,
+    BARESDK_PUSH_PROVIDER_APNS_SANDBOX = 2,
+    BARESDK_PUSH_PROVIDER_FCM          = 3,
+} baresdk_push_provider_t;
+
+typedef enum {
     BARESDK_EV_LOG = 0,
     BARESDK_EV_REG_STATE,
     BARESDK_EV_INCOMING_CALL,
@@ -105,6 +113,7 @@ typedef enum {
     BARESDK_EV_MWI,
     BARESDK_EV_MESSAGE,
     BARESDK_EV_PRESENCE_STATE,
+    BARESDK_EV_QUALITY_ALERT,
 } baresdk_event_type_t;
 
 /* ── Event payload structs ────────────────────────────────────────────────── */
@@ -174,12 +183,18 @@ typedef struct {
     uint32_t jitter_buffer_load;
     uint32_t late_packets;
     uint32_t discarded_packets;
+    uint32_t jitter_buffer_target_ms;
+    int      jitter_buffer_adaptive;
+    uint32_t plc_frames;
+    float    plc_ratio;
     uint32_t bandwidth_kbps_tx;
     uint32_t bandwidth_kbps_rx;
     uint32_t avg_bandwidth_kbps_tx;
     uint32_t avg_bandwidth_kbps_rx;
     float    mos_lq;
     float    mos_cq;
+    float    mos_lq_rx;
+    float    mos_cq_rx;
     baresdk_mos_method_t mos_method;
     const char *codec_name;
     uint32_t    codec_clock_rate;
@@ -190,6 +205,11 @@ typedef struct {
     uint32_t ssrc_tx;
     uint32_t ssrc_rx;
     char     remote_addr[64];
+    float    mos_lq_min;
+    float    mos_lq_avg;
+    uint32_t stats_tick;
+    uint64_t call_duration_ms;
+    int      is_final;
 } baresdk_ev_media_stats_t;
 
 typedef struct { const char *message; } baresdk_ev_log_t;
@@ -225,6 +245,21 @@ typedef struct {
     baresdk_presence_status_t status;
 } baresdk_ev_presence_state_t;
 
+typedef enum {
+    BARESDK_QUALITY_MOS    = 0,
+    BARESDK_QUALITY_LOSS,
+    BARESDK_QUALITY_JITTER,
+    BARESDK_QUALITY_RTT,
+} baresdk_quality_issue_t;
+
+typedef struct {
+    baresdk_call_handle_t   call;
+    baresdk_quality_issue_t issue;
+    float                   value;
+    float                   threshold;
+    int                     recovering;
+} baresdk_ev_quality_alert_t;
+
 typedef struct {
     baresdk_event_type_t type;
     union {
@@ -241,6 +276,7 @@ typedef struct {
         baresdk_ev_mwi_t               mwi;
         baresdk_ev_message_t           msg;
         baresdk_ev_presence_state_t    presence;
+        baresdk_ev_quality_alert_t     quality_alert;
     } u;
 } baresdk_event_t;
 
@@ -288,6 +324,7 @@ typedef struct {
     const char          *turn_user;
     const char          *turn_pass;
     int                  ice_enabled;
+    int                  rtcp_mux;
 
     baresdk_media_enc_t  media_enc;
     baresdk_codec_t      audio_codecs[8];
@@ -323,6 +360,9 @@ typedef struct {
 
     uint32_t              stats_interval_ms;
     baresdk_mos_method_t  mos_method;
+    float  mos_alert_threshold;
+    float  loss_alert_threshold;
+    float  jitter_alert_threshold;
 
     int         trace_sip;
     int         trace_sdp_diff;
@@ -350,6 +390,13 @@ typedef struct {
     const char          *turn_pass;
     const char          *outbound;
     int                  verify_tls;
+    baresdk_push_provider_t  push_provider;
+    const char              *push_token;
+    const char              *push_param;
+    baresdk_codec_t          audio_codecs[8];
+    int                      audio_codec_count;
+    char                     audio_codec_names[8][32];
+    int                      audio_codec_name_count;
 } baresdk_account_config_t;
 
 /* ── Lifecycle ────────────────────────────────────────────────────────────── */
@@ -368,6 +415,10 @@ int  baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
                                        float backoff, uint32_t max_attempts);
 int  baresdk_account_cancel_retry(baresdk_account_handle_t acct);
 int  baresdk_account_retry_now(baresdk_account_handle_t acct);
+int  baresdk_account_set_push_token(baresdk_account_handle_t acct,
+                                     const char *push_token);
+int  baresdk_account_add_register_header(baresdk_account_handle_t acct,
+                                          const char *name, const char *value);
 int  baresdk_account_add_header(baresdk_account_handle_t acct,
                                  const char *name, const char *value);
 int  baresdk_account_subscribe_presence(baresdk_account_handle_t acct,

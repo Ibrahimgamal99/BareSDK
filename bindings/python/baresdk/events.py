@@ -83,6 +83,11 @@ class MediaStatsEvent:
     jitter_buffer_load: int
     late_packets: int
     discarded_packets: int
+    jitter_buffer_target_ms: int
+    jitter_buffer_adaptive: bool
+    # PLC
+    plc_frames: int
+    plc_ratio: float
     # Bandwidth
     bandwidth_kbps_tx: int
     bandwidth_kbps_rx: int
@@ -91,6 +96,8 @@ class MediaStatsEvent:
     # MOS
     mos_lq: float
     mos_cq: float
+    mos_lq_rx: float
+    mos_cq_rx: float
     mos_method: int
     # Codec
     codec_name: str
@@ -104,6 +111,12 @@ class MediaStatsEvent:
     ssrc_tx: int
     ssrc_rx: int
     remote_addr: str
+    # Session history
+    mos_lq_min: float
+    mos_lq_avg: float
+    stats_tick: int
+    call_duration_ms: int
+    is_final: bool
 
 
 @dataclass
@@ -144,3 +157,12 @@ class MessageEvent:
 class PresenceStateEvent:
     target_uri: str
     status: int          # BARESDK_PRESENCE_* constant
+
+
+@dataclass
+class QualityAlertEvent:
+    call: object
+    issue: int           # BARESDK_QUALITY_* constant
+    value: float         # current metric value
+    threshold: float     # threshold that was crossed
+    recovering: bool     # True = value returned above threshold

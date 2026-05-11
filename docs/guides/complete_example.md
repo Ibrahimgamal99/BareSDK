@@ -15,6 +15,7 @@ then jump to whichever operation you need.
 |---|---|---|---|---|
 | Full SDK config (transport, TLS, ICE…) | ✓ | ✓ | ✓ | partial¹ |
 | Full account config (STUN, TURN, media enc…) | ✓ | ✓ | ✓ | partial¹ |
+| Codec selection (string names) | ✓ | ✓ | ✓ | ✓ |
 | Events | callback | `on_event` lambda | `account.events()` generator | `account.events` Stream |
 | Outgoing call | ✓ | ✓ | ✓ | ✓ |
 | Incoming call | ✓ | ✓ | ✓ | ✓ |
@@ -33,9 +34,9 @@ then jump to whichever operation you need.
 | Audio recording (WAV) | ✓ | ✓ | ✓ | ✓ |
 | Retry policy control | ✓ | ✓ | ✓ | ✓ |
 
-¹ The Flutter binding exposes `logLevel`, `statsIntervalMs`, `traceSip`, and
-`transport`. Deeper options (TLS certs, STUN/TURN, codecs) require a thin
-native plugin that calls the C API directly.
+¹ The Flutter binding exposes `logLevel`, `statsIntervalMs`, `traceSip`,
+`transport`, and `audioCodecs`. Deeper options (TLS certs, STUN/TURN) require
+a thin native plugin that calls the C API directly.
 
 ---
 
@@ -190,6 +191,13 @@ acfg.turn_pass    = "turn_secret";
 
 acfg.verify_tls   = true;   /* false = skip cert check (testing only) */
 
+/* Codec selection — string names, aliases accepted.
+ * Omit to use the global cfg.audio_codecs list. */
+strcpy(acfg.audio_codec_names[0], "ulaw");   /* G.711 µ-law  */
+strcpy(acfg.audio_codec_names[1], "alaw");   /* G.711 A-law  */
+strcpy(acfg.audio_codec_names[2], "opus");   /* Opus         */
+acfg.audio_codec_name_count = 3;
+
 baresdk_account_handle_t acct;
 baresdk_account_create(&acfg, &acct);
 
@@ -199,13 +207,29 @@ baresdk_account_set_100rel(acct, BARESDK_100REL_ENABLED); /* optional */
 baresdk_account_register(acct);
 ```
 
+Accepted codec name aliases:
+
+| Name | Codec |
+|---|---|
+| `"opus"` | Opus 48 kHz stereo |
+| `"ulaw"` / `"pcmu"` / `"g711u"` | G.711 µ-law |
+| `"alaw"` / `"pcma"` / `"g711a"` | G.711 A-law |
+| `"g722"` | G.722 wideband |
+| `"g729"` | G.729 |
+| `"g726"` / `"g726-32"` | G.726 32 kbps |
+| anything else | passed as-is to baresip |
+
+Priority: per-account string names → per-account enum (`audio_codecs[]`) → global `cfg.audio_codecs`.
+
 **C++**
 ```cpp
-/* Simple form — transport only */
+/* Simple form — codec list via initializer_list */
 auto acct = sdk.create_account("alice@pbx.example.com", "secret",
-                               BARESDK_TRANSPORT_TLS);
+                               BARESDK_TRANSPORT_TLS,
+                               {BARESDK_CODEC_PCMU, BARESDK_CODEC_PCMA,
+                                BARESDK_CODEC_OPUS});
 
-/* Full form — populate baresdk_account_config_t directly */
+/* Full form — use string names via baresdk_account_config_t */
 baresdk_account_config_t acfg{};
 acfg.uri          = "alice@pbx.example.com";
 acfg.password     = "secret";
@@ -218,6 +242,10 @@ acfg.turn_server  = "turn:turn.example.com:3478";
 acfg.turn_user    = "alice";
 acfg.turn_pass    = "turn_secret";
 acfg.verify_tls   = true;
+std::strcpy(acfg.audio_codec_names[0], "ulaw");
+std::strcpy(acfg.audio_codec_names[1], "alaw");
+std::strcpy(acfg.audio_codec_names[2], "opus");
+acfg.audio_codec_name_count = 3;
 
 auto acct = sdk.create_account(acfg);
 acct.add_header("X-Tenant-Id", "42");
@@ -229,7 +257,7 @@ acct.register_account();
 ```python
 from baresdk import TRANSPORT_TLS, MEDIA_ENC_SDES
 
-# All baresdk_account_config_t fields are accepted as keyword arguments.
+# Pass codec names as a list of strings — aliases are resolved automatically.
 account = sdk.create_account(
     "alice@pbx.example.com", "secret",
     transport    = TRANSPORT_TLS,
@@ -241,6 +269,7 @@ account = sdk.create_account(
     turn_user    = "alice",
     turn_pass    = "turn_secret",
     verify_tls   = True,
+    audio_codecs = ["ulaw", "alaw", "opus"],
 )
 account.add_header("X-Tenant-Id", "42")
 account.register()
@@ -248,12 +277,13 @@ account.register()
 
 **Flutter**
 ```dart
-// The Flutter createAccount() exposes transport only.
+// audioCodecs accepts a list of codec name strings.
 // STUN/TURN/ICE/TLS options require a native plugin.
 final account = sdk.createAccount(
   'alice@pbx.example.com',
   'secret',
-  transport: baresdk_transport_t.BARESDK_TRANSPORT_TLS,
+  transport:   baresdk_transport_t.BARESDK_TRANSPORT_TLS,
+  audioCodecs: ['ulaw', 'alaw', 'opus'],
 );
 account.addHeader('X-Tenant-Id', '42');
 account.register();
@@ -1083,7 +1113,8 @@ sdk.shutdown();
 | Voice quality (runtime) | `baresdk_set_aec/ns/agc()` / `sdk.set_aec/ns/agc()` | `sdk.setAec/Ns/Agc()` |
 | Jitter buffer (runtime) | `baresdk_set_jitter_buffer()` / `sdk.set_jitter_buffer()` | `sdk.setJitterBuffer()` |
 | Per-call DSCP | `baresdk_call_set_dscp_rtp()` / `call.set_dscp_rtp()` | `call.setDscpRtp()` |
-| Codec order | `audio_codecs[]`, `audio_codec_count` | — native plugin |
+| Codec selection (string names) | `audio_codec_names[]`, `audio_codec_name_count` | `audioCodecs: [...]` |
+| Codec selection (enum) | `audio_codecs[]`, `audio_codec_count` | — (use string names) |
 
 ---
 

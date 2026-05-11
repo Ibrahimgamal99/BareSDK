@@ -62,6 +62,7 @@ extern "C" {
 #define BARESDK_VERSION_PATCH 0
 
 BARESDK_EXPORT const char *baresdk_version(void);
+BARESDK_EXPORT const char *baresdk_strerror(int err);
 
 /* ── Opaque handles ───────────────────────────────────────────────────────── */
 
@@ -154,6 +155,18 @@ typedef enum {
 	BARESDK_100REL_REQUIRED = 2, /* require 100rel; reject if unsupported */
 } baresdk_100rel_mode_t;
 
+/**
+ * Push notification provider — determines the pn-provider URI parameter
+ * value placed in the SIP REGISTER Contact header per RFC 8599, or the
+ * server-side push dispatch type for non-RFC-8599 servers.
+ */
+typedef enum {
+	BARESDK_PUSH_PROVIDER_NONE         = 0, /* no push params (default) */
+	BARESDK_PUSH_PROVIDER_APNS         = 1, /* Apple APNs production    */
+	BARESDK_PUSH_PROVIDER_APNS_SANDBOX = 2, /* Apple APNs development   */
+	BARESDK_PUSH_PROVIDER_FCM          = 3, /* Firebase Cloud Messaging  */
+} baresdk_push_provider_t;
+
 /* ── Event types ──────────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -170,6 +183,7 @@ typedef enum {
 	BARESDK_EV_MWI,
 	BARESDK_EV_MESSAGE,
 	BARESDK_EV_PRESENCE_STATE,
+	BARESDK_EV_QUALITY_ALERT,
 } baresdk_event_type_t;
 
 /* ── Event payload structs ────────────────────────────────────────────────── */
@@ -243,10 +257,16 @@ typedef struct {
 	float    rtt_ms;            /* round-trip time ms */
 
 	/* ── Jitter buffer ─────────────────────────────────────────────────── */
-	uint32_t jitter_buffer_ms;  /* current adaptive buffer depth (ms) */
-	uint32_t jitter_buffer_load;/* packets currently held in buffer */
-	uint32_t late_packets;      /* packets that arrived too late */
-	uint32_t discarded_packets; /* packets discarded (overflow / flush) */
+	uint32_t jitter_buffer_ms;         /* current adaptive buffer depth (ms) */
+	uint32_t jitter_buffer_load;       /* packets currently held in buffer */
+	uint32_t late_packets;             /* packets that arrived too late */
+	uint32_t discarded_packets;        /* packets discarded (overflow / flush) */
+	uint32_t jitter_buffer_target_ms;  /* JB current jitter estimate (ms) */
+	bool     jitter_buffer_adaptive;   /* true when JB is in adaptive mode */
+
+	/* ── PLC (packet loss concealment) ─────────────────────────────────── */
+	uint32_t plc_frames;  /* frames lost at jitter buffer (PLC trigger count) */
+	float    plc_ratio;   /* plc_frames / total_rx_frames (0.0–1.0) */
 
 	/* ── Bandwidth ─────────────────────────────────────────────────────── */
 	uint32_t bandwidth_kbps_tx;     /* current TX bitrate (kbps) */
@@ -255,8 +275,10 @@ typedef struct {
 	uint32_t avg_bandwidth_kbps_rx; /* session-average RX bitrate (kbps) */
 
 	/* ── MOS scores — zero when RTCP not yet available ─────────────────── */
-	float    mos_lq;            /* listening quality  (1.0–4.5) */
-	float    mos_cq;            /* conversational quality (1.0–4.5) */
+	float    mos_lq;            /* TX-path listening quality  (1.0–4.5) */
+	float    mos_cq;            /* TX-path conversational quality (1.0–4.5) */
+	float    mos_lq_rx;         /* RX-path listening quality (patient → you) */
+	float    mos_cq_rx;         /* RX-path conversational quality */
 	baresdk_mos_method_t mos_method;
 
 	/* ── Codec ─────────────────────────────────────────────────────────── */
@@ -274,6 +296,13 @@ typedef struct {
 	uint32_t ssrc_tx;           /* our SSRC */
 	uint32_t ssrc_rx;           /* remote SSRC (0 if not yet received) */
 	char     remote_addr[64];   /* remote RTP address "ip:port\0" */
+
+	/* ── Session history — populated after first stats tick ────────────── */
+	float    mos_lq_min;        /* worst mos_lq tick this call */
+	float    mos_lq_avg;        /* session average mos_lq */
+	uint32_t stats_tick;        /* which poll this is (1-based) */
+	uint64_t call_duration_ms;  /* elapsed ms since CALL_ESTABLISHED */
+	bool     is_final;          /* true on the last event before teardown */
 } baresdk_ev_media_stats_t;
 
 typedef struct {
@@ -320,6 +349,21 @@ typedef struct {
 	baresdk_presence_status_t status;
 } baresdk_ev_presence_state_t;
 
+typedef enum {
+	BARESDK_QUALITY_MOS    = 0,
+	BARESDK_QUALITY_LOSS,
+	BARESDK_QUALITY_JITTER,
+	BARESDK_QUALITY_RTT,
+} baresdk_quality_issue_t;
+
+typedef struct {
+	baresdk_call_handle_t   call;
+	baresdk_quality_issue_t issue;
+	float                   value;       /* current metric value */
+	float                   threshold;   /* threshold that was crossed */
+	bool                    recovering;  /* true = value returned above threshold */
+} baresdk_ev_quality_alert_t;
+
 /* ── Master event union ───────────────────────────────────────────────────── */
 
 typedef struct {
@@ -338,6 +382,7 @@ typedef struct {
 		baresdk_ev_mwi_t               mwi;
 		baresdk_ev_message_t           msg;
 		baresdk_ev_presence_state_t    presence;
+		baresdk_ev_quality_alert_t     quality_alert;
 	} u;
 } baresdk_event_t;
 
@@ -428,6 +473,7 @@ typedef struct {
 	const char  *turn_user;
 	const char  *turn_pass;
 	bool         ice_enabled;
+	bool         rtcp_mux;    /* multiplex RTCP on RTP port (RFC 5761); default true */
 
 	/* ── Media ────────────────────────────────────────────────────── */
 	baresdk_media_enc_t  media_enc;
@@ -471,6 +517,10 @@ typedef struct {
 	/* ── Quality / observability ─────────────────────────────────── */
 	uint32_t              stats_interval_ms; /* 0 = disabled */
 	baresdk_mos_method_t  mos_method;
+	/* Quality alert thresholds — 0 disables each alert */
+	float  mos_alert_threshold;     /* fire QUALITY_ALERT when mos_lq < this (recommended 3.5) */
+	float  loss_alert_threshold;    /* fire QUALITY_ALERT when loss_pct > this (recommended 5.0) */
+	float  jitter_alert_threshold;  /* fire QUALITY_ALERT when jitter_ms > this (recommended 40.0) */
 
 	/* ── Tracing ─────────────────────────────────────────────────── */
 	bool        trace_sip;      /* emit BARESDK_EV_SIP_TRACE per message */
@@ -543,6 +593,41 @@ typedef struct {
 	const char          *outbound;   /* NULL = auto-derived from server */
 	bool                 verify_tls; /* false = skip TLS cert verification */
 
+	/* ── Push notifications ─────────────────────────────────────────────── */
+
+	/**
+	 * Push notification provider.  NONE (0) disables push params (default).
+	 *
+	 * When set, pn-provider/pn-prid/pn-param URI parameters are added to
+	 * the Contact header of every REGISTER per RFC 8599.  The server reads
+	 * these and sends an APNs/FCM push when a SIP INVITE arrives for an
+	 * offline device.
+	 *
+	 * The host app is responsible for obtaining the OS push token
+	 * (PKPushRegistry on iOS, FirebaseMessaging on Android) and passing it
+	 * here before calling baresdk_account_register().
+	 */
+	baresdk_push_provider_t  push_provider;
+
+	/**
+	 * Device push token string.
+	 * APNs: hex-encoded device token (128 hex chars, 64 bytes).
+	 * FCM:  registration token (~152 chars).
+	 * NULL or empty → push params omitted from Contact URI.
+	 */
+	const char              *push_token;
+
+	/**
+	 * Provider-specific parameter (pn-param).
+	 * APNs: app bundle ID, e.g. "com.example.MyApp".
+	 * FCM:  app package name, e.g. "com.example.myapp".
+	 * NULL → pn-param omitted.
+	 */
+	const char              *push_param;
+
+	baresdk_codec_t  audio_codecs[8];
+	int              audio_codec_count; /* 0 = use global cfg codecs */
+
 } baresdk_account_config_t;
 
 /* ── Lifecycle ────────────────────────────────────────────────────────────── */
@@ -602,6 +687,43 @@ BARESDK_EXPORT int baresdk_account_cancel_retry(baresdk_account_handle_t acct);
 /** Skip the current backoff delay and re-register immediately.
  *  Resets the attempt counter. No-op if the account is not in a retry loop. */
 BARESDK_EXPORT int baresdk_account_retry_now(baresdk_account_handle_t acct);
+
+/**
+ * Update the push token for an account at runtime (e.g. on OS token rotation).
+ *
+ * The new token is stored and the Contact URI params are updated.  A new
+ * REGISTER is sent immediately unless the account is mid-call, mid-transaction,
+ * or in retry backoff — in those cases the update is deferred to the next
+ * natural re-registration.  Callers that need the token applied before the
+ * next call should wait for BARESDK_EV_CALL_STATE ENDED first.
+ *
+ * Pass NULL to clear push params and re-register without pn-* Contact params.
+ *
+ * @param acct        Account handle (must have push_provider set in config)
+ * @param push_token  New device token string, or NULL to clear
+ * @return BARESDK_OK on success, BARESDK_ERR_STATE if account has no UA yet
+ */
+BARESDK_EXPORT int baresdk_account_set_push_token(baresdk_account_handle_t acct,
+                                                   const char *push_token);
+
+/**
+ * Add a custom SIP header that is sent on REGISTER requests only.
+ *
+ * Use this for vendor push schemes that use non-standard headers (e.g.
+ * "X-Push-Token", "X-Apple-Push-Bundle-Id") on hosted servers where you
+ * cannot configure server-side push dispatch.  Unlike
+ * baresdk_account_add_header(), this header is NOT included on INVITE,
+ * BYE, or REFER — the token is not leaked to call peers.
+ *
+ * Multiple calls accumulate headers.  The list is append-only for the
+ * lifetime of the account; recreate the account to clear it.
+ *
+ * @param name   Header field name  (e.g. "X-Push-Token")
+ * @param value  Header field value (e.g. "a1b2c3...")
+ */
+BARESDK_EXPORT int baresdk_account_add_register_header(
+        baresdk_account_handle_t acct,
+        const char *name, const char *value);
 
 /**
  * Add a custom SIP header to all outgoing requests for this account.
@@ -925,6 +1047,19 @@ public:
         detail::check(baresdk_account_add_header(h_, name.c_str(), value.c_str()), "add_header");
     }
 
+    /** Add a custom SIP header sent on REGISTER requests only (not on INVITE/BYE). */
+    void add_register_header(const std::string& name, const std::string& value) {
+        detail::check(
+            baresdk_account_add_register_header(h_, name.c_str(), value.c_str()),
+            "add_register_header");
+    }
+
+    /** Update the push token at runtime. Pass empty string to clear push params. */
+    int set_push_token(const std::string& push_token) {
+        return baresdk_account_set_push_token(
+            h_, push_token.empty() ? nullptr : push_token.c_str());
+    }
+
     void set_100rel(baresdk_100rel_mode_t mode) {
         detail::check(baresdk_account_set_100rel(h_, mode), "set_100rel");
     }
@@ -960,13 +1095,42 @@ public:
 
     Account create_account(const std::string& uri,
                            const std::string& password,
-                           baresdk_transport_t transport = BARESDK_TRANSPORT_UDP) {
+                           baresdk_transport_t transport = BARESDK_TRANSPORT_UDP,
+                           std::initializer_list<baresdk_codec_t> codecs = {}) {
         if (!initialized_) init();
 
         baresdk_account_config_t acfg{};
         acfg.uri       = uri.c_str();
         acfg.password  = password.c_str();
         acfg.transport = transport;
+        int ci = 0;
+        for (auto c : codecs) { if (ci >= 8) break; acfg.audio_codecs[ci++] = c; }
+        acfg.audio_codec_count = ci;
+
+        baresdk_account_handle_t h = nullptr;
+        detail::check(baresdk_account_create(&acfg, &h), "account_create");
+        return Account(h, &event_cb_);
+    }
+
+    Account create_account(const std::string& uri,
+                           const std::string& password,
+                           baresdk_push_provider_t push_provider,
+                           const std::string& push_token,
+                           const std::string& push_param = {},
+                           baresdk_transport_t transport = BARESDK_TRANSPORT_UDP,
+                           std::initializer_list<baresdk_codec_t> codecs = {}) {
+        if (!initialized_) init();
+
+        baresdk_account_config_t acfg{};
+        acfg.uri           = uri.c_str();
+        acfg.password      = password.c_str();
+        acfg.transport     = transport;
+        acfg.push_provider = push_provider;
+        acfg.push_token    = push_token.empty() ? nullptr : push_token.c_str();
+        acfg.push_param    = push_param.empty()  ? nullptr : push_param.c_str();
+        int ci = 0;
+        for (auto c : codecs) { if (ci >= 8) break; acfg.audio_codecs[ci++] = c; }
+        acfg.audio_codec_count = ci;
 
         baresdk_account_handle_t h = nullptr;
         detail::check(baresdk_account_create(&acfg, &h), "account_create");

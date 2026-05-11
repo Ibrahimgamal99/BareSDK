@@ -16,6 +16,7 @@ A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/b
 | **Messaging** | SIP MESSAGE send/receive |
 | **Presence** | PUBLISH · SUBSCRIBE/NOTIFY · BLF · MWI |
 | **Reliability** | PRACK / 100rel (RFC 3262) |
+| **Push notifications** | RFC 8599 Contact URI params (APNs · FCM) · REGISTER-only custom headers for hosted servers |
 | **Custom Headers** | Per-account + per-dialog (call) custom SIP headers |
 | **Media** | PCM tap (TX/RX) · Audio recording to WAV (per-direction) · TX mute · RX mute (speaker) · device enumerate + hot-switch |
 | **Observability** | SIP trace · SDP diff · pcap · RTCP/MOS stats (E-model + simplified) · jitter buffer · audio level · bandwidth (instant + avg, TX/RX) |
@@ -264,6 +265,13 @@ baresdk_account_config_t acct = {
     .turn_user   = "turnuser",
     .turn_pass   = "turnpass",
 
+    // ── Audio codecs (per-account override) ────────────────────────────────
+    // String names — most flexible, aliases accepted:
+    //   "opus"  "ulaw"/"pcmu"  "alaw"/"pcma"  "g722"  "g729"  "g726"
+    // Leave audio_codec_name_count = 0 to use the global cfg.audio_codecs list.
+    .audio_codec_names      = {"ulaw", "alaw", "opus"},
+    .audio_codec_name_count = 3,
+
     // ── Advanced ────────────────────────────────────────────────────────────
     .verify_tls  = true,     // false = skip TLS cert check (testing only)
 };
@@ -300,6 +308,48 @@ baresdk_account_config_t acct = {
 };
 ```
 
+### Codec selection
+
+Pass codec names as strings — aliases are resolved automatically:
+
+| Name | Resolves to |
+|---|---|
+| `"opus"` | Opus 48 kHz stereo |
+| `"ulaw"` / `"pcmu"` / `"g711u"` | G.711 µ-law |
+| `"alaw"` / `"pcma"` / `"g711a"` | G.711 A-law |
+| `"g722"` | G.722 wideband |
+| `"g729"` | G.729 |
+| `"g726"` / `"g726-32"` | G.726 32 kbps |
+
+**C:**
+```c
+strcpy(cfg.audio_codec_names[0], "ulaw");
+strcpy(cfg.audio_codec_names[1], "alaw");
+strcpy(cfg.audio_codec_names[2], "opus");
+cfg.audio_codec_name_count = 3;
+```
+
+**Python:**
+```python
+account = sdk.create_account("alice@pbx.example.com", "secret",
+                             audio_codecs=["ulaw", "alaw", "opus"])
+```
+
+**Flutter:**
+```dart
+sdk.createAccount("alice@pbx.example.com", "secret",
+                  audioCodecs: ["ulaw", "alaw", "opus"]);
+```
+
+**C++:**
+```cpp
+sdk.create_account("alice@pbx.example.com", "secret",
+                   BARESDK_TRANSPORT_UDP,
+                   {BARESDK_CODEC_PCMU, BARESDK_CODEC_PCMA, BARESDK_CODEC_OPUS});
+```
+
+Priority: per-account string names → per-account enum list → global `cfg.audio_codecs`.
+
 Per-account fields override the global defaults from `baresdk_config_t` when set.
 
 ---
@@ -318,10 +368,11 @@ cfg.verify_server = true;
 cfg.ice_enabled = true;
 cfg.stun_server = "stun:stun.example.com";
 
-// Media defaults
+// Media defaults — global codec list (overridable per-account)
 cfg.media_enc         = BARESDK_MEDIA_ENC_DTLS_SRTP;
 cfg.audio_codecs[0]   = BARESDK_CODEC_OPUS;
-cfg.audio_codec_count = 1;
+cfg.audio_codecs[1]   = BARESDK_CODEC_PCMU;
+cfg.audio_codec_count = 2;
 cfg.aec = cfg.ns = cfg.agc = true;
 
 // Observability

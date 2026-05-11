@@ -4,6 +4,34 @@ All notable changes to baresdk are documented here.
 
 ---
 
+## [1.4.0] — 2026-05-11
+
+### Fixed
+
+- **RTCP ICE crash on incoming calls** — when ICE is enabled, baresip opens a second ICE session for RTCP. A failure in that session caused a crash on incoming calls. Fixed by enabling RTCP multiplexing (RFC 5761) by default: RTCP shares the RTP port, so no separate RTCP ICE session is created.
+
+### Added
+
+- `rtcp_mux` field in `baresdk_config_t` (default `true`). Set to `false` to opt out of RTCP-mux and revert to separate RTCP ports (not recommended when ICE is enabled).
+
+---
+
+## [1.3.0] — 2026-05-10
+
+### Added
+
+#### Push notifications (RFC 8599 + REGISTER-only headers)
+
+- `baresdk_push_provider_t` enum — `BARESDK_PUSH_PROVIDER_NONE` / `APNS` / `APNS_SANDBOX` / `FCM`.
+- Three new fields in `baresdk_account_config_t`: `push_provider`, `push_token`, `push_param`. When set, the SDK encodes RFC 8599 `pn-provider` / `pn-prid` / `pn-param` URI parameters **inside** the Contact angle brackets on every REGISTER. Self-hosted servers (Kamailio, drachtio, FreeSWITCH) read these from the registrar and use them to wake the device via APNs or FCM.
+- `baresdk_account_set_push_token(acct, token)` — update the push token at runtime without re-creating the account. Re-registers immediately when safe (defers if a REGISTER/UNREGISTER transaction is in flight or a retry backoff is pending). Pass `NULL` to clear all push params.
+- `baresdk_account_add_register_header(acct, name, value)` — attach a custom SIP header to REGISTER requests **only**. Does not appear on INVITE, BYE, REFER, or any other request. Use this for hosted / vendor servers (Twilio, Plivo, Asterisk PJSIP) that dispatch push via non-standard headers rather than RFC 8599.
+- Flutter binding: `createAccount()` `pushProvider` / `pushToken` / `pushParam` named params; `Account.setPushToken()`; `Account.addRegisterHeader()`.
+- Python binding: `PUSH_PROVIDER_NONE/APNS/APNS_SANDBOX/FCM` constants; `SDK.create_account()` `push_provider` / `push_token` / `push_param` params; `Account.set_push_token()`; `Account.add_register_header()`.
+- C++ binding: same enum, new config fields, `Account::set_push_token()`, `Account::add_register_header()`, `SDK::create_account()` overload.
+
+---
+
 ## [1.2.0] — 2026-05-10
 
 ### Added

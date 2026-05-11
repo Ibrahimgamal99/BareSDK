@@ -90,6 +90,8 @@ struct baresdk_account {
 	char                     *cfg_turn_user;
 	char                     *cfg_turn_pass;
 	char                     *cfg_outbound;
+	char                     *cfg_push_token;
+	char                     *cfg_push_param;
 	/* derived from uri at create time */
 	char                      parsed_user[64];
 	char                      parsed_host[256];
@@ -137,6 +139,15 @@ struct baresdk_call {
 	size_t                     rec_tx_count;
 	/* Per-dialog custom headers (linked list of bsdk_custom_hdr) */
 	struct list                custom_hdrs;
+	/* Session stats history — maintained by stats.c */
+	float                      stats_mos_min;    /* worst mos_lq this call */
+	float                      stats_mos_sum;    /* running sum for average */
+	uint32_t                   stats_tick;       /* poll counter (1-based) */
+	uint64_t                   stats_call_start; /* tmr_jiffies() at ESTABLISHED */
+	/* Previous-tick values for quality alert threshold crossing detection */
+	float                      last_mos_lq;
+	float                      last_loss_pct;
+	float                      last_jitter_ms;
 };
 
 /* ── Event queue entry ─────────────────────────────────────────────────── */
@@ -246,6 +257,7 @@ void bsdk_audio_processing_close(void);
 
 int  bsdk_stats_init(void);
 void bsdk_stats_close(void);
+void bsdk_stats_collect_final(struct baresdk_call *lc);
 
 /* ── dns.c ─────────────────────────────────────────────────────────────── */
 

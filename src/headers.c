@@ -59,3 +59,23 @@ int baresdk_account_add_header(baresdk_account_handle_t acct,
 	int err = bsdk_dispatch_sync(add_hdr_fn, &ctx);
 	return err ? err : ctx.result;
 }
+
+static void add_reg_hdr_fn(void *arg)
+{
+	hdr_ctx_t *ctx = arg;
+	if (!ctx->acct->ua) { ctx->result = ENOENT; return; }
+
+	struct pl name_pl, value_pl;
+	pl_set_str(&name_pl,  ctx->name);
+	pl_set_str(&value_pl, ctx->value);
+	ctx->result = ua_add_register_hdr(ctx->acct->ua, &name_pl, &value_pl);
+}
+
+int baresdk_account_add_register_header(baresdk_account_handle_t acct,
+                                         const char *name, const char *value)
+{
+	if (!acct || !name || !value) return BARESDK_ERR_INVAL;
+	hdr_ctx_t ctx = {.acct = acct, .name = name, .value = value, .result = 0};
+	int err = bsdk_dispatch_sync(add_reg_hdr_fn, &ctx);
+	return err ? err : ctx.result;
+}

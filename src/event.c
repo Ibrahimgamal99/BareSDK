@@ -246,7 +246,10 @@ static void bevent_handler(enum bevent_ev bev,
 		ev.u.call_state.call    = lc;
 		ev.u.call_state.account = acct;
 		ev.u.call_state.state   = BARESDK_CALL_ESTABLISHED;
-		if (lc) lc->state = BARESDK_CALL_ESTABLISHED;
+		if (lc) {
+			lc->state            = BARESDK_CALL_ESTABLISHED;
+			lc->stats_call_start = tmr_jiffies();
+		}
 		break;
 
 	case BEVENT_CALL_CLOSED: {
@@ -272,6 +275,7 @@ static void bevent_handler(enum bevent_ev bev,
 			ev.u.call_state.error = BARESDK_ERR_INVAL;
 
 		if (lc) {
+			bsdk_stats_collect_final(lc);  /* must be before bc = NULL */
 			lc->state = ev.u.call_state.state;
 			lc->bc    = NULL; /* baresip will free the call */
 			bsdk_call_unregister(lc);
