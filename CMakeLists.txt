@@ -405,6 +405,7 @@ if(BARESDK_SHARED)
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
       COMMAND "${CMAKE_C_COMPILER}" -shared
+              -Wl,--wrap=websock_connect
               -Wl,--whole-archive "${_OUT}" -Wl,--no-whole-archive
               ${_SHARED_PLATFORM_LIBS}
               -o "${_SHARED_OUT}"

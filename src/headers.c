@@ -68,7 +68,7 @@ static void add_reg_hdr_fn(void *arg)
 	struct pl name_pl, value_pl;
 	pl_set_str(&name_pl,  ctx->name);
 	pl_set_str(&value_pl, ctx->value);
-	ctx->result = ua_add_register_hdr(ctx->acct->ua, &name_pl, &value_pl);
+	ctx->result = ua_add_custom_hdr(ctx->acct->ua, &name_pl, &value_pl);
 }
 
 int baresdk_account_add_register_header(baresdk_account_handle_t acct,

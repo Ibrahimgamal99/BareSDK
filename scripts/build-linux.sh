@@ -27,6 +27,7 @@ echo "=== Linking ${SO} ==="
 # be embedded in a .so, and openssl-static no longer ships on modern distros.
 # All of these are present on every Linux system.
 gcc -shared \
+  -Wl,--wrap=websock_connect \
   -Wl,--whole-archive "${DIST_DIR}/baresdk.a" -Wl,--no-whole-archive \
   -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl \
   -lpulse -lopus \

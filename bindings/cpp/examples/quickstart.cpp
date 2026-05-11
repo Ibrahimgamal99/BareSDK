@@ -1,12 +1,43 @@
 /**
- * quickstart.cpp — register an account and make or receive one call.
+ * quickstart.cpp — register an account from a JSON config file and
+ *                  make or receive one call.
  *
- * Build (Linux) — only needs baresdk.hpp + baresdk.so (OpenSSL/zlib baked in):
+ * Build (Linux):
  *   g++ -std=c++17 quickstart.cpp baresdk.so -I. -o quickstart
  *
  * Usage:
- *   ./quickstart alice@pbx.example.com secret              # receive mode
- *   ./quickstart alice@pbx.example.com secret bob@pbx.example.com  # dial
+ *   ./quickstart account.json                          # receive mode
+ *   ./quickstart account.json bob@pbx.example.com      # dial
+ *   ./quickstart alice@pbx.example.com secret          # legacy CLI mode (receive)
+ *   ./quickstart alice@pbx.example.com secret bob@...  # legacy CLI mode (dial)
+ *
+ * JSON account config example (account.json):
+ * {
+ *   "enabled":      true,
+ *   "uri":          "120@pbx.example.com",
+ *   "password":     "secret",
+ *   "display_name": "Alice",
+ *   "auth_user":    null,
+ *
+ *   "transport":    "wss",          // "udp" | "tcp" | "tls" | "ws" | "wss"
+ *   "server_url":   "wss://pbx.example.com:443/",
+ *   "server_host":  null,           // optional: override SIP domain for routing
+ *   "server_port":  0,              // optional: 0 = use default for transport
+ *
+ *   "media_enc":    "dtls_srtp",    // "none" | "sdes" | "dtls_srtp"
+ *   "ice_enabled":  true,
+ *   "stun_server":  "stun:stun.l.google.com:19302",
+ *   "turn_server":  null,           // e.g. "turn:turn.example.com:3478"
+ *   "turn_user":    null,
+ *   "turn_pass":    null,
+ *   "verify_tls":   false,
+ *
+ *   "extra_headers": {              // optional SIP headers added to every request
+ *     "X-Tenant-Id": "42"
+ *   },
+ *   "audio_codec":  "opus",         // "opus" | "ulaw" | "alaw" | "g722" (omit = SDK default)
+ *   "rel100":       "enabled"       // "disabled" | "enabled" | "required"
+ * }
  */
 
 #include "../baresdk.hpp"
@@ -14,35 +45,379 @@
 #include <condition_variable>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <map>
 #include <mutex>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <thread>
 
-static void print_devices(baresdk::SDK& sdk)
-{
-    baresdk_audio_device_t devs[32];
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Minimal JSON parser — no external dependencies.
+ * Supports: null, bool, number (integer), string, object, array.
+ * Good enough for a flat-ish config file; not a general-purpose parser.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+struct JsonValue {
+    enum Type { Null, Bool, Int, Str, Obj, Arr } type = Null;
+    bool                             b{};
+    long long                        i{};
+    std::string                      s;
+    std::map<std::string, JsonValue> obj;
+    std::vector<JsonValue>           arr;
 
-    int n = baresdk_audio_list_input_devices(devs, 32);
-    if (n > 0) {
-        std::cout << "Input devices (" << n << "):\n";
-        for (int i = 0; i < n; i++)
-            std::cout << "  [" << i << "] " << devs[i].name
-                      << (devs[i].is_default ? "  *default*" : "") << "\n";
-    }
+    bool        is_null()   const { return type == Null; }
+    bool        as_bool()   const { return (type == Bool) ? b : (type == Int && i != 0); }
+    long long   as_int()    const { return (type == Int)  ? i : 0; }
+    std::string as_str()    const { return (type == Str)  ? s : ""; }
 
-    n = baresdk_audio_list_output_devices(devs, 32);
-    if (n > 0) {
-        std::cout << "Output devices (" << n << "):\n";
-        for (int i = 0; i < n; i++)
-            std::cout << "  [" << i << "] " << devs[i].name
-                      << (devs[i].is_default ? "  *default*" : "") << "\n";
+    /** Return pointer to child value, or nullptr if missing / not an object. */
+    const JsonValue* get(const std::string& key) const {
+        if (type != Obj) return nullptr;
+        auto it = obj.find(key);
+        return (it != obj.end()) ? &it->second : nullptr;
     }
+};
+
+namespace json_detail {
+
+static void skip_ws(const char*& p) {
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
 }
 
+static std::string parse_string(const char*& p) {
+    if (*p != '"') throw std::runtime_error("expected '\"'");
+    ++p;
+    std::string out;
+    while (*p && *p != '"') {
+        if (*p == '\\') {
+            ++p;
+            switch (*p) {
+            case '"':  out += '"';  break;
+            case '\\': out += '\\'; break;
+            case '/':  out += '/';  break;
+            case 'n':  out += '\n'; break;
+            case 'r':  out += '\r'; break;
+            case 't':  out += '\t'; break;
+            default:   out += *p;   break;
+            }
+        } else {
+            out += *p;
+        }
+        ++p;
+    }
+    if (*p != '"') throw std::runtime_error("unterminated string");
+    ++p;
+    return out;
+}
+
+static JsonValue parse_value(const char*& p);
+
+static JsonValue parse_object(const char*& p) {
+    if (*p != '{') throw std::runtime_error("expected '{'");
+    ++p; skip_ws(p);
+    JsonValue v; v.type = JsonValue::Obj;
+    while (*p && *p != '}') {
+        skip_ws(p);
+        std::string key = parse_string(p);
+        skip_ws(p);
+        if (*p != ':') throw std::runtime_error("expected ':'");
+        ++p; skip_ws(p);
+        v.obj[key] = parse_value(p);
+        skip_ws(p);
+        if (*p == ',') { ++p; skip_ws(p); }
+    }
+    if (*p == '}') ++p;
+    return v;
+}
+
+static JsonValue parse_array(const char*& p) {
+    if (*p != '[') throw std::runtime_error("expected '['");
+    ++p; skip_ws(p);
+    JsonValue v; v.type = JsonValue::Arr;
+    while (*p && *p != ']') {
+        v.arr.push_back(parse_value(p));
+        skip_ws(p);
+        if (*p == ',') { ++p; skip_ws(p); }
+    }
+    if (*p == ']') ++p;
+    return v;
+}
+
+static JsonValue parse_value(const char*& p) {
+    skip_ws(p);
+    if (*p == '{') return parse_object(p);
+    if (*p == '[') return parse_array(p);
+    if (*p == '"') {
+        JsonValue v; v.type = JsonValue::Str; v.s = parse_string(p); return v;
+    }
+    if (strncmp(p, "null",  4) == 0) { p += 4; return JsonValue{}; }
+    if (strncmp(p, "true",  4) == 0) { p += 4; JsonValue v; v.type = JsonValue::Bool; v.b = true;  return v; }
+    if (strncmp(p, "false", 5) == 0) { p += 5; JsonValue v; v.type = JsonValue::Bool; v.b = false; return v; }
+    /* integer */
+    if (*p == '-' || (*p >= '0' && *p <= '9')) {
+        char* end;
+        long long n = strtoll(p, &end, 10);
+        JsonValue v; v.type = JsonValue::Int; v.i = n; p = end; return v;
+    }
+    throw std::runtime_error(std::string("unexpected character: ") + *p);
+}
+
+} // namespace json_detail
+
+static JsonValue parse_json(const std::string& src) {
+    const char* p = src.c_str();
+    json_detail::skip_ws(p);
+    return json_detail::parse_value(p);
+}
+
+static JsonValue load_json_file(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) throw std::runtime_error("cannot open: " + path);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return parse_json(ss.str());
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Helper: safely extract a C string from a std::string that must outlive the
+ * baresdk_account_config_t that references it.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static const char* cstr_or_null(const std::string& s) {
+    return s.empty() ? nullptr : s.c_str();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * AccountConfig — owns all std::string storage referenced by the C struct.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+struct AccountConfig {
+    /* ── string storage (must outlive acfg) ── */
+    std::string uri, password, display_name, auth_user;
+    std::string server_url, server_host;
+    std::string stun_server, turn_server, turn_user, turn_pass;
+    std::map<std::string, std::string> extra_headers;
+    std::string rel100_str;
+    std::vector<std::string> audio_codecs;
+
+    /* ── parsed scalars ── */
+    bool        enabled     = true;
+    int         server_port = 0;
+
+    baresdk_transport_t    transport  = BARESDK_TRANSPORT_WSS;
+    baresdk_media_enc_t    media_enc  = BARESDK_MEDIA_ENC_DTLS_SRTP;
+    bool                   ice_enabled = true;
+    bool                   verify_tls  = false;
+    baresdk_100rel_mode_t  rel100      = BARESDK_100REL_DISABLED;
+
+    /* ── the C struct; populated by build() ── */
+    baresdk_account_config_t acfg{};
+
+    /* ── parse a transport string ── */
+    static baresdk_transport_t parse_transport(const std::string& s) {
+        if (s == "udp") return BARESDK_TRANSPORT_UDP;
+        if (s == "tcp") return BARESDK_TRANSPORT_TCP;
+        if (s == "tls") return BARESDK_TRANSPORT_TLS;
+        if (s == "ws")  return BARESDK_TRANSPORT_WS;
+        if (s == "wss") return BARESDK_TRANSPORT_WSS;
+        throw std::runtime_error("unknown transport: " + s);
+    }
+
+    /* ── parse a media_enc string ── */
+    static baresdk_media_enc_t parse_media_enc(const std::string& s) {
+        if (s == "none")      return BARESDK_MEDIA_ENC_NONE;
+        if (s == "sdes")      return BARESDK_MEDIA_ENC_SDES;
+        if (s == "dtls_srtp") return BARESDK_MEDIA_ENC_DTLS_SRTP;
+        throw std::runtime_error("unknown media_enc: " + s);
+    }
+
+    /* ── parse a 100rel string ── */
+    static baresdk_100rel_mode_t parse_100rel(const std::string& s) {
+        if (s == "disabled") return BARESDK_100REL_DISABLED;
+        if (s == "enabled")  return BARESDK_100REL_ENABLED;
+        if (s == "required") return BARESDK_100REL_REQUIRED;
+        throw std::runtime_error("unknown rel100 value: " + s);
+    }
+
+    /* ── construct from CLI args (legacy mode) ── */
+    void from_cli(const char* sip_uri, const char* pw) {
+        uri      = sip_uri;
+        password = pw;
+
+        /* derive server_url from URI host */
+        std::string u = uri;
+        if (u.rfind("sip:", 0) == 0) u = u.substr(4);
+        auto at  = u.find('@');
+        std::string host = (at != std::string::npos) ? u.substr(at + 1) : u;
+        auto colon = host.find(':');
+        if (colon != std::string::npos) host = host.substr(0, colon);
+
+        server_url   = "wss://" + host + ":443/";
+        display_name = (at != std::string::npos) ? u.substr(0, at) : u;
+        transport    = BARESDK_TRANSPORT_WSS;
+        media_enc    = BARESDK_MEDIA_ENC_DTLS_SRTP;
+        ice_enabled  = true;
+        stun_server  = "stun:stun.l.google.com:19302";
+        verify_tls   = false;
+    }
+
+    /* ── construct from JSON ── */
+    void from_json(const JsonValue& j) {
+        auto str = [&](const char* key) -> std::string {
+            const auto* v = j.get(key);
+            return (v && !v->is_null()) ? v->as_str() : "";
+        };
+        auto flag = [&](const char* key, bool def) -> bool {
+            const auto* v = j.get(key);
+            return v ? v->as_bool() : def;
+        };
+        auto num = [&](const char* key, int def) -> int {
+            const auto* v = j.get(key);
+            return (v && v->type == JsonValue::Int) ? (int)v->as_int() : def;
+        };
+
+        enabled      = flag("enabled", true);
+        uri          = str("uri");
+        password     = str("password");
+        display_name = str("display_name");
+        auth_user    = str("auth_user");
+
+        {
+            std::string t = str("transport");
+            transport = t.empty() ? BARESDK_TRANSPORT_WSS : parse_transport(t);
+        }
+        server_url   = str("server_url");
+        server_host  = str("server_host");
+        server_port  = num("server_port", 0);
+
+        {
+            std::string m = str("media_enc");
+            media_enc = m.empty() ? BARESDK_MEDIA_ENC_DTLS_SRTP : parse_media_enc(m);
+        }
+        ice_enabled  = flag("ice_enabled", true);
+        stun_server  = str("stun_server");
+        turn_server  = str("turn_server");
+        turn_user    = str("turn_user");
+        turn_pass    = str("turn_pass");
+        verify_tls   = flag("verify_tls", false);
+
+        {
+            std::string r = str("rel100");
+            rel100 = r.empty() ? BARESDK_100REL_DISABLED : parse_100rel(r);
+        }
+
+        /* extra_headers object */
+        const auto* hdr_node = j.get("extra_headers");
+        if (hdr_node && hdr_node->type == JsonValue::Obj) {
+            for (const auto& kv : hdr_node->obj)
+                extra_headers[kv.first] = kv.second.as_str();
+        }
+
+        /* audio_codecs — array or single string, e.g. ["opus", "pcmu"] or "opus" */
+        const auto* codecs_node = j.get("audio_codecs");
+        if (codecs_node) {
+            if (codecs_node->type == JsonValue::Arr) {
+                for (const auto& codec : codecs_node->arr) {
+                    std::string name = codec.as_str();
+                    if (!name.empty())
+                        audio_codecs.push_back(name);
+                }
+            } else if (codecs_node->type == JsonValue::Str) {
+                std::string name = codecs_node->as_str();
+                if (!name.empty())
+                    audio_codecs.push_back(name);
+            }
+        }
+    }
+
+    /* ── populate acfg from owned strings ── */
+    void build() {
+        acfg = {};
+        acfg.uri          = cstr_or_null(uri);
+        acfg.password     = cstr_or_null(password);
+        acfg.display_name = cstr_or_null(display_name);
+        acfg.auth_user    = cstr_or_null(auth_user);
+        acfg.transport    = transport;
+        acfg.server_url   = cstr_or_null(server_url);
+        acfg.server_host  = cstr_or_null(server_host);
+        if (server_port > 0) acfg.server_port = (uint16_t)server_port;
+        acfg.media_enc    = media_enc;
+        acfg.ice_enabled  = ice_enabled;
+        acfg.stun_server  = cstr_or_null(stun_server);
+        acfg.turn_server  = cstr_or_null(turn_server);
+        acfg.turn_user    = cstr_or_null(turn_user);
+        acfg.turn_pass    = cstr_or_null(turn_pass);
+        acfg.verify_tls   = verify_tls;
+
+        /* Per-account codec override via audio_codec_names[] */
+        if (!audio_codecs.empty()) {
+            int n = std::min((int)audio_codecs.size(), 8);
+            for (int i = 0; i < n; i++) {
+                strncpy(acfg.audio_codec_names[i], audio_codecs[i].c_str(), 31);
+                acfg.audio_codec_names[i][31] = '\0';
+            }
+            acfg.audio_codec_name_count = n;
+        }
+    }
+
+    void dump() const {
+        auto tf = [](bool v){ return v ? "true" : "false"; };
+        auto transport_name = [](baresdk_transport_t t) -> const char* {
+            switch(t) {
+            case BARESDK_TRANSPORT_UDP: return "udp";
+            case BARESDK_TRANSPORT_TCP: return "tcp";
+            case BARESDK_TRANSPORT_TLS: return "tls";
+            case BARESDK_TRANSPORT_WS:  return "ws";
+            case BARESDK_TRANSPORT_WSS: return "wss";
+            default: return "?";
+            }
+        };
+        auto enc_name = [](baresdk_media_enc_t e) -> const char* {
+            switch(e) {
+            case BARESDK_MEDIA_ENC_NONE:      return "none";
+            case BARESDK_MEDIA_ENC_SDES:      return "sdes";
+            case BARESDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
+            default: return "?";
+            }
+        };
+        std::cout
+            << "Account config:\n"
+            << "  uri          : " << uri          << "\n"
+            << "  display_name : " << display_name << "\n"
+            << "  auth_user    : " << (auth_user.empty() ? "(from uri)" : auth_user) << "\n"
+            << "  transport    : " << transport_name(transport)  << "\n"
+            << "  server_url   : " << (server_url.empty()  ? "(none)" : server_url)  << "\n"
+            << "  server_host  : " << (server_host.empty() ? "(none)" : server_host) << "\n"
+            << "  server_port  : " << server_port  << "\n"
+            << "  media_enc    : " << enc_name(media_enc)        << "\n"
+            << "  ice_enabled  : " << tf(ice_enabled)            << "\n"
+            << "  stun_server  : " << (stun_server.empty() ? "(none)" : stun_server) << "\n"
+            << "  turn_server  : " << (turn_server.empty() ? "(none)" : turn_server) << "\n"
+            << "  verify_tls   : " << tf(verify_tls)             << "\n";
+        if (!audio_codecs.empty()) {
+            std::cout << "  audio_codecs : ";
+            for (size_t i = 0; i < audio_codecs.size(); i++) {
+                if (i > 0) std::cout << ", ";
+                std::cout << audio_codecs[i];
+            }
+            std::cout << "\n";
+        } else {
+            std::cout << "  audio_codecs : (global SDK list)\n";
+        }
+        if (!extra_headers.empty()) {
+            std::cout << "  extra_headers:\n";
+            for (const auto& kv : extra_headers)
+                std::cout << "    " << kv.first << ": " << kv.second << "\n";
+        }
+    }
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Media stats printer
+ * ═══════════════════════════════════════════════════════════════════════════ */
 static void print_stats(const baresdk_ev_media_stats_t& s)
 {
     const char* method = (s.mos_method == BARESDK_MOS_EMODEL) ? "E-model" : "simplified";
-
     std::cout
         << "┌─ Media Stats ─────────────────────────────────\n"
         << "│  Codec     : " << (s.codec_name ? s.codec_name : "?")
@@ -67,24 +442,101 @@ static void print_stats(const baresdk_ev_media_stats_t& s)
         <<   "  late=" << s.late_packets
         <<   "  discarded=" << s.discarded_packets << "\n"
         << "│  MOS (" << method << "): LQ=" << s.mos_lq << "  CQ=" << s.mos_cq << "\n";
-
     if (!std::isnan(s.audio_level_dbov))
         std::cout << "│  Level     : " << s.audio_level_dbov << " dBov\n";
-
     std::cout << "└───────────────────────────────────────────────\n";
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "usage: quickstart <sip-uri> <password> [<callee-uri>]\n";
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Audio device listing
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static void print_devices(baresdk::SDK& sdk)
+{
+    baresdk_audio_device_t devs[32];
+    int n = baresdk_audio_list_input_devices(devs, 32);
+    if (n > 0) {
+        std::cout << "Input devices (" << n << "):\n";
+        for (int i = 0; i < n; i++)
+            std::cout << "  [" << i << "] " << devs[i].name
+                      << (devs[i].is_default ? "  *default*" : "") << "\n";
+    }
+    n = baresdk_audio_list_output_devices(devs, 32);
+    if (n > 0) {
+        std::cout << "Output devices (" << n << "):\n";
+        for (int i = 0; i < n; i++)
+            std::cout << "  [" << i << "] " << devs[i].name
+                      << (devs[i].is_default ? "  *default*" : "") << "\n";
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Detect whether the first argument is a JSON file path.
+ * Heuristic: ends with ".json" OR starts with '{'.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static bool looks_like_json_path(const char* arg) {
+    std::string s(arg);
+    if (s.size() > 5 && s.substr(s.size() - 5) == ".json") return true;
+    /* also allow a raw JSON string passed directly */
+    if (!s.empty() && s[0] == '{') return true;
+    return false;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * main
+ * ═══════════════════════════════════════════════════════════════════════════ */
+int main(int argc, char* argv[])
+{
+    if (argc < 2) {
+        std::cerr
+            << "Usage:\n"
+            << "  " << argv[0] << " account.json [callee-uri]\n"
+            << "  " << argv[0] << " <sip-uri> <password> [callee-uri]\n";
         return 1;
     }
 
-    const char* sip_uri   = argv[1];
-    const char* password  = argv[2];
-    const char* callee    = (argc >= 4) ? argv[3] : nullptr;
+    /* ── Parse config ─────────────────────────────────────────────────── */
+    AccountConfig cfg;
+    const char*   callee = nullptr;
 
-    /* ── state shared between main and event callback ──────────────────── */
+    if (looks_like_json_path(argv[1])) {
+        /* JSON mode */
+        try {
+            JsonValue j;
+            std::string arg1(argv[1]);
+            if (!arg1.empty() && arg1[0] == '{')
+                j = parse_json(arg1);          /* raw JSON string on CLI */
+            else
+                j = load_json_file(arg1);      /* file path */
+            cfg.from_json(j);
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to load account config: " << e.what() << "\n";
+            return 1;
+        }
+        if (argc >= 3) callee = argv[2];
+    } else {
+        /* Legacy: sip-uri password [callee] */
+        if (argc < 3) {
+            std::cerr << "usage: " << argv[0]
+                      << " <sip-uri> <password> [<callee-uri>]\n";
+            return 1;
+        }
+        cfg.from_cli(argv[1], argv[2]);
+        if (argc >= 4) callee = argv[3];
+    }
+
+    if (!cfg.enabled) {
+        std::cerr << "Account is disabled in config. Exiting.\n";
+        return 0;
+    }
+    if (cfg.uri.empty()) {
+        std::cerr << "No URI in config.\n";
+        return 1;
+    }
+
+    cfg.build();
+    cfg.dump();
+
+    /* ── State shared between main and event callback ─────────────────── */
     std::mutex              mtx;
     std::condition_variable cv;
     bool                    registered       = false;
@@ -93,17 +545,25 @@ int main(int argc, char* argv[]) {
     bool                    incoming_call    = false;
     baresdk::Call           active_call;
 
-    /* ── SDK setup ──────────────────────────────────────────────────────── */
+    /* ── SDK setup ────────────────────────────────────────────────────── */
     baresdk::SDK sdk;
-    sdk.config().log_level         = 1;   /* 0=err 1=warn 2=info 3=debug */
+    sdk.config().log_level         = 1;  /* debug level for audio troubleshooting */
     sdk.config().stats_interval_ms = 5000;
     sdk.config().trace_sip         = false;
+    sdk.config().prefer_ipv6       = false;
+    sdk.config().verify_server     = false;
+    sdk.config().audio_codecs[0]   = BARESDK_CODEC_OPUS;
+    sdk.config().audio_codecs[1]   = BARESDK_CODEC_PCMU;
+    sdk.config().audio_codecs[2]   = BARESDK_CODEC_PCMA;
+    sdk.config().audio_codecs[3]   = BARESDK_CODEC_G722;
+    sdk.config().audio_codec_count = 4;
 
     sdk.on_event([&](const baresdk_event_t& ev) {
         switch (ev.type) {
 
         case BARESDK_EV_REG_STATE:
             if (ev.u.reg.state == BARESDK_REG_REGISTERED) {
+                std::cout << "Registered OK.\n";
                 std::lock_guard<std::mutex> lk(mtx);
                 registered = true;
                 cv.notify_one();
@@ -123,7 +583,7 @@ int main(int argc, char* argv[]) {
                       << "Press 'a' + Enter to answer, 'r' + Enter to reject\n";
             {
                 std::lock_guard<std::mutex> lk(mtx);
-                active_call = baresdk::Call(ev.u.incoming.call);
+                active_call   = baresdk::Call(ev.u.incoming.call);
                 incoming_call = true;
                 cv.notify_one();
             }
@@ -141,6 +601,7 @@ int main(int argc, char* argv[]) {
             if (ev.u.call_state.error != BARESDK_OK)
                 std::cout << "  error=" << ev.u.call_state.error;
             std::cout << "\n";
+
             if (ev.u.call_state.state == BARESDK_CALL_ESTABLISHED) {
                 std::lock_guard<std::mutex> lk(mtx);
                 call_established = true;
@@ -173,8 +634,16 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    /* ── Register ───────────────────────────────────────────────────────── */
-    auto account = sdk.create_account(sip_uri, password, BARESDK_TRANSPORT_UDP);
+    /* ── Register ─────────────────────────────────────────────────────── */
+    auto account = sdk.create_account(cfg.acfg);
+
+    /* Optional per-account tuning */
+    for (const auto& kv : cfg.extra_headers)
+        baresdk_account_add_header(account.handle(), kv.first.c_str(), kv.second.c_str());
+
+    if (cfg.rel100 != BARESDK_100REL_DISABLED)
+        baresdk_account_set_100rel(account.handle(), cfg.rel100);
+
     account.register_account();
 
     {
@@ -184,13 +653,25 @@ int main(int argc, char* argv[]) {
 
     print_devices(sdk);
 
-    /* ── Dial or wait ───────────────────────────────────────────────────── */
+    /* ── Dial or wait ─────────────────────────────────────────────────── */
     if (callee) {
         std::string callee_uri = callee;
         if (callee_uri.rfind("sip:", 0) != 0)
             callee_uri = "sip:" + callee_uri;
+        if (callee_uri.find('@') == std::string::npos) {
+            std::string domain = cfg.uri;
+            if (domain.rfind("sip:", 0) == 0) domain = domain.substr(4);
+            size_t at_pos = domain.find('@');
+            if (at_pos != std::string::npos) domain = domain.substr(at_pos + 1);
+            callee_uri = callee_uri + "@" + domain;
+        }
         std::cout << "Dialling " << callee_uri << " ...\n";
-        active_call = account.call(callee_uri.c_str());
+        try {
+            active_call = account.call(callee_uri.c_str());
+        } catch (const std::exception& e) {
+            std::cerr << "Call failed: " << e.what() << "\n";
+            return 1;
+        }
 
         std::unique_lock<std::mutex> lk(mtx);
         cv.wait_for(lk, std::chrono::seconds(30),
@@ -213,10 +694,12 @@ int main(int argc, char* argv[]) {
 
         std::unique_lock<std::mutex> lk2(mtx);
         cv.wait(lk2, [&]{ return call_done; });
+
     } else {
-        std::cout << "Waiting for incoming call...\n";
+        std::cout << "Waiting for incoming call (30 s)...\n";
         std::unique_lock<std::mutex> lk(mtx);
-        cv.wait_for(lk, std::chrono::seconds(30), [&]{ return incoming_call || call_done; });
+        cv.wait_for(lk, std::chrono::seconds(30),
+                    [&]{ return incoming_call || call_done; });
 
         if (incoming_call) {
             lk.unlock();
@@ -235,7 +718,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             lk.lock();
-            cv.wait(lk, [&]{ return call_done; });
+            cv.wait_for(lk, std::chrono::seconds(60), [&]{ return call_done; });
         }
     }
 

@@ -116,6 +116,13 @@ static void invite_fn(void *arg)
 
 	ctx->result = ua_connect(ctx->acct->ua, &bc, NULL,
 	                         ctx->uri, VIDMODE_OFF);
+	if (ctx->result == EAFNOSUPPORT) {
+		/* ICE STUN/TURN lookup failed because this host has no IPv6.
+		 * Disable ICE and retry with direct RTP. */
+		account_set_medianat(ua_account(ctx->acct->ua), NULL);
+		ctx->result = ua_connect(ctx->acct->ua, &bc, NULL,
+		                         ctx->uri, VIDMODE_OFF);
+	}
 	if (ctx->result || !bc)
 		return;
 

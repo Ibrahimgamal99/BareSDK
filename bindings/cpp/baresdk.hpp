@@ -625,8 +625,40 @@ typedef struct {
 	 */
 	const char              *push_param;
 
+	/* ── Audio codec override ──────────────────────────────────────────────── */
+
+	/**
+	 * Per-account audio codec preference list (ordered, highest priority first).
+	 * When audio_codec_count > 0, this list overrides the global cfg.audio_codecs.
+	 * When audio_codec_count == 0 (default), the global list is used.
+	 *
+	 * Example — prefer PCMU, fall back to Opus:
+	 *   cfg.audio_codecs[0]   = BARESDK_CODEC_PCMU;
+	 *   cfg.audio_codecs[1]   = BARESDK_CODEC_OPUS;
+	 *   cfg.audio_codec_count = 2;
+	 */
 	baresdk_codec_t  audio_codecs[8];
 	int              audio_codec_count; /* 0 = use global cfg codecs */
+
+	/**
+	 * String-based codec list — takes precedence over audio_codecs[] when
+	 * audio_codec_name_count > 0.  Names are matched case-insensitively.
+	 *
+	 * Common values (aliases accepted):
+	 *   "opus"              — Opus 48 kHz stereo
+	 *   "ulaw" / "pcmu"     — G.711 µ-law
+	 *   "alaw" / "pcma"     — G.711 A-law
+	 *   "g722"              — G.722 wideband
+	 *   "g729"              — G.729 (requires licensed module)
+	 *   "g726" / "g726-32"  — G.726 at 32 kbps
+	 *
+	 * Example — prefer µ-law, fall back to Opus:
+	 *   strcpy(cfg.audio_codec_names[0], "ulaw");
+	 *   strcpy(cfg.audio_codec_names[1], "opus");
+	 *   cfg.audio_codec_name_count = 2;
+	 */
+	char  audio_codec_names[8][32];  /* codec name strings, each ≤ 31 chars */
+	int   audio_codec_name_count;    /* 0 = fall back to audio_codecs[] / global */
 
 } baresdk_account_config_t;
 

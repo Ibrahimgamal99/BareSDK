@@ -324,32 +324,10 @@ static void bevent_handler(enum bevent_ev bev,
 	}
 
 	case BEVENT_CALL_LOCAL_SDP:
-	case BEVENT_CALL_REMOTE_SDP: {
-		/* Capture raw SDP text into the call wrapper before notifying sdp.c */
-		if (lc && bc) {
-			struct sdp_session *sdp_sess = call_sdp_session(bc);
-			if (sdp_sess) {
-				bool is_offer = (bev == BEVENT_CALL_LOCAL_SDP)
-				              ? !lc->remote_sdp_set   /* local = offer when remote not yet seen */
-				              : true;                  /* encode remote as received (offer=true captures full body) */
-				struct mbuf *mb = NULL;
-				if (sdp_encode(&mb, sdp_sess, is_offer) == 0 && mb) {
-					char *dst = (bev == BEVENT_CALL_LOCAL_SDP)
-					          ? lc->local_sdp
-					          : lc->remote_sdp;
-					size_t n = mbuf_get_left(mb);
-					if (n >= sizeof(lc->local_sdp))
-						n = sizeof(lc->local_sdp) - 1;
-					memcpy(dst, mbuf_buf(mb), n);
-					dst[n] = '\0';
-					mem_deref(mb);
-				}
-			}
-		}
+	case BEVENT_CALL_REMOTE_SDP:
 		bsdk_sdp_handle_event(bev, event);
 		post = false;
 		break;
-	}
 
 	/* ── Transfer / MWI ──────────────────────────────────────────────────── */
 

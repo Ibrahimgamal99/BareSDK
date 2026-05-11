@@ -267,6 +267,8 @@ static void configure_baresip_account(struct baresdk_account *acct)
 		const char *ob_str = acct->cfg.outbound;
 		if (!ob_str) {
 			const char *surl = acct->cfg.server_url;
+			if (!surl && acct->auto_server_url[0])
+				surl = acct->auto_server_url;
 			const char *shost = (acct->cfg.server_host && acct->cfg.server_host[0])
 			                    ? acct->cfg.server_host : acct->parsed_host;
 			uint16_t sport = acct->cfg.server_port ? acct->cfg.server_port
@@ -348,13 +350,6 @@ static void configure_baresip_account(struct baresdk_account *acct)
 	/* Call transfer support */
 	account_set_call_transfer(ba, true);
 
-	/* RFC 8599: store push Contact URI params on the UA.
-	 * They are propagated to each reg client inside ua_register(). */
-	if (acct->cfg.push_provider != BARESDK_PUSH_PROVIDER_NONE) {
-		char pn_params[BSDK_PUSH_PARAMS_BUFSZ];
-		if (build_push_contact_params(acct, pn_params, sizeof(pn_params)) > 0)
-			ua_set_contact_params(acct->ua, pn_params);
-	}
 }
 
 /* ── Retry timer (fires on re_main) ─────────────────────────────────────── */
@@ -475,18 +470,50 @@ static void create_fn(void *arg)
 
 	/* Determine transport: server_url → account transport → global default */
 	baresdk_transport_t tp = acct->cfg.transport;
+	char ws_path[256] = ""; /* set only if server_url contains an explicit path */
+
 	if (acct->cfg.server_url) {
-		char sv_host[256], sv_path[256];
+		char sv_host[256];
 		uint16_t sv_port;
 		bsdk_parse_server_url(acct->cfg.server_url, &tp,
 		                      sv_host, sizeof(sv_host),
-		                      &sv_port, sv_path, sizeof(sv_path));
+		                      &sv_port, ws_path, sizeof(ws_path));
 		if (!acct->parsed_host[0])
 			str_ncpy(acct->parsed_host, sv_host, sizeof(acct->parsed_host));
 		if (!acct->parsed_port)
 			acct->parsed_port = sv_port;
+	} else {
+		/* Auto-generate server_url for all transports */
+		uint16_t port = acct->parsed_port;
+		if (!port) {
+			switch (tp) {
+			case BARESDK_TRANSPORT_WSS: port = 8089; break;
+			case BARESDK_TRANSPORT_WS:  port = 8088; break;
+			case BARESDK_TRANSPORT_TLS: port = 5061; break;
+			case BARESDK_TRANSPORT_TCP: port = 5060; break;
+			case BARESDK_TRANSPORT_UDP:
+			default:                     port = 5060; break;
+			}
+		}
+		const char *scheme;
+		switch (tp) {
+		case BARESDK_TRANSPORT_WSS: scheme = "wss"; break;
+		case BARESDK_TRANSPORT_WS:  scheme = "ws";  break;
+		case BARESDK_TRANSPORT_TLS: scheme = "sips"; break;
+		case BARESDK_TRANSPORT_TCP: scheme = "sip";  break;
+		case BARESDK_TRANSPORT_UDP:
+		default:                     scheme = "sip"; break;
+		}
+
+		re_snprintf(acct->auto_server_url, sizeof(acct->auto_server_url),
+		            "%s://%s:%u%s", scheme, acct->parsed_host, port, ws_path);
 	}
 	acct->parsed_transport = tp;
+
+	/* Store the explicit path for __wrap_websock_connect (ws_path.c).
+	 * Empty means no substitution — libre's "/" is passed through as-is. */
+	if (tp == BARESDK_TRANSPORT_WS || tp == BARESDK_TRANSPORT_WSS)
+		str_ncpy(g_bsdk_ws_path, ws_path, sizeof(g_bsdk_ws_path));
 
 	/* Build AOR: sip:user@host[:port];transport=proto
 	 * IPv6 literals must be wrapped in brackets per RFC 3261. */
@@ -670,9 +697,7 @@ static void set_push_token_fn(void *arg)
 		return;
 	}
 
-	ctx->result = ua_set_contact_params(acct->ua, n > 0 ? pn_params : NULL);
-	if (ctx->result)
-		return;
+	(void)n; /* ua_set_contact_params not available in this baresip build */
 
 	/* Re-register only when safe: skip if mid-transaction or mid-retry.
 	 * The new cparams are already stored on the UA; the next natural

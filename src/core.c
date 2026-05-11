@@ -200,7 +200,9 @@ int baresdk_init(const baresdk_config_t *cfg)
 
 	/* Redirect baresip's config directory to /tmp so it never finds or reads
 	 * ~/.config/baresip/{config,accounts,contacts,...} from disk.
-	 * All SDK configuration is driven exclusively through baresdk_config_t. */
+	 * All SDK configuration is driven exclusively through baresdk_config_t.
+	 * Directory must exist: the uuid module (required for WSS/outbound) writes into it. */
+	(void)fs_mkdir("/tmp/.baresdk-empty", 0700);
 	conf_path_set("/tmp/.baresdk-empty");
 	conf_configure_buf((const uint8_t *)"#\n", 2);
 

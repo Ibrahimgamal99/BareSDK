@@ -17,6 +17,13 @@ struct baresdk_account;
 struct baresdk_call;
 struct baresdk_queued_event;
 
+/* ── baresip internal functions (defined in libbaresip but not in baresip.h) */
+extern struct rtp_sock   *stream_rtp_sock(const struct stream *strm);
+extern const struct sa   *stream_raddr(const struct stream *strm);
+extern int                stream_pt_enc(const struct stream *strm);
+extern int                stream_ssrc_rx(const struct stream *strm,
+                                         uint32_t *ssrc);
+
 /* ── Global singleton ──────────────────────────────────────────────────── */
 
 struct bsdk_ctx {
@@ -97,6 +104,7 @@ struct baresdk_account {
 	char                      parsed_host[256];
 	uint16_t                  parsed_port;
 	baresdk_transport_t       parsed_transport;
+	char                      auto_server_url[512];
 	baresdk_reg_state_t       reg_state;
 	baresdk_error_t           reg_error;
 	char                      reg_error_str[256];
@@ -292,6 +300,10 @@ int bsdk_build_outbound(const char *server_url,
 
 const char *bsdk_transport_str(baresdk_transport_t t);
 const char *bsdk_mediaenc_str(baresdk_media_enc_t enc);
+
+/* ── WebSocket path (ws_path.c) ────────────────────────────────────────── */
+
+extern char g_bsdk_ws_path[256];
 
 /* ── Utility macros ────────────────────────────────────────────────────── */
 

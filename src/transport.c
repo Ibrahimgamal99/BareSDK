@@ -127,8 +127,12 @@ int bsdk_parse_server_url(const char *url,
 	else
 		authority_len = strlen(rest);
 
-	if (slash && (!semi || slash < semi))
-		str_ncpy(path, slash, path_sz);
+	if (slash && (!semi || slash < semi)) {
+		/* A bare "/" is not a meaningful path — leave path empty so the
+		 * caller can apply its own default (e.g. "/ws" for WebSocket). */
+		if (slash[1] != '\0' && slash[1] != ';')
+			str_ncpy(path, slash, path_sz);
+	}
 
 	const char *colon = memchr(rest, ':', authority_len);
 	if (colon) {
