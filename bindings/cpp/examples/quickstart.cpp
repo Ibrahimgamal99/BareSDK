@@ -547,7 +547,7 @@ int main(int argc, char* argv[])
 
     /* ── SDK setup ────────────────────────────────────────────────────── */
     baresdk::SDK sdk;
-    sdk.config().log_level         = 1;  /* debug level for audio troubleshooting */
+    sdk.config().log_level         = 0;  /* debug level for audio troubleshooting */
     sdk.config().stats_interval_ms = 5000;
     sdk.config().trace_sip         = false;
     sdk.config().prefer_ipv6       = false;
@@ -666,12 +666,7 @@ int main(int argc, char* argv[])
             callee_uri = callee_uri + "@" + domain;
         }
         std::cout << "Dialling " << callee_uri << " ...\n";
-        try {
-            active_call = account.call(callee_uri.c_str());
-        } catch (const std::exception& e) {
-            std::cerr << "Call failed: " << e.what() << "\n";
-            return 1;
-        }
+        active_call = account.call(callee_uri.c_str());
 
         std::unique_lock<std::mutex> lk(mtx);
         cv.wait_for(lk, std::chrono::seconds(30),

@@ -1,0 +1,26 @@
+{
+  "enabled":      true,
+  "uri":          "alice@pbx.example.com",
+  "password":     "secret",
+  "display_name": "Alice",
+  "auth_user":    null,
+
+  "transport":    "wss",
+  "server_url":   "wss://pbx.example.com:443/",
+  "server_host":  null,
+  "server_port":  0,
+
+  "media_enc":    "dtls_srtp",
+  "ice_enabled":  true,
+  "stun_server":  "stun:stun.l.google.com:19302",
+  "turn_server":  null,
+  "turn_user":    null,
+  "turn_pass":    null,
+  "verify_tls":   false,
+
+  "extra_headers": {
+    "X-Tenant-Id": "42"
+  },
+  "audio_codecs": ["opus"],
+  "rel100":       "enabled"
+}

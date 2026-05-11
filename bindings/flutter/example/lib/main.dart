@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:baresdk/baresdk.dart';
 
@@ -21,25 +24,50 @@ class _PhonePageState extends State<PhonePage> {
   BareSDK? _sdk;
   Account? _account;
 
-  final _uriCtrl    = TextEditingController();
-  final _passCtrl   = TextEditingController();
+  final _uriCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
   final _calleeCtrl = TextEditingController();
 
-  baresdk_transport_t _transport = baresdk_transport_t.BARESDK_TRANSPORT_UDP;
+  baresdk_transport_t _transport = baresdk_transport_t.BARESDK_TRANSPORT_WSS;
+  baresdk_media_enc_t _mediaEnc = baresdk_media_enc_t.BARESDK_MEDIA_ENC_DTLS_SRTP;
 
-  String _status  = '';
-  String _stats   = '';
-  Call?  _call;
-  bool   _muted   = false;
-  bool   _mutedRx = false;
+  final List<String> _selectedCodecs = ['opus'];
+  final List<String> _availableCodecs = ['opus', 'ulaw', 'alaw', 'g722'];
+
+  String _status = '';
+  String _stats = '';
+  Call? _call;
+  bool _muted = false;
+  bool _mutedRx = false;
+  bool _iceEnabled = true;
+  bool _verifyTls = false;
 
   void _register() {
-    final uri  = _uriCtrl.text.trim();
+    final uri = _uriCtrl.text.trim();
     final pass = _passCtrl.text.trim();
     if (uri.isEmpty || pass.isEmpty) return;
 
-    final sdk     = BareSDK(logLevel: 1, statsIntervalMs: 5000);
-    final account = sdk.createAccount(uri, pass, transport: _transport);
+    final sdk = BareSDK(
+      logLevel: 0,
+      statsIntervalMs: 5000,
+      traceSip: false,
+      preferIpv6: false,
+      verifyServer: false,
+    );
+
+    sdk.setAec(true);
+    sdk.setNs(true);
+    sdk.setAgc(true);
+
+    final account = sdk.createAccount(
+      uri,
+      pass,
+      transport: _transport,
+      mediaEnc: _mediaEnc,
+      iceEnabled: _iceEnabled,
+      verifyTls: _verifyTls,
+      audioCodecs: _selectedCodecs,
+    );
 
     account.events.listen((ev) {
       if (ev is RegStateEvent) {
@@ -51,27 +79,35 @@ class _PhonePageState extends State<PhonePage> {
       } else if (ev is IncomingCallEvent) {
         setState(() {
           _status = 'Incoming call from ${ev.fromUri}';
-          _call   = ev.call;
+          _call = ev.call;
         });
       } else if (ev is CallStateEvent) {
         final done = ev.state == baresdk_call_state_t.BARESDK_CALL_ENDED ||
-                     ev.state == baresdk_call_state_t.BARESDK_CALL_FAILED ||
-                     ev.state == baresdk_call_state_t.BARESDK_CALL_CANCELLED;
+            ev.state == baresdk_call_state_t.BARESDK_CALL_FAILED ||
+            ev.state == baresdk_call_state_t.BARESDK_CALL_CANCELLED;
         setState(() {
           _status = done ? 'Call ended' : 'Call state: ${ev.state}';
-          if (done) { _call = null; _stats = ''; _muted = false; _mutedRx = false; }
+          if (done) {
+            _call = null;
+            _stats = '';
+            _muted = false;
+            _mutedRx = false;
+          }
         });
       } else if (ev is MediaStatsEvent) {
         setState(() => _stats = _formatStats(ev));
+      } else if (ev is SipTraceEvent) {
+        final dir = ev.direction == 1 ? '>>>' : '<<<';
+        debugPrint('$dir\n${ev.rawMessage}\n---');
       }
     });
 
     account.register();
 
     setState(() {
-      _sdk     = sdk;
+      _sdk = sdk;
       _account = account;
-      _status  = 'Registering…';
+      _status = 'Registering…';
     });
   }
 
@@ -79,18 +115,21 @@ class _PhonePageState extends State<PhonePage> {
     _account?.destroy();
     _sdk?.shutdown();
     setState(() {
-      _sdk     = null;
+      _sdk = null;
       _account = null;
-      _status  = '';
-      _stats   = '';
-      _call    = null;
-      _muted   = false;
+      _status = '';
+      _stats = '';
+      _call = null;
+      _muted = false;
       _mutedRx = false;
     });
   }
 
   String _formatStats(MediaStatsEvent s) {
     final method = s.mosMethod == 0 ? 'E-model' : 'simplified';
+    final level = s.audioLevelDbov.isNaN
+        ? 'n/a'
+        : '${s.audioLevelDbov.toStringAsFixed(1)} dBov';
     return 'MOS-LQ ${s.mosLq.toStringAsFixed(2)} / CQ ${s.mosCq.toStringAsFixed(2)} ($method)\n'
         'RTT ${s.rttMs.toStringAsFixed(0)} ms  '
         'jitter ${s.jitterMs.toStringAsFixed(1)} ms\n'
@@ -102,7 +141,8 @@ class _PhonePageState extends State<PhonePage> {
         'codec ${s.codec} ${s.codecClockRate ~/ 1000} kHz  PT ${s.payloadType}\n'
         'pkts TX ${s.packetsSent}  RX ${s.packetsReceived}  '
         'lost TX ${s.packetsLost}  RX ${s.packetsLostRx}\n'
-        '${s.remoteAddr}  SSRC rx ${s.ssrcRx}';
+        '${s.remoteAddr}  SSRC rx ${s.ssrcRx}\n'
+        'Level: $level';
   }
 
   @override
@@ -154,7 +194,7 @@ class _PhonePageState extends State<PhonePage> {
   }
 
   Widget _buildLoginForm() {
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -198,8 +238,73 @@ class _PhonePageState extends State<PhonePage> {
                 value: baresdk_transport_t.BARESDK_TRANSPORT_TLS,
                 child: Text('TLS'),
               ),
+              DropdownMenuItem(
+                value: baresdk_transport_t.BARESDK_TRANSPORT_WS,
+                child: Text('WS'),
+              ),
+              DropdownMenuItem(
+                value: baresdk_transport_t.BARESDK_TRANSPORT_WSS,
+                child: Text('WSS'),
+              ),
             ],
             onChanged: (v) => setState(() => _transport = v!),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<baresdk_media_enc_t>(
+            value: _mediaEnc,
+            decoration: const InputDecoration(
+              labelText: 'Media Encryption',
+              border: OutlineInputBorder(),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: baresdk_media_enc_t.BARESDK_MEDIA_ENC_NONE,
+                child: Text('None'),
+              ),
+              DropdownMenuItem(
+                value: baresdk_media_enc_t.BARESDK_MEDIA_ENC_SDES,
+                child: Text('SDES'),
+              ),
+              DropdownMenuItem(
+                value: baresdk_media_enc_t.BARESDK_MEDIA_ENC_DTLS_SRTP,
+                child: Text('DTLS-SRTP'),
+              ),
+            ],
+            onChanged: (v) => setState(() => _mediaEnc = v!),
+          ),
+          const SizedBox(height: 12),
+          const Text('Audio Codecs:'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _availableCodecs.map((codec) {
+              final isSelected = _selectedCodecs.contains(codec);
+              return FilterChip(
+                label: Text(codec),
+                selected: isSelected,
+                onSelected: (selected) {
+                  setState(() {
+                    if (selected) {
+                      _selectedCodecs.add(codec);
+                    } else {
+                      _selectedCodecs.remove(codec);
+                    }
+                  });
+                },
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            title: const Text('ICE Enabled'),
+            value: _iceEnabled,
+            onChanged: (v) => setState(() => _iceEnabled = v),
+          ),
+          SwitchListTile(
+            title: const Text('Verify TLS'),
+            value: _verifyTls,
+            onChanged: (v) => setState(() => _verifyTls = v),
           ),
           const SizedBox(height: 16),
           ElevatedButton.icon(
@@ -207,18 +312,34 @@ class _PhonePageState extends State<PhonePage> {
             label: const Text('Register'),
             onPressed: _register,
           ),
+          if (_status.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text(
+              _status,
+              style: TextStyle(
+                color: _status.contains('Failed') || _status.contains('Error')
+                    ? Colors.red
+                    : Colors.green,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildPhone() {
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(_status, style: Theme.of(context).textTheme.titleMedium),
+          Text(
+            _status,
+            style: Theme.of(context).textTheme.titleMedium,
+            textAlign: TextAlign.center,
+          ),
           const SizedBox(height: 16),
 
           if (_stats.isNotEmpty)
@@ -265,13 +386,19 @@ class _PhonePageState extends State<PhonePage> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     ElevatedButton(
-                      onPressed: () { _call!.answer(); },
+                      onPressed: () {
+                        _call!.answer();
+                      },
                       child: const Text('Answer'),
                     ),
                     const SizedBox(width: 12),
                     ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                      onPressed: () { _call!.hangup(); },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                      ),
+                      onPressed: () {
+                        _call!.hangup();
+                      },
                       child: const Text('Hang Up'),
                     ),
                   ],
