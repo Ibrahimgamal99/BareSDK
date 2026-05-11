@@ -1,5 +1,6 @@
 build/
 dist/
+third_party/
 tools/_smoketest
 tools/_smoketest.c
 .claude/
