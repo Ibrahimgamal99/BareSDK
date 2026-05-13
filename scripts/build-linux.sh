@@ -3,7 +3,7 @@
 # Output: dist/linux/x86_64/baresdk.a  +  dist/linux/x86_64/include/
 #
 # Prerequisites: cmake ninja gcc openssl-devel (or libssl-dev)
-#                webrtc-audio-processing-devel (or libwebrtc-audio-processing-dev on Debian)
+#                webrtc-audio-processing-devel (build-time only; optional at runtime)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -33,7 +33,6 @@ gcc -shared \
   -Wl,--whole-archive "${DIST_DIR}/baresdk.a" -Wl,--no-whole-archive \
   -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl \
   -lpulse \
-  -lwebrtc-audio-processing-1 \
   -o "${SO}"
 
 echo ""

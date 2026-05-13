@@ -19,15 +19,30 @@ import sys
 from cffi import FFI
 
 
-# Libraries that are NOT pre-installed on all desktop Linux distros.
-# Key = .so name as the dynamic linker sees it.
-# Value = install command per distro family.
+# Hard runtime deps on Linux — these are DT_NEEDED entries in baresdk.so.
+# libm/libresolv/libgcc_s/libc are always present; only list libs that can
+# realistically be absent on a normal desktop/server install.
+#
+# libwebrtc-audio-processing-1 is intentionally NOT here — the shim in
+# baresdk handles it via dlopen; missing = AEC unavailable, not a crash.
 _REQUIRED_LINUX_LIBS = {
-    "libwebrtc-audio-processing-1.so.3": {
-        "debian": "apt install libwebrtc-audio-processing-1",
-        "fedora": "dnf install webrtc-audio-processing",
-        "arch":   "pacman -S webrtc-audio-processing",
-        "suse":   "zypper install libwebrtc-audio-processing-1-0",
+    "libssl.so.3": {
+        "debian": "apt install libssl3",
+        "fedora": "dnf install openssl-libs",
+        "arch":   "pacman -S openssl",
+        "suse":   "zypper install libopenssl3",
+    },
+    "libcrypto.so.3": {
+        "debian": "apt install libssl3",
+        "fedora": "dnf install openssl-libs",
+        "arch":   "pacman -S openssl",
+        "suse":   "zypper install libopenssl3",
+    },
+    "libpulse.so.0": {
+        "debian": "apt install libpulse0",
+        "fedora": "dnf install pulseaudio-libs",
+        "arch":   "pacman -S libpulse",
+        "suse":   "zypper install libpulse0",
     },
 }
 
@@ -53,13 +68,37 @@ def _distro_family():
         combined = vals.get("ID", "") + " " + vals.get("ID_LIKE", "")
         for family in ("debian", "ubuntu", "fedora", "rhel", "centos", "arch", "suse"):
             if family in combined:
-                return "debian" if family in ("ubuntu", "debian") else \
-                       "fedora" if family in ("fedora", "rhel", "centos") else \
-                       "arch"   if family == "arch" else \
-                       "suse"
+                if family in ("debian", "ubuntu"):
+                    return "debian"
+                if family in ("fedora", "rhel", "centos"):
+                    return "fedora"
+                return family
     except OSError:
         pass
     return None
+
+
+def _check_linux_deps():
+    missing = []
+    seen_pkgs = set()  # deduplicate libs that share the same package (libssl3/libcrypto)
+    for lib, cmds in _REQUIRED_LINUX_LIBS.items():
+        try:
+            ctypes.CDLL(lib)
+        except OSError:
+            family = _distro_family()
+            cmd = cmds.get(family) if family else None
+            pkg_key = cmd or lib
+            if pkg_key not in seen_pkgs:
+                seen_pkgs.add(pkg_key)
+                if cmd:
+                    missing.append(f"  {lib}\n    → {cmd}")
+                else:
+                    missing.append(f"  {lib}\n    → install via your distro's package manager")
+    if missing:
+        raise ImportError(
+            "baresdk: missing required system libraries.\n\n"
+            + "\n".join(missing)
+        )
 
 
 def _check_windows_deps():
@@ -72,29 +111,6 @@ def _check_windows_deps():
     if missing:
         raise ImportError("baresdk: missing required runtime.\n\n" + "\n\n".join(missing))
 
-
-def _check_linux_deps():
-    missing = []
-    for lib, _ in _REQUIRED_LINUX_LIBS.items():
-        try:
-            ctypes.CDLL(lib)
-        except OSError:
-            missing.append(lib)
-
-    if not missing:
-        return
-
-    family = _distro_family()
-    lines = ["baresdk: missing required system libraries.\n"]
-    for lib in missing:
-        cmds = _REQUIRED_LINUX_LIBS[lib]
-        cmd = cmds.get(family) if family else None
-        lines.append(f"  {lib}")
-        if cmd:
-            lines.append(f"    → {cmd}")
-        else:
-            lines.append("    → install via your distro's package manager")
-    raise ImportError("\n".join(lines))
 
 _here = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.normpath(os.path.join(_here, "..", "..", ".."))

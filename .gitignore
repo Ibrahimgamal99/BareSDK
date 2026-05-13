@@ -5,3 +5,4 @@ tools/_smoketest
 tools/_smoketest.c
 .claude/
 .kilo/
+/bindings/python/baresdk.egg-info

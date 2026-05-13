@@ -447,9 +447,6 @@ if(BARESDK_SHARED)
     else()
       set(_SHARED_PLATFORM_LIBS -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv -lpulse)
     endif()
-    if(BARESDK_WITH_WEBRTC_AEC)
-      list(APPEND _SHARED_PLATFORM_LIBS -lwebrtc-audio-processing-1)
-    endif()
     # opus is already merged into baresdk.a via OPUS_EXTRA_LIBS — no -lopus needed
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
