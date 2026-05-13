@@ -99,6 +99,7 @@ void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
 	acct->cfg_turn_user   = bsdk_strdup(src->turn_user);
 	acct->cfg_turn_pass   = bsdk_strdup(src->turn_pass);
 	acct->cfg_outbound    = bsdk_strdup(src->outbound);
+	acct->cfg_outbound_proxy = bsdk_strdup(src->outbound_proxy);
 	acct->cfg_push_token  = bsdk_strdup(src->push_token);
 	acct->cfg_push_param  = bsdk_strdup(src->push_param);
 
@@ -113,6 +114,7 @@ void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
 	dst->turn_user    = acct->cfg_turn_user;
 	dst->turn_pass    = acct->cfg_turn_pass;
 	dst->outbound     = acct->cfg_outbound;
+	dst->outbound_proxy = acct->cfg_outbound_proxy;
 	dst->push_token   = acct->cfg_push_token;
 	dst->push_param   = acct->cfg_push_param;
 }
@@ -130,6 +132,7 @@ void bsdk_acct_cfg_deep_free(struct baresdk_account *acct)
 	mem_deref(acct->cfg_turn_user);    acct->cfg_turn_user = NULL;
 	mem_deref(acct->cfg_turn_pass);    acct->cfg_turn_pass = NULL;
 	mem_deref(acct->cfg_outbound);     acct->cfg_outbound = NULL;
+	mem_deref(acct->cfg_outbound_proxy); acct->cfg_outbound_proxy = NULL;
 	mem_deref(acct->cfg_push_token);   acct->cfg_push_token = NULL;
 	mem_deref(acct->cfg_push_param);   acct->cfg_push_param = NULL;
 }
@@ -167,8 +170,9 @@ static void codec_list_str(const baresdk_codec_t *codecs, int count,
 		case BARESDK_CODEC_OPUS: name = "opus/48000/2";  break;
 		case BARESDK_CODEC_PCMU: name = "PCMU/8000/1";   break;
 		case BARESDK_CODEC_PCMA: name = "PCMA/8000/1";   break;
-		case BARESDK_CODEC_G722: name = "G722/8000/1";   break;
-		default:                 name = NULL;             break;
+		case BARESDK_CODEC_G722:    name = "G722/8000/1";    break;
+		case BARESDK_CODEC_G726_32: name = "G726-32/8000/1"; break;
+		default:                    name = NULL;              break;
 		}
 		if (!name) continue;
 		if (buf[0]) strncat(buf, ",", sz - strlen(buf) - 1);
@@ -261,10 +265,17 @@ static void configure_baresip_account(struct baresdk_account *acct)
 	/* Registration interval */
 	account_set_regint(ba, cfg->reg_expires);
 
-	/* Outbound proxy — explicit override → auto from account server info → global */
+	/* Outbound proxy — account outbound → account outbound_proxy → global → auto */
 	{
 		char ob[512];
 		const char *ob_str = acct->cfg.outbound;
+		if (!ob_str) {
+			ob_str = acct->cfg.outbound_proxy;   /* check alias field */
+		}
+		if (!ob_str) {
+			/* Try global outbound_proxy from SDK config */
+			ob_str = cfg->outbound_proxy;
+		}
 		if (!ob_str) {
 			const char *surl = acct->cfg.server_url;
 			if (!surl && acct->auto_server_url[0])
@@ -296,9 +307,8 @@ static void configure_baresip_account(struct baresdk_account *acct)
 	if (acct->cfg.ice_enabled || cfg->ice_enabled)
 		account_set_medianat(ba, "ice");
 
-	/* RTCP multiplexing (RFC 5761) — eliminates the separate RTCP ICE session
-	 * that crashes on incoming calls when ICE is active. */
-	account_set_rtcp_mux(ba, cfg->rtcp_mux);
+	/* RTCP multiplexing (RFC 5761) — per-account override; fall back to global */
+	account_set_rtcp_mux(ba, acct->cfg.rtcp_mux_set ? acct->cfg.rtcp_mux : cfg->rtcp_mux);
 
 	/* STUN/TURN — account overrides global */
 	{
@@ -345,7 +355,18 @@ static void configure_baresip_account(struct baresdk_account *acct)
 	}
 
 	/* DTMF via RTP events */
-	account_set_dtmfmode(ba, DTMFMODE_RTP_EVENT);
+	{
+		static const enum dtmfmode dtmf_map[] = {
+			[BARESDK_DTMF_RFC4733]  = DTMFMODE_RTP_EVENT,
+			[BARESDK_DTMF_SIP_INFO] = DTMFMODE_SIP_INFO,
+			[BARESDK_DTMF_AUTO]     = DTMFMODE_AUTO,
+		};
+		baresdk_dtmf_mode_t m = acct->cfg.dtmf_mode;
+		if ((unsigned)m <= BARESDK_DTMF_AUTO)
+			account_set_dtmfmode(ba, dtmf_map[m]);
+		else
+			account_set_dtmfmode(ba, DTMFMODE_RTP_EVENT);
+	}
 
 	/* Call transfer support */
 	account_set_call_transfer(ba, true);
@@ -480,8 +501,7 @@ static void create_fn(void *arg)
 		                      &sv_port, ws_path, sizeof(ws_path));
 		if (!acct->parsed_host[0])
 			str_ncpy(acct->parsed_host, sv_host, sizeof(acct->parsed_host));
-		if (!acct->parsed_port)
-			acct->parsed_port = sv_port;
+		acct->parsed_port = sv_port;
 	} else {
 		/* Auto-generate server_url for all transports */
 		uint16_t port = acct->parsed_port;

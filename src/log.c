@@ -4,6 +4,7 @@
 
 #include "baresdk_internal.h"
 #include <re_dbg.h>
+#include <stdio.h>
 
 /*
  * Baresip log levels:  LEVEL_DEBUG=0  LEVEL_INFO=1  LEVEL_WARN=2  LEVEL_ERROR=3
@@ -89,6 +90,12 @@ int bsdk_log_init(void)
 	log_level_set(LEVEL_DEBUG);
 	log_register_handler(&s_logger);
 	dbg_handler_set(re_dbg_handler, NULL);
+
+	/* Some re library paths (e.g. sip/transp.c) use re_fprintf(stderr,...)
+	 * directly, bypassing dbg_handler.  Redirect stderr to /dev/null so
+	 * these don't leak to the terminal; all real diagnostics go through
+	 * the SDK event system. */
+	freopen("/dev/null", "w", stderr);
 	return 0;
 }
 

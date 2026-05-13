@@ -6,6 +6,8 @@ the per-account queue.  All string fields are decoded from bytes to str.
 State fields use human-readable strings instead of integer constants.
 """
 
+import math
+import threading
 from dataclasses import dataclass, field
 from typing import Optional, List
 
@@ -182,3 +184,175 @@ class QualityAlertEvent:
     value: float
     threshold: float
     recovering: bool
+
+
+class CallStats:
+    """
+    Live call statistics that update in-place as media_stats events arrive.
+
+    Obtain via account.stats_stream() which yields this object each time
+    it refreshes, or read .current on a Call after the call is established.
+
+    All fields mirror MediaStatsEvent. Before the first update every numeric
+    field is 0 / NaN and string fields are empty; check .available first.
+
+        for stats in account.stats_stream():
+            print(stats.mos_lq, stats.rtt_ms)
+            if stats.is_final:
+                break
+    """
+
+    __slots__ = (
+        "_lock",
+        "available",
+        # packet counters
+        "packets_sent", "packets_received",
+        "packets_lost", "packets_lost_rx",
+        "bytes_sent", "bytes_received",
+        "tx_errors", "rx_errors",
+        # loss
+        "loss_pct", "loss_pct_rx",
+        # delay / jitter
+        "jitter_ms", "tx_jitter_ms", "rtt_ms",
+        # jitter buffer
+        "jitter_buffer_ms", "jitter_buffer_load",
+        "late_packets", "discarded_packets",
+        "jitter_buffer_target_ms", "jitter_buffer_adaptive",
+        # plc
+        "plc_frames", "plc_ratio",
+        # bandwidth
+        "bandwidth_kbps_tx", "bandwidth_kbps_rx",
+        "avg_bandwidth_kbps_tx", "avg_bandwidth_kbps_rx",
+        # mos
+        "mos_lq", "mos_cq", "mos_lq_rx", "mos_cq_rx", "mos_method",
+        # codec
+        "codec_name", "codec_clock_rate", "codec_sample_rate",
+        "codec_channels", "payload_type",
+        # audio levels
+        "audio_level_dbov", "mic_level_dbov",
+        # stream identity
+        "ssrc_tx", "ssrc_rx", "remote_addr",
+        # session history
+        "mos_lq_min", "mos_lq_avg", "stats_tick",
+        "call_duration_ms", "is_final",
+    )
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.available = False
+        _nan = math.nan
+        self.packets_sent = 0;        self.packets_received = 0
+        self.packets_lost = 0;        self.packets_lost_rx = 0
+        self.bytes_sent = 0;          self.bytes_received = 0
+        self.tx_errors = 0;           self.rx_errors = 0
+        self.loss_pct = 0.0;          self.loss_pct_rx = 0.0
+        self.jitter_ms = 0.0;         self.tx_jitter_ms = 0.0;  self.rtt_ms = 0.0
+        self.jitter_buffer_ms = 0;    self.jitter_buffer_load = 0
+        self.late_packets = 0;        self.discarded_packets = 0
+        self.jitter_buffer_target_ms = 0; self.jitter_buffer_adaptive = False
+        self.plc_frames = 0;          self.plc_ratio = 0.0
+        self.bandwidth_kbps_tx = 0;   self.bandwidth_kbps_rx = 0
+        self.avg_bandwidth_kbps_tx = 0; self.avg_bandwidth_kbps_rx = 0
+        self.mos_lq = _nan;           self.mos_cq = _nan
+        self.mos_lq_rx = _nan;        self.mos_cq_rx = _nan;  self.mos_method = 0
+        self.codec_name = "";         self.codec_clock_rate = 0
+        self.codec_sample_rate = 0;   self.codec_channels = 0;  self.payload_type = 0
+        self.audio_level_dbov = _nan; self.mic_level_dbov = _nan
+        self.ssrc_tx = 0;             self.ssrc_rx = 0;  self.remote_addr = ""
+        self.mos_lq_min = _nan;       self.mos_lq_avg = _nan
+        self.stats_tick = 0;          self.call_duration_ms = 0;  self.is_final = False
+
+    def _update(self, ev: "MediaStatsEvent") -> None:
+        with self._lock:
+            self.available              = True
+            self.packets_sent           = ev.packets_sent
+            self.packets_received       = ev.packets_received
+            self.packets_lost           = ev.packets_lost
+            self.packets_lost_rx        = ev.packets_lost_rx
+            self.bytes_sent             = ev.bytes_sent
+            self.bytes_received         = ev.bytes_received
+            self.tx_errors              = ev.tx_errors
+            self.rx_errors              = ev.rx_errors
+            self.loss_pct               = ev.loss_pct
+            self.loss_pct_rx            = ev.loss_pct_rx
+            self.jitter_ms              = ev.jitter_ms
+            self.tx_jitter_ms           = ev.tx_jitter_ms
+            self.rtt_ms                 = ev.rtt_ms
+            self.jitter_buffer_ms       = ev.jitter_buffer_ms
+            self.jitter_buffer_load     = ev.jitter_buffer_load
+            self.late_packets           = ev.late_packets
+            self.discarded_packets      = ev.discarded_packets
+            self.jitter_buffer_target_ms = ev.jitter_buffer_target_ms
+            self.jitter_buffer_adaptive = ev.jitter_buffer_adaptive
+            self.plc_frames             = ev.plc_frames
+            self.plc_ratio              = ev.plc_ratio
+            self.bandwidth_kbps_tx      = ev.bandwidth_kbps_tx
+            self.bandwidth_kbps_rx      = ev.bandwidth_kbps_rx
+            self.avg_bandwidth_kbps_tx  = ev.avg_bandwidth_kbps_tx
+            self.avg_bandwidth_kbps_rx  = ev.avg_bandwidth_kbps_rx
+            self.mos_lq                 = ev.mos_lq
+            self.mos_cq                 = ev.mos_cq
+            self.mos_lq_rx              = ev.mos_lq_rx
+            self.mos_cq_rx              = ev.mos_cq_rx
+            self.mos_method             = ev.mos_method
+            self.codec_name             = ev.codec_name
+            self.codec_clock_rate       = ev.codec_clock_rate
+            self.codec_sample_rate      = ev.codec_sample_rate
+            self.codec_channels         = ev.codec_channels
+            self.payload_type           = ev.payload_type
+            self.audio_level_dbov       = ev.audio_level_dbov
+            self.mic_level_dbov         = ev.mic_level_dbov
+            self.ssrc_tx                = ev.ssrc_tx
+            self.ssrc_rx                = ev.ssrc_rx
+            self.remote_addr            = ev.remote_addr
+            self.mos_lq_min             = ev.mos_lq_min
+            self.mos_lq_avg             = ev.mos_lq_avg
+            self.stats_tick             = ev.stats_tick
+            self.call_duration_ms       = ev.call_duration_ms
+            self.is_final               = ev.is_final
+
+    def print(self) -> None:
+        """Print a formatted stats block to stdout."""
+        if not self.available:
+            print("CallStats: no data yet")
+            return
+        method = "E-model" if self.mos_method == 0 else "simplified"
+        spk = f"{self.audio_level_dbov:.4f} dBov" if not math.isnan(self.audio_level_dbov) else "n/a"
+        mic = f"{self.mic_level_dbov:.4f} dBov"   if not math.isnan(self.mic_level_dbov)   else "n/a"
+        print(
+            f"┌─ Media Stats (tick={self.stats_tick}) ─────────────────────────\n"
+            f"│  Codec     : {self.codec_name}  {self.codec_clock_rate // 1000} kHz"
+            f"  ch={self.codec_channels}  PT={self.payload_type}\n"
+            f"│  Remote    : {self.remote_addr}"
+            f"  SSRC rx={self.ssrc_rx}  tx={self.ssrc_tx}\n"
+            f"│  Packets   : tx={self.packets_sent}  rx={self.packets_received}"
+            f"  lost_tx={self.packets_lost} ({self.loss_pct:.1f}%)"
+            f"  lost_rx={self.packets_lost_rx} ({self.loss_pct_rx:.1f}%)\n"
+            f"│  Bandwidth : tx={self.bandwidth_kbps_tx} kbps  rx={self.bandwidth_kbps_rx} kbps"
+            f"  (avg tx={self.avg_bandwidth_kbps_tx}  rx={self.avg_bandwidth_kbps_rx})\n"
+            f"│  Delay     : RTT={self.rtt_ms:.1f} ms"
+            f"  jitter={self.jitter_ms:.1f} ms"
+            f"  tx_jitter={self.tx_jitter_ms:.1f} ms\n"
+            f"│  Jitter buf: depth={self.jitter_buffer_ms} ms"
+            f"  load={self.jitter_buffer_load}"
+            f"  late={self.late_packets}"
+            f"  discarded={self.discarded_packets}\n"
+            f"│  MOS ({method}): LQ={self.mos_lq:.3f}  CQ={self.mos_cq:.3f}\n"
+            f"│  Speaker   : {spk}\n"
+            f"│  Mic       : {mic}\n"
+            f"└───────────────────────────────────────────────",
+            flush=True,
+        )
+
+    def __repr__(self) -> str:
+        if not self.available:
+            return "CallStats(no data yet)"
+        return (
+            f"CallStats(tick={self.stats_tick}"
+            f" mos_lq={self.mos_lq:.3f}"
+            f" rtt={self.rtt_ms:.1f}ms"
+            f" loss={self.loss_pct:.1f}%"
+            f" jitter={self.jitter_ms:.1f}ms"
+            f" codec={self.codec_name}"
+            f" final={self.is_final})"
+        )

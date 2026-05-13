@@ -157,6 +157,7 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->rtcp_mux              = true;
 	cfg->aec_mode              = BARESDK_AEC_SUPPRESSOR;
 	cfg->aec_suppression_level = 1.0f;
+	cfg->opus.complexity       = -1;
 	/* mic_gain_db and speaker_gain_db default to 0.0f (unity) from memset */
 }
 
@@ -258,6 +259,14 @@ int baresdk_init(const baresdk_config_t *cfg)
 
 	bsdk_timers_configure(&g_bsdk.cfg);
 
+	/* Pre-configure the transport mask before ua_init.
+	 * Bits: UDP=1<<0, TCP=1<<1, TLS=1<<2, WS=1<<3, WSS=1<<4 */
+	conf_config()->sip.transports = (1u << SIP_TRANSP_UDP) |
+	                                (1u << SIP_TRANSP_TCP) |
+	                                (1u << SIP_TRANSP_TLS) |
+	                                (1u << SIP_TRANSP_WS)  |
+	                                (1u << SIP_TRANSP_WSS);
+
 	{
 		const char *sw = g_bsdk.cfg.user_agent ? g_bsdk.cfg.user_agent
 		                                       : "baresdk/1.0";
@@ -289,6 +298,32 @@ int baresdk_init(const baresdk_config_t *cfg)
 	err = modules_init();
 	if (err)
 		goto fail;
+
+	{
+		const baresdk_opus_config_t *op = &g_bsdk.cfg.opus;
+		char obuf[256];
+		int  olen = 0;
+		if (op->bitrate > 0)
+			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen,
+			                   "opus_bitrate %d\n", op->bitrate);
+		if (op->complexity >= 0)
+			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen,
+			                   "opus_complexity %d\n", op->complexity);
+		if (op->cbr)
+			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen, "opus_cbr yes\n");
+		if (op->dtx)
+			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen, "opus_dtx yes\n");
+		if (op->fec)
+			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen, "opus_inbandfec yes\n");
+		if (op->stereo)
+			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen, "opus_stereo yes\n");
+		if (olen > 0)
+			conf_configure_buf((const uint8_t *)obuf, (size_t)olen);
+	}
+	if (g_bsdk.cfg.jbuf_type == BARESDK_JBUF_FIXED) {
+		struct config *c = conf_config();
+		c->avt.audio.jbtype = JBUF_FIXED;
+	}
 
 	bsdk_audio_processing_init(g_bsdk.cfg.ns, g_bsdk.cfg.agc,
 	                           g_bsdk.cfg.aec_mode,

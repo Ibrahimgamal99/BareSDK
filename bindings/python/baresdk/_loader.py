@@ -12,10 +12,89 @@ The library is searched in this order:
   5. System library paths
 """
 
+import ctypes
 import os
 import platform
 import sys
 from cffi import FFI
+
+
+# Libraries that are NOT pre-installed on all desktop Linux distros.
+# Key = .so name as the dynamic linker sees it.
+# Value = install command per distro family.
+_REQUIRED_LINUX_LIBS = {
+    "libwebrtc-audio-processing-1.so.3": {
+        "debian": "apt install libwebrtc-audio-processing-1",
+        "fedora": "dnf install webrtc-audio-processing",
+        "arch":   "pacman -S webrtc-audio-processing",
+        "suse":   "zypper install libwebrtc-audio-processing-1-0",
+    },
+}
+
+# baresdk.dll is built with x64-windows-static-md — OpenSSL and zlib are
+# statically embedded, but the MSVC runtime is dynamically linked and may
+# be absent on a clean Windows Server install.
+_REQUIRED_WINDOWS_LIBS = {
+    "vcruntime140.dll": (
+        "Microsoft Visual C++ Redistributable is not installed.\n"
+        "    → winget install Microsoft.VCRedist.2022.x64\n"
+        "    or download from https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    ),
+}
+
+
+def _distro_family():
+    try:
+        with open("/etc/os-release") as f:
+            vals = {}
+            for line in f:
+                k, _, v = line.partition("=")
+                vals[k.strip()] = v.strip().strip('"').lower()
+        combined = vals.get("ID", "") + " " + vals.get("ID_LIKE", "")
+        for family in ("debian", "ubuntu", "fedora", "rhel", "centos", "arch", "suse"):
+            if family in combined:
+                return "debian" if family in ("ubuntu", "debian") else \
+                       "fedora" if family in ("fedora", "rhel", "centos") else \
+                       "arch"   if family == "arch" else \
+                       "suse"
+    except OSError:
+        pass
+    return None
+
+
+def _check_windows_deps():
+    missing = []
+    for dll, message in _REQUIRED_WINDOWS_LIBS.items():
+        try:
+            ctypes.CDLL(dll)
+        except OSError:
+            missing.append(message)
+    if missing:
+        raise ImportError("baresdk: missing required runtime.\n\n" + "\n\n".join(missing))
+
+
+def _check_linux_deps():
+    missing = []
+    for lib, _ in _REQUIRED_LINUX_LIBS.items():
+        try:
+            ctypes.CDLL(lib)
+        except OSError:
+            missing.append(lib)
+
+    if not missing:
+        return
+
+    family = _distro_family()
+    lines = ["baresdk: missing required system libraries.\n"]
+    for lib in missing:
+        cmds = _REQUIRED_LINUX_LIBS[lib]
+        cmd = cmds.get(family) if family else None
+        lines.append(f"  {lib}")
+        if cmd:
+            lines.append(f"    → {cmd}")
+        else:
+            lines.append("    → install via your distro's package manager")
+    raise ImportError("\n".join(lines))
 
 _here = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.normpath(os.path.join(_here, "..", "..", ".."))
@@ -77,6 +156,11 @@ def _find_lib():
     # 5. System paths
     return names[0]
 
+
+if sys.platform == "linux":
+    _check_linux_deps()
+elif sys.platform == "win32":
+    _check_windows_deps()
 
 lib = ffi.dlopen(_find_lib())
 

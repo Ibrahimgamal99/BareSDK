@@ -1,14 +1,34 @@
 [build-system]
-requires = ["setuptools>=68", "cffi>=1.15"]
+requires = ["setuptools>=68", "wheel>=0.40", "cffi>=1.15"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "baresdk"
 version = "1.0.0"
 description = "Python binding for baresdk — SIP/WebRTC/NAT SDK"
+readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = ["cffi>=1.15"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+  "Topic :: Communications :: Telephony",
+  "Topic :: Communications :: Internet Phone",
+  "Intended Audience :: Developers",
+]
+
+# System library required on Linux (not needed on Windows — all deps are
+# statically embedded in baresdk.dll):
+#
+#   Ubuntu/Debian:  apt install libwebrtc-audio-processing-1
+#   Fedora/RHEL:    dnf install webrtc-audio-processing
+#   Arch:           pacman -S webrtc-audio-processing
+#
+# baresdk raises ImportError with the exact install command if the library
+# is missing, so end users get actionable guidance at import time.
 
 [project.urls]
 Homepage = "https://github.com/Ibrahimgamal99/BareSDK.git"

@@ -13,6 +13,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "baresdk_internal.h"
 
 /* ── Event thread ────────────────────────────────────────────────────────── */
@@ -206,6 +207,9 @@ static void bevent_handler(enum bevent_ev bev,
 		mtx_init(&new_lc->tap_lock, mtx_plain);
 		mtx_init(&new_lc->rec_lock, mtx_plain);
 		list_init(&new_lc->custom_hdrs);
+		uint32_t _nan_bits; float _nan = NAN; memcpy(&_nan_bits, &_nan, 4);
+		re_atomic_rlx_set(&new_lc->rx_level_bits, _nan_bits);
+		re_atomic_rlx_set(&new_lc->tx_level_bits, _nan_bits);
 
 		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 		if (!qev) {
@@ -258,11 +262,15 @@ static void bevent_handler(enum bevent_ev bev,
 		ev.u.call_state.call    = lc;
 		ev.u.call_state.account = acct;
 
-		/* Classify by SIP status: 487 → CANCELLED, 4xx/5xx/6xx → FAILED, else → ENDED */
+		/* Classify by SIP status: 487 → CANCELLED, 4xx/5xx/6xx → FAILED, else → ENDED.
+		 * OS-level transport errors arrive as reason strings without a SIP code (e.g.
+		 * "Connection reset by peer [104]") — detect them by a trailing "[<errno>]". */
 		int scode = sip_reason_code(reason);
+		bool is_transport_err = (scode == 0 && reason &&
+		                         strrchr(reason, '[') && strrchr(reason, ']') > strrchr(reason, '['));
 		if (scode == 487)
 			ev.u.call_state.state = BARESDK_CALL_CANCELLED;
-		else if (scode >= 400)
+		else if (scode >= 400 || is_transport_err)
 			ev.u.call_state.state = BARESDK_CALL_FAILED;
 		else
 			ev.u.call_state.state = BARESDK_CALL_ENDED;
@@ -273,6 +281,8 @@ static void bevent_handler(enum bevent_ev bev,
 			ev.u.call_state.error = BARESDK_ERR_SERVER_5XX;
 		else if (scode >= 400)
 			ev.u.call_state.error = BARESDK_ERR_INVAL;
+		else if (is_transport_err)
+			ev.u.call_state.error = BARESDK_ERR_TRANSPORT;
 
 		if (lc) {
 			bsdk_stats_collect_final(lc);  /* must be before bc = NULL */

@@ -2,17 +2,43 @@
 
 ## Prerequisites
 
-```bash
-# Ubuntu/Debian
-sudo apt install libssl3 zlib1g
+### Linux
 
-# Fedora/RHEL
-sudo dnf install openssl-libs zlib
+One library is required that is not pre-installed on all distros:
+
+```bash
+# Ubuntu / Debian
+sudo apt install libwebrtc-audio-processing-1
+
+# Fedora / RHEL / CentOS
+sudo dnf install webrtc-audio-processing
+
+# Arch
+sudo pacman -S webrtc-audio-processing
+```
+
+Everything else (`libssl`, `libz`, `libpulse`, …) is already on every desktop Linux.
+
+> **Missing library at import time?** baresdk raises `ImportError` with the exact
+> install command for your distro — you don't need to remember the package name.
+
+### Windows
+
+No extra installs needed. OpenSSL, zlib, and opus are all statically embedded in
+`baresdk.dll`. The only requirement is the **Visual C++ Redistributable (2015–2022)**,
+which ships with Windows, Visual Studio, and most apps — it is almost never missing.
+
+If you do hit a `vcruntime140.dll` error at import time, baresdk will tell you:
+
+```
+winget install Microsoft.VCRedist.2022.x64
 ```
 
 ---
 
 ## One-command setup
+
+### Linux / macOS
 
 ```bash
 bash bindings/python/build.sh
@@ -25,6 +51,19 @@ This does everything in one step:
 4. Installs the Python package (`pip install -e`)
 
 Re-run `build.sh` whenever `include/baresdk.h` or the C source changes.
+
+### Windows
+
+```powershell
+.\bindings\python\build.ps1
+```
+
+This does the same steps as `build.sh` but for Windows:
+1. Builds `baresdk.dll` via `scripts\build-windows.ps1` if missing
+2. Copies the DLL into the package directory
+3. Installs the Python package (`pip install -e`)
+
+**Prerequisites:** Visual Studio 2022, vcpkg with `VCPKG_ROOT` set, Python ≥ 3.9.
 
 ---
 
@@ -40,8 +79,13 @@ Build the shared library for your platform:
 | Android | `bash scripts/build-android.sh` | `dist/android/<ABI>/baresdk.so` |
 
 Then install the package:
+
 ```bash
+# Linux / macOS
 pip install bindings/python
+
+# Windows
+pip install bindings\python
 ```
 
 The loader searches for the library in this order:

@@ -11,33 +11,32 @@
  *   ./quickstart alice@pbx.example.com secret          # legacy CLI mode (receive)
  *   ./quickstart alice@pbx.example.com secret bob@...  # legacy CLI mode (dial)
  *
- * JSON account config example (account.json):
+ * Minimal JSON account config (account.json):
  * {
  *   "enabled":      true,
- *   "uri":          "120@pbx.example.com",
+ *   "uri":          "120@pbx.example.com",   // port optional: "120@pbx.example.com:5090"
  *   "password":     "secret",
- *   "display_name": "Alice",
- *   "auth_user":    null,
- *
- *   "transport":    "wss",          // "udp" | "tcp" | "tls" | "ws" | "wss"
- *   "server_url":   "wss://pbx.example.com:443/",
- *   "server_host":  null,           // optional: override SIP domain for routing
- *   "server_port":  0,              // optional: 0 = use default for transport
- *
- *   "media_enc":    "dtls_srtp",    // "none" | "sdes" | "dtls_srtp"
+ *   "display_name": "Extension 120",
+ *   "transport":    "wss",                   // "udp" | "tcp" | "tls" | "ws" | "wss"
+ *   "media_enc":    "dtls_srtp",             // "none" | "sdes" | "dtls_srtp"
  *   "ice_enabled":  true,
+ *   "rtcp_mux":     true,
  *   "stun_server":  "stun:stun.l.google.com:19302",
- *   "turn_server":  null,           // e.g. "turn:turn.example.com:3478"
- *   "turn_user":    null,
- *   "turn_pass":    null,
  *   "verify_tls":   false,
- *
- *   "extra_headers": {              // optional SIP headers added to every request
- *     "X-Tenant-Id": "42"
- *   },
- *   "audio_codec":  "opus",         // "opus" | "ulaw" | "alaw" | "g722" (omit = SDK default)
- *   "rel100":       "enabled"       // "disabled" | "enabled" | "required"
+ *   "audio_codec":  "opus"                   // "opus" | "ulaw" | "alaw" | "g722" | "g726"
  * }
+ *
+ * server_url, outbound_proxy, server_host, server_port, auth_user are all
+ * auto-derived from uri + transport. Port defaults: udp/tcp=5060, tls=5061,
+ * ws=8088, wss=8089. Include a port in the uri to override: "120@host:443".
+ *
+ * Optional overrides (add to JSON when needed):
+ *   "server_url":     "wss://pbx.example.com:443/ws"  // custom URL + path
+ *   "outbound_proxy": "sip:proxy.example.com:5060;transport=udp"
+ *   "auth_user":      "alice"
+ *   "extra_headers":  { "X-Tenant-Id": "42" }
+ *   "audio_codecs":   ["opus", "pcmu"]                // multiple codecs (array form)
+ *   "rel100":         "enabled"                       // "disabled" | "enabled" | "required"
  */
 
 #include "../baresdk.hpp"
@@ -82,87 +81,87 @@ struct JsonValue {
 
 namespace json_detail {
 
-static void skip_ws(const char*& p) {
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-}
+    static void skip_ws(const char*& p) {
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    }
 
-static std::string parse_string(const char*& p) {
-    if (*p != '"') throw std::runtime_error("expected '\"'");
-    ++p;
-    std::string out;
-    while (*p && *p != '"') {
-        if (*p == '\\') {
-            ++p;
-            switch (*p) {
-            case '"':  out += '"';  break;
-            case '\\': out += '\\'; break;
-            case '/':  out += '/';  break;
-            case 'n':  out += '\n'; break;
-            case 'r':  out += '\r'; break;
-            case 't':  out += '\t'; break;
-            default:   out += *p;   break;
-            }
-        } else {
-            out += *p;
-        }
+    static std::string parse_string(const char*& p) {
+        if (*p != '"') throw std::runtime_error("expected '\"'");
         ++p;
+        std::string out;
+        while (*p && *p != '"') {
+            if (*p == '\\') {
+                ++p;
+                switch (*p) {
+                    case '"':  out += '"';  break;
+                    case '\\': out += '\\'; break;
+                    case '/':  out += '/';  break;
+                    case 'n':  out += '\n'; break;
+                    case 'r':  out += '\r'; break;
+                    case 't':  out += '\t'; break;
+                    default:   out += *p;   break;
+                }
+            } else {
+                out += *p;
+            }
+            ++p;
+        }
+        if (*p != '"') throw std::runtime_error("unterminated string");
+        ++p;
+        return out;
     }
-    if (*p != '"') throw std::runtime_error("unterminated string");
-    ++p;
-    return out;
-}
 
-static JsonValue parse_value(const char*& p);
+    static JsonValue parse_value(const char*& p);
 
-static JsonValue parse_object(const char*& p) {
-    if (*p != '{') throw std::runtime_error("expected '{'");
-    ++p; skip_ws(p);
-    JsonValue v; v.type = JsonValue::Obj;
-    while (*p && *p != '}') {
-        skip_ws(p);
-        std::string key = parse_string(p);
-        skip_ws(p);
-        if (*p != ':') throw std::runtime_error("expected ':'");
+    static JsonValue parse_object(const char*& p) {
+        if (*p != '{') throw std::runtime_error("expected '{'");
         ++p; skip_ws(p);
-        v.obj[key] = parse_value(p);
-        skip_ws(p);
-        if (*p == ',') { ++p; skip_ws(p); }
+        JsonValue v; v.type = JsonValue::Obj;
+        while (*p && *p != '}') {
+            skip_ws(p);
+            std::string key = parse_string(p);
+            skip_ws(p);
+            if (*p != ':') throw std::runtime_error("expected ':'");
+            ++p; skip_ws(p);
+            v.obj[key] = parse_value(p);
+            skip_ws(p);
+            if (*p == ',') { ++p; skip_ws(p); }
+        }
+        if (*p == '}') ++p;
+        return v;
     }
-    if (*p == '}') ++p;
-    return v;
-}
 
-static JsonValue parse_array(const char*& p) {
-    if (*p != '[') throw std::runtime_error("expected '['");
-    ++p; skip_ws(p);
-    JsonValue v; v.type = JsonValue::Arr;
-    while (*p && *p != ']') {
-        v.arr.push_back(parse_value(p));
-        skip_ws(p);
-        if (*p == ',') { ++p; skip_ws(p); }
+    static JsonValue parse_array(const char*& p) {
+        if (*p != '[') throw std::runtime_error("expected '['");
+        ++p; skip_ws(p);
+        JsonValue v; v.type = JsonValue::Arr;
+        while (*p && *p != ']') {
+            v.arr.push_back(parse_value(p));
+            skip_ws(p);
+            if (*p == ',') { ++p; skip_ws(p); }
+        }
+        if (*p == ']') ++p;
+        return v;
     }
-    if (*p == ']') ++p;
-    return v;
-}
 
-static JsonValue parse_value(const char*& p) {
-    skip_ws(p);
-    if (*p == '{') return parse_object(p);
-    if (*p == '[') return parse_array(p);
-    if (*p == '"') {
-        JsonValue v; v.type = JsonValue::Str; v.s = parse_string(p); return v;
+    static JsonValue parse_value(const char*& p) {
+        skip_ws(p);
+        if (*p == '{') return parse_object(p);
+        if (*p == '[') return parse_array(p);
+        if (*p == '"') {
+            JsonValue v; v.type = JsonValue::Str; v.s = parse_string(p); return v;
+        }
+        if (strncmp(p, "null",  4) == 0) { p += 4; return JsonValue{}; }
+        if (strncmp(p, "true",  4) == 0) { p += 4; JsonValue v; v.type = JsonValue::Bool; v.b = true;  return v; }
+        if (strncmp(p, "false", 5) == 0) { p += 5; JsonValue v; v.type = JsonValue::Bool; v.b = false; return v; }
+        /* integer */
+        if (*p == '-' || (*p >= '0' && *p <= '9')) {
+            char* end;
+            long long n = strtoll(p, &end, 10);
+            JsonValue v; v.type = JsonValue::Int; v.i = n; p = end; return v;
+        }
+        throw std::runtime_error(std::string("unexpected character: ") + *p);
     }
-    if (strncmp(p, "null",  4) == 0) { p += 4; return JsonValue{}; }
-    if (strncmp(p, "true",  4) == 0) { p += 4; JsonValue v; v.type = JsonValue::Bool; v.b = true;  return v; }
-    if (strncmp(p, "false", 5) == 0) { p += 5; JsonValue v; v.type = JsonValue::Bool; v.b = false; return v; }
-    /* integer */
-    if (*p == '-' || (*p >= '0' && *p <= '9')) {
-        char* end;
-        long long n = strtoll(p, &end, 10);
-        JsonValue v; v.type = JsonValue::Int; v.i = n; p = end; return v;
-    }
-    throw std::runtime_error(std::string("unexpected character: ") + *p);
-}
 
 } // namespace json_detail
 
@@ -195,6 +194,7 @@ struct AccountConfig {
     /* ── string storage (must outlive acfg) ── */
     std::string uri, password, display_name, auth_user;
     std::string server_url, server_host;
+    std::string outbound_proxy;
     std::string stun_server, turn_server, turn_user, turn_pass;
     std::map<std::string, std::string> extra_headers;
     std::string rel100_str;
@@ -204,11 +204,14 @@ struct AccountConfig {
     bool        enabled     = true;
     int         server_port = 0;
 
-    baresdk_transport_t    transport  = BARESDK_TRANSPORT_WSS;
-    baresdk_media_enc_t    media_enc  = BARESDK_MEDIA_ENC_DTLS_SRTP;
+    baresdk_transport_t    transport   = BARESDK_TRANSPORT_WSS;
+    baresdk_media_enc_t    media_enc   = BARESDK_MEDIA_ENC_DTLS_SRTP;
     bool                   ice_enabled = true;
+    bool                   rtcp_mux    = false;
+    bool                   rtcp_mux_set = false;
     bool                   verify_tls  = false;
     baresdk_100rel_mode_t  rel100      = BARESDK_100REL_DISABLED;
+    baresdk_dtmf_mode_t    dtmf_mode   = BARESDK_DTMF_RFC4733;
 
     /* ── the C struct; populated by build() ── */
     baresdk_account_config_t acfg{};
@@ -237,6 +240,14 @@ struct AccountConfig {
         if (s == "enabled")  return BARESDK_100REL_ENABLED;
         if (s == "required") return BARESDK_100REL_REQUIRED;
         throw std::runtime_error("unknown rel100 value: " + s);
+    }
+
+    /* ── parse a dtmf_mode string ── */
+    static baresdk_dtmf_mode_t parse_dtmf_mode(const std::string& s) {
+        if (s == "rfc4733")  return BARESDK_DTMF_RFC4733;
+        if (s == "sip_info") return BARESDK_DTMF_SIP_INFO;
+        if (s == "auto")     return BARESDK_DTMF_AUTO;
+        throw std::runtime_error("unknown dtmf_mode value: " + s);
     }
 
     /* ── construct from CLI args (legacy mode) ── */
@@ -289,12 +300,17 @@ struct AccountConfig {
         server_url   = str("server_url");
         server_host  = str("server_host");
         server_port  = num("server_port", 0);
+        outbound_proxy = str("outbound_proxy");
 
         {
             std::string m = str("media_enc");
             media_enc = m.empty() ? BARESDK_MEDIA_ENC_DTLS_SRTP : parse_media_enc(m);
         }
         ice_enabled  = flag("ice_enabled", true);
+        {
+            const auto* v = j.get("rtcp_mux");
+            if (v && !v->is_null()) { rtcp_mux = v->as_bool(); rtcp_mux_set = true; }
+        }
         stun_server  = str("stun_server");
         turn_server  = str("turn_server");
         turn_user    = str("turn_user");
@@ -304,6 +320,11 @@ struct AccountConfig {
         {
             std::string r = str("rel100");
             rel100 = r.empty() ? BARESDK_100REL_DISABLED : parse_100rel(r);
+        }
+
+        {
+            std::string d = str("dtmf_mode");
+            dtmf_mode = d.empty() ? BARESDK_DTMF_RFC4733 : parse_dtmf_mode(d);
         }
 
         /* extra_headers object */
@@ -328,6 +349,15 @@ struct AccountConfig {
                     audio_codecs.push_back(name);
             }
         }
+
+        /* audio_codec — singular alias; used when audio_codecs is absent */
+        if (audio_codecs.empty()) {
+            const auto* single = j.get("audio_codec");
+            if (single && !single->is_null()) {
+                std::string name = single->as_str();
+                if (!name.empty()) audio_codecs.push_back(name);
+            }
+        }
     }
 
     /* ── populate acfg from owned strings ── */
@@ -340,14 +370,18 @@ struct AccountConfig {
         acfg.transport    = transport;
         acfg.server_url   = cstr_or_null(server_url);
         acfg.server_host  = cstr_or_null(server_host);
+        acfg.outbound_proxy = cstr_or_null(outbound_proxy);
         if (server_port > 0) acfg.server_port = (uint16_t)server_port;
         acfg.media_enc    = media_enc;
         acfg.ice_enabled  = ice_enabled;
+        acfg.rtcp_mux     = rtcp_mux;
+        acfg.rtcp_mux_set = rtcp_mux_set;
         acfg.stun_server  = cstr_or_null(stun_server);
         acfg.turn_server  = cstr_or_null(turn_server);
         acfg.turn_user    = cstr_or_null(turn_user);
         acfg.turn_pass    = cstr_or_null(turn_pass);
         acfg.verify_tls   = verify_tls;
+        acfg.dtmf_mode    = dtmf_mode;
 
         /* Per-account codec override via audio_codec_names[] */
         if (!audio_codecs.empty()) {
@@ -364,36 +398,38 @@ struct AccountConfig {
         auto tf = [](bool v){ return v ? "true" : "false"; };
         auto transport_name = [](baresdk_transport_t t) -> const char* {
             switch(t) {
-            case BARESDK_TRANSPORT_UDP: return "udp";
-            case BARESDK_TRANSPORT_TCP: return "tcp";
-            case BARESDK_TRANSPORT_TLS: return "tls";
-            case BARESDK_TRANSPORT_WS:  return "ws";
-            case BARESDK_TRANSPORT_WSS: return "wss";
-            default: return "?";
+                case BARESDK_TRANSPORT_UDP: return "udp";
+                case BARESDK_TRANSPORT_TCP: return "tcp";
+                case BARESDK_TRANSPORT_TLS: return "tls";
+                case BARESDK_TRANSPORT_WS:  return "ws";
+                case BARESDK_TRANSPORT_WSS: return "wss";
+                default: return "?";
             }
         };
         auto enc_name = [](baresdk_media_enc_t e) -> const char* {
             switch(e) {
-            case BARESDK_MEDIA_ENC_NONE:      return "none";
-            case BARESDK_MEDIA_ENC_SDES:      return "sdes";
-            case BARESDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
-            default: return "?";
+                case BARESDK_MEDIA_ENC_NONE:      return "none";
+                case BARESDK_MEDIA_ENC_SDES:      return "sdes";
+                case BARESDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
+                default: return "?";
             }
         };
         std::cout
-            << "Account config:\n"
-            << "  uri          : " << uri          << "\n"
-            << "  display_name : " << display_name << "\n"
-            << "  auth_user    : " << (auth_user.empty() ? "(from uri)" : auth_user) << "\n"
-            << "  transport    : " << transport_name(transport)  << "\n"
-            << "  server_url   : " << (server_url.empty()  ? "(none)" : server_url)  << "\n"
-            << "  server_host  : " << (server_host.empty() ? "(none)" : server_host) << "\n"
-            << "  server_port  : " << server_port  << "\n"
-            << "  media_enc    : " << enc_name(media_enc)        << "\n"
-            << "  ice_enabled  : " << tf(ice_enabled)            << "\n"
-            << "  stun_server  : " << (stun_server.empty() ? "(none)" : stun_server) << "\n"
-            << "  turn_server  : " << (turn_server.empty() ? "(none)" : turn_server) << "\n"
-            << "  verify_tls   : " << tf(verify_tls)             << "\n";
+        << "Account config:\n"
+        << "  uri          : " << uri          << "\n"
+        << "  display_name : " << display_name << "\n"
+        << "  auth_user    : " << (auth_user.empty() ? "(from uri)" : auth_user) << "\n"
+        << "  transport    : " << transport_name(transport)  << "\n"
+         << "  server_url   : " << (server_url.empty()  ? "(none)" : server_url)  << "\n"
+         << "  server_host  : " << (server_host.empty() ? "(none)" : server_host) << "\n"
+         << "  server_port  : " << server_port  << "\n"
+         << "  outbound_proxy: " << (outbound_proxy.empty() ? "(auto)" : outbound_proxy) << "\n"
+         << "  media_enc    : " << enc_name(media_enc)        << "\n"
+        << "  ice_enabled  : " << tf(ice_enabled)            << "\n"
+        << "  rtcp_mux     : " << (rtcp_mux_set ? tf(rtcp_mux) : "(global)") << "\n"
+        << "  stun_server  : " << (stun_server.empty() ? "(none)" : stun_server) << "\n"
+        << "  turn_server  : " << (turn_server.empty() ? "(none)" : turn_server) << "\n"
+        << "  verify_tls   : " << tf(verify_tls)             << "\n";
         if (!audio_codecs.empty()) {
             std::cout << "  audio_codecs : ";
             for (size_t i = 0; i < audio_codecs.size(); i++) {
@@ -415,35 +451,39 @@ struct AccountConfig {
 /* ═══════════════════════════════════════════════════════════════════════════
  * Media stats printer
  * ═══════════════════════════════════════════════════════════════════════════ */
+
 static void print_stats(const baresdk_ev_media_stats_t& s)
 {
     const char* method = (s.mos_method == BARESDK_MOS_EMODEL) ? "E-model" : "simplified";
     std::cout
-        << "┌─ Media Stats ─────────────────────────────────\n"
-        << "│  Codec     : " << (s.codec_name ? s.codec_name : "?")
-        <<   "  " << s.codec_clock_rate / 1000 << " kHz"
-        <<   "  ch=" << (int)s.codec_channels
-        <<   "  PT=" << s.payload_type << "\n"
-        << "│  Remote    : " << s.remote_addr
-        <<   "  SSRC rx=" << s.ssrc_rx << "  tx=" << s.ssrc_tx << "\n"
-        << "│  Packets   : tx=" << s.packets_sent
-        <<   "  rx=" << s.packets_received
-        <<   "  lost_tx=" << s.packets_lost << " (" << s.loss_pct << "%)"
-        <<   "  lost_rx=" << s.packets_lost_rx << " (" << s.loss_pct_rx << "%)\n"
-        << "│  Bandwidth : tx=" << s.bandwidth_kbps_tx << " kbps"
-        <<   "  rx=" << s.bandwidth_kbps_rx << " kbps"
-        <<   "  (avg tx=" << s.avg_bandwidth_kbps_tx
-        <<   "  rx=" << s.avg_bandwidth_kbps_rx << ")\n"
-        << "│  Delay     : RTT=" << s.rtt_ms << " ms"
-        <<   "  jitter=" << s.jitter_ms << " ms"
-        <<   "  tx_jitter=" << s.tx_jitter_ms << " ms\n"
-        << "│  Jitter buf: depth=" << s.jitter_buffer_ms << " ms"
-        <<   "  load=" << s.jitter_buffer_load
-        <<   "  late=" << s.late_packets
-        <<   "  discarded=" << s.discarded_packets << "\n"
-        << "│  MOS (" << method << "): LQ=" << s.mos_lq << "  CQ=" << s.mos_cq << "\n";
-    if (!std::isnan(s.audio_level_dbov))
-        std::cout << "│  Level     : " << s.audio_level_dbov << " dBov\n";
+    << "┌─ Media Stats ─────────────────────────────────\n"
+    << "│  Codec     : " << (s.codec_name ? s.codec_name : "?")
+    <<   "  " << s.codec_clock_rate / 1000 << " kHz"
+    <<   "  ch=" << (int)s.codec_channels
+    <<   "  PT=" << s.payload_type << "\n"
+    << "│  Remote    : " << s.remote_addr
+    <<   "  SSRC rx=" << s.ssrc_rx << "  tx=" << s.ssrc_tx << "\n"
+    << "│  Packets   : tx=" << s.packets_sent
+    <<   "  rx=" << s.packets_received
+    <<   "  lost_tx=" << s.packets_lost << " (" << s.loss_pct << "%)"
+    <<   "  lost_rx=" << s.packets_lost_rx << " (" << s.loss_pct_rx << "%)\n"
+    << "│  Bandwidth : tx=" << s.bandwidth_kbps_tx << " kbps"
+    <<   "  rx=" << s.bandwidth_kbps_rx << " kbps"
+    <<   "  (avg tx=" << s.avg_bandwidth_kbps_tx
+    <<   "  rx=" << s.avg_bandwidth_kbps_rx << ")\n"
+    << "│  Delay     : RTT=" << s.rtt_ms << " ms"
+    <<   "  jitter=" << s.jitter_ms << " ms"
+    <<   "  tx_jitter=" << s.tx_jitter_ms << " ms\n"
+    << "│  Jitter buf: depth=" << s.jitter_buffer_ms << " ms"
+    <<   "  load=" << s.jitter_buffer_load
+    <<   "  late=" << s.late_packets
+    <<   "  discarded=" << s.discarded_packets << "\n"
+    << "│  MOS (" << method << "): LQ=" << s.mos_lq << "  CQ=" << s.mos_cq << "\n";
+    std::cout << "│  Speaker   : "
+    << (std::isnan(s.audio_level_dbov) ? "---" : std::to_string(s.audio_level_dbov) + " dBov")
+    << "  Mic       : "
+    << (std::isnan(s.mic_level_dbov)   ? "---" : std::to_string(s.mic_level_dbov)   + " dBov")
+    << "\n";
     std::cout << "└───────────────────────────────────────────────\n";
 }
 
@@ -458,14 +498,14 @@ static void print_devices(baresdk::SDK& sdk)
         std::cout << "Input devices (" << n << "):\n";
         for (int i = 0; i < n; i++)
             std::cout << "  [" << i << "] " << devs[i].name
-                      << (devs[i].is_default ? "  *default*" : "") << "\n";
+            << (devs[i].is_default ? "  *default*" : "") << "\n";
     }
     n = baresdk_audio_list_output_devices(devs, 32);
     if (n > 0) {
         std::cout << "Output devices (" << n << "):\n";
         for (int i = 0; i < n; i++)
             std::cout << "  [" << i << "] " << devs[i].name
-                      << (devs[i].is_default ? "  *default*" : "") << "\n";
+            << (devs[i].is_default ? "  *default*" : "") << "\n";
     }
 }
 
@@ -488,9 +528,9 @@ int main(int argc, char* argv[])
 {
     if (argc < 2) {
         std::cerr
-            << "Usage:\n"
-            << "  " << argv[0] << " account.json [callee-uri]\n"
-            << "  " << argv[0] << " <sip-uri> <password> [callee-uri]\n";
+        << "Usage:\n"
+        << "  " << argv[0] << " account.json [callee-uri]\n"
+        << "  " << argv[0] << " <sip-uri> <password> [callee-uri]\n";
         return 1;
     }
 
@@ -505,9 +545,9 @@ int main(int argc, char* argv[])
             std::string arg1(argv[1]);
             if (!arg1.empty() && arg1[0] == '{')
                 j = parse_json(arg1);          /* raw JSON string on CLI */
-            else
-                j = load_json_file(arg1);      /* file path */
-            cfg.from_json(j);
+                else
+                    j = load_json_file(arg1);      /* file path */
+                    cfg.from_json(j);
         } catch (const std::exception& e) {
             std::cerr << "Failed to load account config: " << e.what() << "\n";
             return 1;
@@ -517,7 +557,7 @@ int main(int argc, char* argv[])
         /* Legacy: sip-uri password [callee] */
         if (argc < 3) {
             std::cerr << "usage: " << argv[0]
-                      << " <sip-uri> <password> [<callee-uri>]\n";
+            << " <sip-uri> <password> [<callee-uri>]\n";
             return 1;
         }
         cfg.from_cli(argv[1], argv[2]);
@@ -540,6 +580,7 @@ int main(int argc, char* argv[])
     std::mutex              mtx;
     std::condition_variable cv;
     bool                    registered       = false;
+    bool                    reg_ok           = false;
     bool                    call_established = false;
     bool                    call_done        = false;
     bool                    incoming_call    = false;
@@ -561,76 +602,86 @@ int main(int argc, char* argv[])
     sdk.on_event([&](const baresdk_event_t& ev) {
         switch (ev.type) {
 
-        case BARESDK_EV_REG_STATE:
-            if (ev.u.reg.state == BARESDK_REG_REGISTERED) {
-                std::cout << "Registered OK.\n";
-                std::lock_guard<std::mutex> lk(mtx);
-                registered = true;
-                cv.notify_one();
-            } else if (ev.u.reg.state == BARESDK_REG_FAILED) {
-                std::cerr << "Registration failed: "
-                          << (ev.u.reg.error_str ? ev.u.reg.error_str : "?") << "\n";
-                std::lock_guard<std::mutex> lk(mtx);
-                registered = true; /* unblock main */
-                cv.notify_one();
-            }
-            break;
+            case BARESDK_EV_REG_STATE:
+                if (ev.u.reg.state == BARESDK_REG_REGISTERED) {
+                    std::cout << "Registered OK.\n";
+                    std::lock_guard<std::mutex> lk(mtx);
+                    registered = true;
+                    reg_ok     = true;
+                    cv.notify_one();
+                } else if (ev.u.reg.state == BARESDK_REG_FAILED) {
+                    const char* detail = ev.u.reg.error_str
+                        ? ev.u.reg.error_str
+                        : baresdk_strerror(ev.u.reg.error);
+                    std::cerr << "Registration failed: " << detail << "\n";
+                    std::lock_guard<std::mutex> lk(mtx);
+                    registered = true; /* unblock main */
+                    cv.notify_one();
+                }
+                break;
 
-        case BARESDK_EV_INCOMING_CALL:
-            std::cout << "\n=== Incoming call from "
-                      << (ev.u.incoming.from_uri ? ev.u.incoming.from_uri : "unknown")
-                      << " ===\n"
-                      << "Press 'a' + Enter to answer, 'r' + Enter to reject\n";
-            {
-                std::lock_guard<std::mutex> lk(mtx);
-                active_call   = baresdk::Call(ev.u.incoming.call);
-                incoming_call = true;
-                cv.notify_one();
-            }
-            break;
+            case BARESDK_EV_INCOMING_CALL:
+                std::cout << "\n=== Incoming call from "
+                << (ev.u.incoming.from_uri ? ev.u.incoming.from_uri : "unknown")
+                << " ===\n"
+                << "Press 'a' + Enter to answer, 'r' + Enter to reject\n";
+                {
+                    std::lock_guard<std::mutex> lk(mtx);
+                    active_call   = baresdk::Call(ev.u.incoming.call);
+                    incoming_call = true;
+                    cv.notify_one();
+                }
+                break;
 
-        case BARESDK_EV_CALL_STATE: {
-            static const char* kStateNames[] = {
-                "CALLING","RINGING","ESTABLISHED","HELD","ENDED","CANCELLED","FAILED"
-            };
-            int si = ev.u.call_state.state;
-            const char* sname = (si >= 0 && si <= 6) ? kStateNames[si] : "?";
-            std::cout << "Call state: " << sname << " (" << si << ")";
-            if (ev.u.call_state.reason && ev.u.call_state.reason[0])
-                std::cout << "  reason=\"" << ev.u.call_state.reason << "\"";
-            if (ev.u.call_state.error != BARESDK_OK)
-                std::cout << "  error=" << ev.u.call_state.error;
-            std::cout << "\n";
+            case BARESDK_EV_CALL_STATE: {
+                static const char* kStateNames[] = {
+                    "CALLING","RINGING","ESTABLISHED","HELD","ENDED","CANCELLED","FAILED"
+                };
+                int si = ev.u.call_state.state;
+                const char* sname = (si >= 0 && si <= 6) ? kStateNames[si] : "?";
+                std::cout << "Call state: " << sname << " (" << si << ")";
+                if (ev.u.call_state.reason && ev.u.call_state.reason[0])
+                    std::cout << "  reason=\"" << ev.u.call_state.reason << "\"";
+                if (ev.u.call_state.error != BARESDK_OK)
+                    std::cout << "  error=" << ev.u.call_state.error;
+                std::cout << "\n";
 
-            if (ev.u.call_state.state == BARESDK_CALL_ESTABLISHED) {
-                std::lock_guard<std::mutex> lk(mtx);
-                call_established = true;
-                cv.notify_one();
-            } else if (ev.u.call_state.state == BARESDK_CALL_ENDED  ||
-                       ev.u.call_state.state == BARESDK_CALL_FAILED ||
-                       ev.u.call_state.state == BARESDK_CALL_CANCELLED) {
-                std::lock_guard<std::mutex> lk(mtx);
+                if (ev.u.call_state.state == BARESDK_CALL_ESTABLISHED) {
+                    std::lock_guard<std::mutex> lk(mtx);
+                    call_established = true;
+                    cv.notify_one();
+                } else if (ev.u.call_state.state == BARESDK_CALL_ENDED  ||
+                    ev.u.call_state.state == BARESDK_CALL_FAILED ||
+                    ev.u.call_state.state == BARESDK_CALL_CANCELLED) {
+                    std::lock_guard<std::mutex> lk(mtx);
                 call_done = true;
                 cv.notify_one();
+                    }
+                    break;
             }
-            break;
-        }
 
-        case BARESDK_EV_MEDIA_STATS:
-            print_stats(ev.u.stats);
+            case BARESDK_EV_TRANSFER_REQUEST:
+                std::cout << "=== Transfer request: REFER to "
+                << (ev.u.transfer_req.refer_to_uri ? ev.u.transfer_req.refer_to_uri : "?")
+                << (ev.u.transfer_req.has_replaces ? "  [attended]" : "  [blind]") << "\n"
+                << "    (to follow: hang up current call and dial the refer_to_uri)\n";
+                break;
+
+            case BARESDK_EV_MEDIA_STATS:
+                print_stats(ev.u.stats);
+                break;
+
+            case BARESDK_EV_LOG:
+                if (ev.u.log.message)
+                    std::cerr << "[sdk] " << ev.u.log.message;
             break;
 
-        case BARESDK_EV_LOG:
-            if (ev.u.log.message)
-                std::cerr << "[sdk] " << ev.u.log.message;
-            break;
+            case BARESDK_EV_SIP_TRACE:
+                std::cout << (ev.u.sip_trace.dir == BARESDK_MEDIA_DIR_TX ? ">>>\n" : "<<<\n")
+                << ev.u.sip_trace.raw_message << "\n---\n";
+                break;
 
-        case BARESDK_EV_SIP_TRACE:
-            std::cout << (ev.u.sip_trace.dir == BARESDK_MEDIA_DIR_TX ? ">>>\n" : "<<<\n")
-                      << ev.u.sip_trace.raw_message << "\n---\n";
-            break;
-
-        default: break;
+            default: break;
         }
     });
 
@@ -654,6 +705,8 @@ int main(int argc, char* argv[])
     print_devices(sdk);
 
     /* ── Dial or wait ─────────────────────────────────────────────────── */
+    if (!reg_ok) return 1;
+
     if (callee) {
         std::string callee_uri = callee;
         if (callee_uri.rfind("sip:", 0) != 0)
@@ -674,14 +727,24 @@ int main(int argc, char* argv[])
         if (!call_established) return 0;
 
         lk.unlock();
-        std::cout << "Call active. Press 'h' + Enter to hang up.\n";
+        std::cout << "Call active. Keys: h=hangup  o=hold  r=resume  m=mute  u=unmute  t=transfer\n";
 
         std::thread input_thread([&]{
             char c;
             while (std::cin.get(c)) {
-                if (c == 'h' || c == 'H') {
-                    active_call.hangup();
-                    break;
+                if      (c == 'h' || c == 'H') { active_call.hangup();          break; }
+                else if (c == 'o' || c == 'O') { try { active_call.hold();   std::cout << "On hold.\n";   } catch (...) {} }
+                else if (c == 'r' || c == 'R') { try { active_call.resume(); std::cout << "Resumed.\n";  } catch (...) {} }
+                else if (c == 'm' || c == 'M') { try { active_call.mute(true);  std::cout << "Muted.\n";   } catch (...) {} }
+                else if (c == 'u' || c == 'U') { try { active_call.mute(false); std::cout << "Unmuted.\n"; } catch (...) {} }
+                else if (c == 't' || c == 'T') {
+                    std::string dest;
+                    std::cout << "Transfer to URI: ";
+                    std::getline(std::cin, dest);
+                    if (!dest.empty()) {
+                        try { active_call.transfer(dest); std::cout << "Transfer sent.\n"; }
+                        catch (const std::exception& e) { std::cerr << "transfer failed: " << e.what() << "\n"; }
+                    }
                 }
             }
         });

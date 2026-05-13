@@ -66,7 +66,8 @@ struct tap_find_ctx { const struct audio *au; struct baresdk_call *found; };
 static void tap_find_fn(struct baresdk_call *lc, void *arg)
 {
 	struct tap_find_ctx *ctx = arg;
-	if (!ctx->found && call_audio(lc->bc) == ctx->au)
+	struct audio *got = lc->bc ? call_audio(lc->bc) : NULL;
+	if (!ctx->found && got == ctx->au)
 		ctx->found = lc;
 }
 
@@ -82,6 +83,8 @@ static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 	struct tap_enc_st *ts = (struct tap_enc_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
+	if (!ts->lc)
+		ts->lc = tap_find_call(ts->au);
 	struct baresdk_call *lc = ts->lc;
 	if (!lc) return 0;
 
@@ -119,6 +122,8 @@ static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 	struct tap_dec_st *ts = (struct tap_dec_st *)st;
 	if (af->fmt != AUFMT_S16LE) return 0;
 
+	if (!ts->lc)
+		ts->lc = tap_find_call(ts->au);
 	struct baresdk_call *lc = ts->lc;
 	if (!lc) return 0;
 

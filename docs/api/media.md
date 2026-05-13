@@ -16,6 +16,24 @@ cfg.audio_codec_count = 2;
 | G.711 µ-law | `BARESDK_CODEC_PCMU` | 8 kHz, universal PSTN compatibility |
 | G.711 A-law | `BARESDK_CODEC_PCMA` | 8 kHz, European PSTN |
 | G.722 | `BARESDK_CODEC_G722` | Wideband, good for HD voice |
+| G.726 32 kbit/s | `BARESDK_CODEC_G726_32` | 8 kHz, legacy ADPCM |
+
+---
+
+## Opus tuning
+
+Fine-tune the Opus encoder at init time via `cfg.opus` (`baresdk_opus_config_t`):
+
+```c
+cfg.opus.bitrate    = 32000;  // 0 = auto/VBR (default)
+cfg.opus.complexity = 5;      // 0–10 CPU trade-off; -1 = opus default (9)
+cfg.opus.cbr        = false;  // constant bitrate; false = VBR (default)
+cfg.opus.dtx        = true;   // discontinuous transmission (silence suppression)
+cfg.opus.fec        = true;   // in-band forward error correction
+cfg.opus.stereo     = false;  // stereo output; false = mono (default)
+```
+
+All fields default to 0 / false / -1 (Opus encoder defaults). Only set what you need.
 
 ---
 
@@ -24,37 +42,51 @@ cfg.audio_codec_count = 2;
 Enable at init time via `baresdk_config_t`:
 
 ```c
-cfg.aec = true;   // half-duplex echo suppressor (attenuates TX when RX is loud)
-cfg.ns  = true;   // noise suppression (Wiener gate on microphone path)
-cfg.agc = true;   // automatic gain control (normalises mic volume to −20 dBFS)
+cfg.aec_mode              = BARESDK_AEC_SUPPRESSOR;  // built-in half-duplex gate
+cfg.aec_suppression_level = 1.0f;                    // 0.0–1.0; 1.0 = maximum
+cfg.ns                    = true;   // noise suppression (Wiener gate)
+cfg.agc                   = true;   // automatic gain control (normalise to −20 dBFS)
 ```
 
-Toggle at runtime on any active call without re-dialling:
+AEC mode options:
+
+| Value | Description |
+|---|---|
+| `BARESDK_AEC_OFF` | No echo cancellation |
+| `BARESDK_AEC_SUPPRESSOR` | Built-in half-duplex gate (default) |
+| `BARESDK_AEC_WEBRTC` | WebRTC AEC (desktop only; requires `libwebrtc-audio-processing-1`) |
+
+Toggle at runtime without re-dialling:
 
 ```c
-baresdk_set_aec(true);
+baresdk_set_aec_mode(BARESDK_AEC_OFF);      // disable AEC
+baresdk_set_aec_mode(BARESDK_AEC_SUPPRESSOR); // re-enable
+baresdk_set_aec_suppression_level(0.5f);    // softer suppression
 baresdk_set_ns(false);
 baresdk_set_agc(true);
 ```
 
-> **Note on AEC:** the built-in suppressor is a half-duplex gate, not full acoustic echo cancellation. For true AEC use platform voice modes: CoreAudio `VoiceProcessingIO`, AAudio `USAGE_VOICE_COMMUNICATION`, or PulseAudio `module-echo-cancel`.
+> **WebRTC AEC** is enabled automatically on desktop builds when `libwebrtc-audio-processing-1-dev` is installed at cmake time. Use `-DBARESDK_WITH_WEBRTC_AEC=OFF` to opt out.
 
 ---
 
 ## Jitter buffer
 
-Configure adaptive jitter buffering at init time:
+Configure at init time:
 
 ```c
 cfg.jitter_buffer_min_ms = 20;
 cfg.jitter_buffer_max_ms = 150;
+cfg.jbuf_type = BARESDK_JBUF_ADAPTIVE;   // default
+// cfg.jbuf_type = BARESDK_JBUF_FIXED;   // constant depth at min_ms
 ```
 
 Adjust at runtime (takes effect on new calls):
 
 ```c
-baresdk_set_jitter_buffer(20, 200);  // widen buffer on a poor network
-baresdk_set_jitter_buffer(10,  80);  // tighten for a low-latency LAN
+baresdk_set_jitter_buffer(20, 200);                    // resize adaptive buffer
+baresdk_set_jitter_buffer_type(BARESDK_JBUF_FIXED);    // switch to fixed depth
+baresdk_set_jitter_buffer_type(BARESDK_JBUF_ADAPTIVE); // back to adaptive
 ```
 
 Both bounds default to baresip's built-in values when left at zero.
@@ -82,6 +114,9 @@ baresdk_audio_mute(call, false);    // unmute microphone
 
 baresdk_audio_mute_rx(call, true);  // silence speaker (RX)
 baresdk_audio_mute_rx(call, false); // unmute speaker
+
+// Query current TX mute state (no network round-trip)
+bool muted = baresdk_audio_is_muted(call);
 ```
 
 `baresdk_audio_mute` stops encoding and sending microphone audio.

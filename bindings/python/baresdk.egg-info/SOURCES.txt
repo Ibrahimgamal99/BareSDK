@@ -1,4 +1,6 @@
+README.md
 pyproject.toml
+setup.py
 baresdk/__init__.py
 baresdk/_baresdk_clean.h
 baresdk/_loader.py

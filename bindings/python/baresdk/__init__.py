@@ -19,6 +19,7 @@ Quick start:
 """
 
 import queue
+import sys
 import threading
 from typing import Iterator, Optional
 
@@ -28,6 +29,7 @@ from .events import (
     SdpNegotiationEvent, SipTraceEvent, MediaStatsEvent, LogEvent,
     RegistrarWarningEvent, TransferRequestEvent, MwiEvent,
     MessageEvent, PresenceStateEvent, QualityAlertEvent,
+    CallStats,
 )
 
 # ── C constant mirrors ────────────────────────────────────────────────────────
@@ -70,10 +72,15 @@ QUALITY_LOSS   = 1
 QUALITY_JITTER = 2
 QUALITY_RTT    = 3
 
-CODEC_OPUS = 0
-CODEC_PCMU = 1
-CODEC_PCMA = 2
-CODEC_G722 = 3
+CODEC_OPUS    = 0
+CODEC_PCMU    = 1
+CODEC_PCMA    = 2
+CODEC_G722    = 3
+CODEC_G726_32 = 4
+
+DTMF_RFC4733  = 0
+DTMF_SIP_INFO = 1
+DTMF_AUTO     = 2
 
 AEC_OFF        = 0
 AEC_SUPPRESSOR = 1
@@ -116,6 +123,58 @@ def _unregister_account(c_handle):
 
 def _lookup_account(c_handle):
     return _accounts.get(int(ffi.cast("uintptr_t", c_handle)))
+
+
+def _raw_stats_to_event(s) -> MediaStatsEvent:
+    """Convert a baresdk_ev_media_stats_t C struct to a MediaStatsEvent."""
+    return MediaStatsEvent(
+        call=None,
+        packets_sent            = s.packets_sent,
+        packets_received        = s.packets_received,
+        packets_lost            = s.packets_lost,
+        packets_lost_rx         = s.packets_lost_rx,
+        bytes_sent              = s.bytes_sent,
+        bytes_received          = s.bytes_received,
+        tx_errors               = s.tx_errors,
+        rx_errors               = s.rx_errors,
+        loss_pct                = s.loss_pct,
+        loss_pct_rx             = s.loss_pct_rx,
+        jitter_ms               = s.jitter_ms,
+        tx_jitter_ms            = s.tx_jitter_ms,
+        rtt_ms                  = s.rtt_ms,
+        jitter_buffer_ms        = s.jitter_buffer_ms,
+        jitter_buffer_load      = s.jitter_buffer_load,
+        late_packets            = s.late_packets,
+        discarded_packets       = s.discarded_packets,
+        jitter_buffer_target_ms = s.jitter_buffer_target_ms,
+        jitter_buffer_adaptive  = bool(s.jitter_buffer_adaptive),
+        plc_frames              = s.plc_frames,
+        plc_ratio               = s.plc_ratio,
+        bandwidth_kbps_tx       = s.bandwidth_kbps_tx,
+        bandwidth_kbps_rx       = s.bandwidth_kbps_rx,
+        avg_bandwidth_kbps_tx   = s.avg_bandwidth_kbps_tx,
+        avg_bandwidth_kbps_rx   = s.avg_bandwidth_kbps_rx,
+        mos_lq                  = s.mos_lq,
+        mos_cq                  = s.mos_cq,
+        mos_lq_rx               = s.mos_lq_rx,
+        mos_cq_rx               = s.mos_cq_rx,
+        mos_method              = s.mos_method,
+        codec_name              = _s(s.codec_name) or "",
+        codec_clock_rate        = s.codec_clock_rate,
+        codec_sample_rate       = s.codec_sample_rate,
+        codec_channels          = s.codec_channels,
+        payload_type            = s.payload_type,
+        audio_level_dbov        = s.audio_level_dbov,
+        mic_level_dbov          = s.mic_level_dbov,
+        ssrc_tx                 = s.ssrc_tx,
+        ssrc_rx                 = s.ssrc_rx,
+        remote_addr             = ffi.string(s.remote_addr).decode("utf-8", errors="replace"),
+        mos_lq_min              = s.mos_lq_min,
+        mos_lq_avg              = s.mos_lq_avg,
+        stats_tick              = s.stats_tick,
+        call_duration_ms        = s.call_duration_ms,
+        is_final                = bool(s.is_final),
+    )
 
 
 @ffi.callback("void(const baresdk_event_t *, void *)")
@@ -206,55 +265,7 @@ def _global_event_cb(ev_ptr, _userdata):
 
         elif typ == 7:  # MEDIA_STATS
             call_handle = ev.u.stats.call
-            s = ev.u.stats
-            obj = MediaStatsEvent(
-                call=None,
-                packets_sent          = s.packets_sent,
-                packets_received      = s.packets_received,
-                packets_lost          = s.packets_lost,
-                packets_lost_rx       = s.packets_lost_rx,
-                bytes_sent            = s.bytes_sent,
-                bytes_received        = s.bytes_received,
-                tx_errors             = s.tx_errors,
-                rx_errors             = s.rx_errors,
-                loss_pct              = s.loss_pct,
-                loss_pct_rx           = s.loss_pct_rx,
-                jitter_ms             = s.jitter_ms,
-                tx_jitter_ms          = s.tx_jitter_ms,
-                rtt_ms                = s.rtt_ms,
-                jitter_buffer_ms      = s.jitter_buffer_ms,
-                jitter_buffer_load    = s.jitter_buffer_load,
-                late_packets          = s.late_packets,
-                discarded_packets     = s.discarded_packets,
-                jitter_buffer_target_ms = s.jitter_buffer_target_ms,
-                jitter_buffer_adaptive  = bool(s.jitter_buffer_adaptive),
-                plc_frames            = s.plc_frames,
-                plc_ratio             = s.plc_ratio,
-                bandwidth_kbps_tx     = s.bandwidth_kbps_tx,
-                bandwidth_kbps_rx     = s.bandwidth_kbps_rx,
-                avg_bandwidth_kbps_tx = s.avg_bandwidth_kbps_tx,
-                avg_bandwidth_kbps_rx = s.avg_bandwidth_kbps_rx,
-                mos_lq                = s.mos_lq,
-                mos_cq                = s.mos_cq,
-                mos_lq_rx             = s.mos_lq_rx,
-                mos_cq_rx             = s.mos_cq_rx,
-                mos_method            = s.mos_method,
-                codec_name            = _s(s.codec_name) or "",
-                codec_clock_rate      = s.codec_clock_rate,
-                codec_sample_rate     = s.codec_sample_rate,
-                codec_channels        = s.codec_channels,
-                payload_type          = s.payload_type,
-                audio_level_dbov      = s.audio_level_dbov,
-                mic_level_dbov        = s.mic_level_dbov,
-                ssrc_tx               = s.ssrc_tx,
-                ssrc_rx               = s.ssrc_rx,
-                remote_addr           = ffi.string(s.remote_addr).decode("utf-8", errors="replace"),
-                mos_lq_min            = s.mos_lq_min,
-                mos_lq_avg            = s.mos_lq_avg,
-                stats_tick            = s.stats_tick,
-                call_duration_ms      = s.call_duration_ms,
-                is_final              = bool(s.is_final),
-            )
+            obj = _raw_stats_to_event(ev.u.stats)
 
         elif typ == 8:  # REGISTRAR_WARNING
             obj = RegistrarWarningEvent(message=_s(ev.u.reg_warn.message) or "")
@@ -348,6 +359,9 @@ class Call:
     def resume(self):
         _check(lib.baresdk_call_resume(self._h), "resume")
 
+    def is_held(self) -> bool:
+        return bool(lib.baresdk_call_is_held(self._h))
+
     def send_dtmf(self, digit: str):
         lib.baresdk_call_send_dtmf(self._h, ord(digit))
 
@@ -357,16 +371,39 @@ class Call:
     def mute(self, muted: bool = True):
         lib.baresdk_audio_mute(self._h, muted)
 
+    def is_muted(self) -> bool:
+        return bool(lib.baresdk_audio_is_muted(self._h))
+
     def mute_rx(self, muted: bool = True):
         lib.baresdk_audio_mute_rx(self._h, muted)
 
     def set_dscp_rtp(self, dscp: int):
         _check(lib.baresdk_call_set_dscp_rtp(self._h, dscp), "set_dscp_rtp")
 
-    def stats(self):
+    def stats(self) -> "CallStats":
+        """Synchronously read current stats and return a new CallStats snapshot."""
         s = ffi.new("baresdk_ev_media_stats_t *")
         lib.baresdk_call_get_stats(self._h, s)
-        return s[0]
+        cs = CallStats()
+        cs._update(_raw_stats_to_event(s[0]))
+        return cs
+
+    def fetch_stats(self, target: "CallStats") -> "CallStats":
+        """Synchronously read current stats and update *target* in-place.
+
+        Use this to trigger an immediate refresh without waiting for the next
+        stats_interval_ms tick:
+
+            stats = CallStats()
+            # ... later, whenever you want fresh data:
+            call.fetch_stats(stats)
+            print(stats.mos_lq)
+        """
+        s = ffi.new("baresdk_ev_media_stats_t *")
+        lib.baresdk_call_get_stats(self._h, s)
+        ev = _raw_stats_to_event(s[0])
+        target._update(ev)
+        return target
 
     def record_start(self, path: str):
         """Record mixed call audio (RX+TX) to a single WAV file."""
@@ -399,10 +436,15 @@ class Account:
     def __init__(self, handle):
         self._h = handle
         self._q: queue.SimpleQueue = queue.SimpleQueue()
+        self._stats_queues: list = []  # additional queues fed by stats_stream()
         _register_account(handle, self)
 
     def _put(self, obj):
         self._q.put(obj)
+        if isinstance(obj, MediaStatsEvent) and self._stats_queues:
+            with _accounts_lock:
+                for sq in self._stats_queues:
+                    sq.put(obj)
 
     def register(self):
         _check(lib.baresdk_account_register(self._h), "register")
@@ -491,11 +533,103 @@ class Account:
             except queue.Empty:
                 return
 
+    def stats_stream(self,
+                     call: Optional["Call"] = None,
+                     interval: Optional[float] = None,
+                     trigger: Optional[queue.Queue] = None,
+                     timeout: Optional[float] = None) -> Iterator:
+        """
+        Blocking generator that yields a live CallStats object on every update.
+        The same object is updated in-place each tick — hold a reference to it
+        and read from any thread.
+
+        Args:
+            call:     Call to poll. Required when interval or trigger is given.
+            interval: Polling interval in seconds.  When set, a background timer
+                      polls call.fetch_stats() at this rate independently of the
+                      SDK-level stats_interval_ms.  Default: follow the SDK timer.
+
+                          # update every 2 s instead of the SDK default 5 s
+                          for stats in account.stats_stream(call=c, interval=2):
+                              stats.print()
+
+            trigger:  Optional queue.Queue for on-demand refreshes.  Put anything
+                      into it from any thread to force an immediate update:
+
+                          trigger = queue.Queue()
+                          for stats in account.stats_stream(call=c, trigger=trigger):
+                              stats.print()
+
+                          trigger.put(1)   # immediate refresh from another thread
+
+            timeout:  Stop if no update arrives within this many seconds.
+
+        Stops when the account is destroyed, timeout expires, or is_final is set.
+        """
+        stats = CallStats()
+
+        # Private queue fed by: SDK timed events, interval timer, and triggers.
+        # Keeps stats_stream isolated from the main events() loop.
+        stats_q: queue.SimpleQueue = queue.SimpleQueue()
+        with _accounts_lock:
+            self._stats_queues.append(stats_q)
+
+        stop_timer = threading.Event()
+
+        def _timer_loop(interval_s: float):
+            while not stop_timer.wait(interval_s):
+                if call is not None:
+                    s = ffi.new("baresdk_ev_media_stats_t *")
+                    lib.baresdk_call_get_stats(call._h, s)
+                    stats_q.put(_raw_stats_to_event(s[0]))
+
+        timer_thread = None
+        if interval is not None and call is not None:
+            timer_thread = threading.Thread(
+                target=_timer_loop, args=(interval,), daemon=True)
+            timer_thread.start()
+
+        try:
+            while True:
+                # Check ad-hoc trigger first (non-blocking).
+                if trigger is not None and call is not None:
+                    try:
+                        trigger.get_nowait()
+                        call.fetch_stats(stats)
+                        yield stats
+                        if stats.is_final:
+                            return
+                        continue
+                    except queue.Empty:
+                        pass
+
+                # Block until the next update (interval timer or SDK event).
+                try:
+                    ev = stats_q.get(timeout=timeout)
+                except queue.Empty:
+                    return
+                if ev is None:
+                    return
+                stats._update(ev)
+                yield stats
+                if stats.is_final:
+                    return
+        finally:
+            stop_timer.set()
+            with _accounts_lock:
+                try:
+                    self._stats_queues.remove(stats_q)
+                except ValueError:
+                    pass
+
     def destroy(self):
         _unregister_account(self._h)
         lib.baresdk_account_destroy(self._h)
         self._h = None
         self._q.put(None)  # unblock any waiting events() caller
+        with _accounts_lock:
+            for sq in self._stats_queues:
+                sq.put(None)  # unblock any waiting stats_stream() caller
 
     def __enter__(self):
         return self
@@ -529,6 +663,14 @@ class SDK:
     """
 
     def __init__(self, **kwargs):
+        # Python defaults to block-buffering when stdout is not a TTY, which
+        # causes event output (e.g. media stats) to appear only at process exit.
+        # Force line-buffering so prints flush after every newline.
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+        except AttributeError:
+            pass  # Python < 3.7 fallback — no-op
+
         self._cfg = ffi.new("baresdk_config_t *")
         lib.baresdk_config_init(self._cfg)
 
@@ -669,6 +811,7 @@ _STR_TRANSPORT = {"udp": TRANSPORT_UDP, "tcp": TRANSPORT_TCP,
 _STR_MEDIA_ENC = {"none": MEDIA_ENC_NONE, "sdes": MEDIA_ENC_SDES,
                   "dtls_srtp": MEDIA_ENC_DTLS_SRTP}
 _STR_REL100    = {"disabled": 0, "enabled": 1, "required": 2}
+_STR_DTMF      = {"rfc4733": DTMF_RFC4733, "sip_info": DTMF_SIP_INFO, "auto": DTMF_AUTO}
 
 
 def create_account(sdk: SDK, uri: str, password: str, **kwargs) -> Account:
@@ -677,6 +820,7 @@ def create_account(sdk: SDK, uri: str, password: str, **kwargs) -> Account:
       transport    — int constant OR string: "udp" | "tcp" | "tls" | "ws" | "wss"
       media_enc    — int constant OR string: "none" | "sdes" | "dtls_srtp"
       rel100       — int (0/1/2)  OR string: "disabled" | "enabled" | "required"
+      rtcp_mux     — bool: override global rtcp_mux setting for this account
       display_name, auth_user, server_url, server_host, server_port,
       ice_enabled, stun_server, turn_server, turn_user, turn_pass,
       verify_tls, audio_codecs, push_provider, push_token, push_param, …
@@ -688,9 +832,16 @@ def create_account(sdk: SDK, uri: str, password: str, **kwargs) -> Account:
         kwargs["transport"] = _STR_TRANSPORT[kwargs["transport"]]
     if isinstance(kwargs.get("media_enc"), str):
         kwargs["media_enc"] = _STR_MEDIA_ENC[kwargs["media_enc"]]
+    if "rtcp_mux" in kwargs:
+        kwargs["rtcp_mux_set"] = True
     rel100_val = kwargs.pop("rel100", None)
     if isinstance(rel100_val, str):
         rel100_val = _STR_REL100[rel100_val]
+    dtmf_val = kwargs.pop("dtmf_mode", None)
+    if isinstance(dtmf_val, str):
+        dtmf_val = _STR_DTMF[dtmf_val]
+    if dtmf_val is not None:
+        kwargs["dtmf_mode"] = dtmf_val
     extra_headers = kwargs.pop("extra_headers", {})
     account = sdk.create_account(uri, password, **kwargs)
     if rel100_val is not None:
@@ -734,7 +885,7 @@ def answer(call: Call):
 
 
 __all__ = [
-    "SDK", "Account", "Call", "strerror",
+    "SDK", "Account", "Call", "CallStats", "strerror",
     "create_account", "register", "dial", "hangup", "answer",
     "RegStateEvent", "IncomingCallEvent", "CallStateEvent", "CallDtmfEvent",
     "SdpNegotiationEvent", "SipTraceEvent", "MediaStatsEvent", "LogEvent",
@@ -750,5 +901,6 @@ __all__ = [
     "PUSH_PROVIDER_NONE", "PUSH_PROVIDER_APNS", "PUSH_PROVIDER_APNS_SANDBOX",
     "PUSH_PROVIDER_FCM",
     "QUALITY_MOS", "QUALITY_LOSS", "QUALITY_JITTER", "QUALITY_RTT",
-    "CODEC_OPUS", "CODEC_PCMU", "CODEC_PCMA", "CODEC_G722",
+    "CODEC_OPUS", "CODEC_PCMU", "CODEC_PCMA", "CODEC_G722", "CODEC_G726_32",
+    "DTMF_RFC4733", "DTMF_SIP_INFO", "DTMF_AUTO",
 ]

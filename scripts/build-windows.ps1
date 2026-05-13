@@ -3,9 +3,11 @@
 #
 # Prerequisites:
 #   - Visual Studio 2022 (or 2019)
-#   - vcpkg with x64-windows-static-md triplet + openssl installed:
-#       vcpkg install openssl:x64-windows-static-md
+#   - vcpkg with x64-windows-static-md triplet:
+#       vcpkg install openssl zlib abseil:x64-windows-static-md
 #   - cmake (in PATH)
+# Audio: WASAPI (built into Windows — no extra install needed)
+# Runtime: MSVC CRT (dynamic, always present on Windows desktop)
 
 param(
     [string]$BuildType = "Release",
@@ -36,7 +38,8 @@ cmake -S $Root -B $BuildDir `
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" `
     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
     -DBARESDK_TLS=openssl `
-    -DBARESDK_MODULES_PROFILE=desktop
+    -DBARESDK_MODULES_PROFILE=desktop `
+    -DBARESDK_WITH_WEBRTC_AEC=OFF
 
 Write-Host "=== Building ==="
 cmake --build $BuildDir --config $BuildType --target baresdk
@@ -53,9 +56,10 @@ if (Test-Path $StaticLib) {
     Write-Host "Build complete. Check dist\windows\x64\ for output."
 }
 
-# ── Link shared library (DLL, zero extra runtime deps) ───────────────────────
-# vcpkg x64-windows-static-md builds OpenSSL and zlib as static .lib files,
-# so we link them directly — no OpenSSL DLLs needed at runtime.
+# ── Link shared library (DLL, no extra runtime deps beyond MSVC CRT) ─────────
+# vcpkg x64-windows-static-md: OpenSSL + zlib statically embedded.
+# opus is already in bare.lib (built from third_party/opus by CMake).
+# Windows system libs (ws2_32/crypt32/ole32/avrt etc.) are always present.
 $VcpkgLibs  = Join-Path $VcpkgRoot "installed\x64-windows-static-md\lib"
 $SslLib     = Join-Path $VcpkgLibs "libssl.lib"
 $CryptoLib  = Join-Path $VcpkgLibs "libcrypto.lib"
@@ -68,7 +72,8 @@ link.exe /DLL /NOLOGO `
     /OUT:$DllPath `
     /WHOLEARCHIVE:$StaticLib `
     $SslLib $CryptoLib $ZlibLib `
-    ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib
+    ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib `
+    ole32.lib oleaut32.lib avrt.lib
 
 Write-Host ""
 Write-Host "Done. Output:"

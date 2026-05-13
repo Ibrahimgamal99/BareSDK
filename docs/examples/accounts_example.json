@@ -1,41 +1,26 @@
 [
-  {
-    "_comment": "UDP — plain SIP, local PBX",
-    "enabled": true,
-    "uri": "100@192.168.1.10",
-    "password": "secret"
+ {
+     "_comment": "WSS + DTLS-SRTP + ICE — full secure setup",
+     "enabled": true,
+     "uri": "120@pbx.example.com",
+     "password": "secret",
+     "server_url": "wss://pbx.example.com:443/",
+     "media_enc": "dtls_srtp",
+     "transport": "wss",
+     "ice_enabled": true,
+     "rtcp_mux": true,
+     "stun_server": "stun:stun.l.google.com:19302",
+     "verify_tls": false,
+     "outbound_proxy": null
   },
   {
-    "_comment": "TLS — encrypted SIP, no WebSocket",
-    "enabled": true,
-    "uri": "100@pbx.example.com",
-    "password": "secret",
-    "transport": "tls",
-    "server_host": "pbx.example.com",
-    "server_port": 5061,
-    "verify_tls": true
-  },
-  {
-    "_comment": "WS — WebSocket plain (Asterisk direct ws)",
-    "enabled": true,
-    "uri": "120@pbx.example.com",
-    "password": "secret",
-    "transport": "ws",
-    "server_url": "ws://pbx.example.com:8088/"
-  },
-  {
-    "_comment": "WSS + DTLS-SRTP + ICE — full secure setup",
-    "enabled": true,
-    "uri": "120@pbx.example.com",
-    "password": "secret",
-    "server_url": "wss://pbx.example.com:443/",
-    "media_enc": "dtls_srtp",
-    "transport": "wss",
-    "ice_enabled": true,
-    "stun_server": "stun:stun.l.google.com:19302",
-    "verify_tls": false
-  },
-
+     "enabled": true,
+     "uri": "120@legacy-pbx.example.com",
+     "password": "secret",
+     "transport": "udp",
+     "dtmf_mode": "sip_info",
+     "audio_codecs": ["pcmu", "pcma"]
+  }
 ]
 
 

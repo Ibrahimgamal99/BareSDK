@@ -41,7 +41,7 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `server_url` | `const char *` | NULL | Full URL. Overrides transport/server_host/server_port. |
 | `server_host` | `const char *` | NULL | Hostname or IP (simple form). |
 | `server_port` | `uint16_t` | 0 | 0 = transport default (5060/5061). |
-| `outbound_proxy` | `const char *` | NULL | Outbound proxy (same URL grammar). |
+| `outbound_proxy` | `const char *` | NULL | Override outbound proxy (NULL = auto from server info). |
 
 ### TLS / WSS
 
@@ -85,9 +85,31 @@ server_url = "wss://pbx.example.com:8089/ws"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `aec` | `bool` | false | Acoustic echo cancellation |
+| `aec_mode` | `baresdk_aec_mode_t` | `SUPPRESSOR` | `OFF`, `SUPPRESSOR`, `WEBRTC` |
+| `aec_suppression_level` | `float` | 1.0 | 0.0–1.0; 1.0 = strongest suppression |
 | `ns` | `bool` | false | Noise suppression |
 | `agc` | `bool` | false | Automatic gain control |
+| `mic_gain_db` | `float` | 0.0 | Microphone gain in dB (−20 to +20) |
+| `speaker_gain_db` | `float` | 0.0 | Speaker gain in dB (−20 to +20) |
+
+### Opus encoder
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `opus.bitrate` | `int` | 0 | Target bitrate bps (0 = auto/VBR) |
+| `opus.complexity` | `int` | −1 | 0–10 CPU/quality trade-off (−1 = opus default: 9) |
+| `opus.cbr` | `bool` | false | Constant bitrate (false = VBR) |
+| `opus.dtx` | `bool` | false | Discontinuous transmission (silence suppression) |
+| `opus.fec` | `bool` | false | In-band forward error correction |
+| `opus.stereo` | `bool` | false | Stereo output (false = mono) |
+
+### Jitter buffer
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `jitter_buffer_min_ms` | `uint32_t` | 0 | Minimum depth ms (0 = baresip default) |
+| `jitter_buffer_max_ms` | `uint32_t` | 0 | Maximum depth ms (0 = baresip default) |
+| `jbuf_type` | `baresdk_jbuf_type_t` | `ADAPTIVE` | `ADAPTIVE` or `FIXED` depth |
 
 ### Registration
 
@@ -122,7 +144,7 @@ server_url = "wss://pbx.example.com:8089/ws"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `stats_interval_ms` | `uint32_t` | 0 | 0=disabled; fires `BARESDK_EV_MEDIA_STATS` |
+| `stats_interval_ms` | `uint32_t` | 0 | 0=disabled; fires `BARESDK_EV_MEDIA_STATS`. Python: `stats_stream(interval=)` overrides this per-stream. |
 | `mos_method` | `baresdk_mos_method_t` | `EMODEL` | `EMODEL` or `SIMPLIFIED` |
 | `trace_sip` | `bool` | false | Emit `BARESDK_EV_SIP_TRACE` per message |
 | `trace_sdp_diff` | `bool` | false | Emit `BARESDK_EV_SDP_NEGOTIATION` |
@@ -155,5 +177,6 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `stun_server` | `const char *` | No | Per-account STUN override |
 | `turn_server` | `const char *` | No | Per-account TURN override |
 | `turn_user` / `turn_pass` | `const char *` | No | TURN credentials |
-| `outbound` | `const char *` | No | NULL = auto-derived from server |
+| `outbound_proxy` | `const char *` | No | NULL = auto-derived from server |
 | `verify_tls` | `bool` | No | false = skip TLS cert check |
+| `dtmf_mode` | `baresdk_dtmf_mode_t` | No | `RFC4733` (default), `SIP_INFO`, `AUTO` |

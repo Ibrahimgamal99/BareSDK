@@ -7,40 +7,50 @@ Usage:
     python quickstart.py alice@pbx.example.com secret          # legacy CLI mode (receive)
     python quickstart.py alice@pbx.example.com secret bob@...  # legacy CLI mode (dial)
 
-JSON account config example (account.json):
+Minimal JSON account config (account.json):
 {
   "enabled":      true,
   "uri":          "120@pbx.example.com",
   "password":     "secret",
-  "display_name": "Alice",
-  "auth_user":    null,
-
-  "transport":    "wss",          // "udp" | "tcp" | "tls" | "ws" | "wss"
-  "server_url":   "wss://pbx.example.com:443/",
-  "server_host":  null,
-  "server_port":  0,
-
-  "media_enc":    "dtls_srtp",    // "none" | "sdes" | "dtls_srtp"
+  "display_name": "Extension 120",
+  "transport":    "wss",
+  "media_enc":    "dtls_srtp",
   "ice_enabled":  true,
+  "rtcp_mux":     true,
   "stun_server":  "stun:stun.l.google.com:19302",
-  "turn_server":  null,
-  "turn_user":    null,
-  "turn_pass":    null,
   "verify_tls":   false,
-
-  "extra_headers": {"X-Tenant-Id": "42"},
-  "audio_codecs": ["opus"],
-  "rel100":       "enabled"       // "disabled" | "enabled" | "required"
+  "audio_codec":  "opus"
 }
+
+server_url, outbound_proxy, server_host, server_port, auth_user are all
+auto-derived from uri + transport. Port defaults: udp/tcp=5060, tls=5061,
+ws=8088, wss=8089. Include a port in the uri to override: "120@host:443".
+
+Optional overrides (add when needed):
+  "server_url":     "wss://pbx.example.com:443/ws"
+  "outbound_proxy": "sip:proxy.example.com:5060;transport=udp"
+  "auth_user":      "alice"
+  "extra_headers":  {"X-Tenant-Id": "42"}
+  "audio_codecs":   ["opus", "pcmu"]
+  "rel100":         "enabled"
+
+Media stats:
+  Stats are printed every STATS_INTERVAL_S seconds while a call is active.
+  Change STATS_INTERVAL_S below to any value (e.g. 1, 2, 5).
+  Press 's' during a call for an immediate refresh.
 """
 
 import json
-import math
+import queue
 import sys
 import threading
 from typing import Optional
 
-from baresdk import SDK, Call, create_account, register, dial, hangup, answer
+from baresdk import SDK, Call, CallStats, create_account, register, dial, hangup, answer, strerror
+
+# How often to refresh media stats during a call.
+# Change to any float in seconds — independent of the SDK stats_interval_ms.
+STATS_INTERVAL_S = 5.0
 
 
 def _config_from_json(path_or_str: str):
@@ -50,6 +60,14 @@ def _config_from_json(path_or_str: str):
     uri      = j.pop("uri", "")
     password = j.pop("password", "")
     enabled  = j.pop("enabled", True)
+
+    # audio_codec (singular) alias — use when audio_codecs is absent
+    if "audio_codec" in j and "audio_codecs" not in j:
+        v = j.pop("audio_codec")
+        if v:
+            j["audio_codecs"] = [v] if isinstance(v, str) else v
+    elif "audio_codec" in j:
+        j.pop("audio_codec")
 
     # audio_codecs: normalize string → list
     ac = j.get("audio_codecs")
@@ -86,33 +104,6 @@ def print_devices(sdk: SDK):
                 print(f"  [{i}] {d['name']}{'  *default*' if d['is_default'] else ''}")
 
 
-def print_stats(s):
-    method  = "E-model" if s.mos_method == 0 else "simplified"
-    spk     = f"{s.audio_level_dbov:.4f} dBov" if not math.isnan(s.audio_level_dbov) else "n/a"
-    mic     = f"{s.mic_level_dbov:.4f} dBov"   if not math.isnan(s.mic_level_dbov)   else "n/a"
-    print(
-        f"┌─ Media Stats ─────────────────────────────────\n"
-        f"│  Codec     : {s.codec_name}  {s.codec_clock_rate // 1000} kHz"
-        f"  ch={s.codec_channels}  PT={s.payload_type}\n"
-        f"│  Remote    : {s.remote_addr}"
-        f"  SSRC rx={s.ssrc_rx}  tx={s.ssrc_tx}\n"
-        f"│  Packets   : tx={s.packets_sent}  rx={s.packets_received}"
-        f"  lost_tx={s.packets_lost} ({s.loss_pct:.1f}%)"
-        f"  lost_rx={s.packets_lost_rx} ({s.loss_pct_rx:.1f}%)\n"
-        f"│  Bandwidth : tx={s.bandwidth_kbps_tx} kbps  rx={s.bandwidth_kbps_rx} kbps"
-        f"  (avg tx={s.avg_bandwidth_kbps_tx}  rx={s.avg_bandwidth_kbps_rx})\n"
-        f"│  Delay     : RTT={s.rtt_ms:.1f} ms"
-        f"  jitter={s.jitter_ms:.1f} ms"
-        f"  tx_jitter={s.tx_jitter_ms:.1f} ms\n"
-        f"│  Jitter buf: depth={s.jitter_buffer_ms} ms"
-        f"  load={s.jitter_buffer_load}"
-        f"  late={s.late_packets}"
-        f"  discarded={s.discarded_packets}\n"
-        f"│  MOS ({method}): LQ={s.mos_lq:.3f}  CQ={s.mos_cq:.3f}\n"
-        f"│  Speaker   : {spk}\n"
-        f"│  Mic       : {mic}\n"
-        f"└───────────────────────────────────────────────"
-    )
 
 
 def main():
@@ -157,7 +148,12 @@ def main():
                 action()
                 break
 
-    with SDK(log_level=0, stats_interval_ms=5000) as sdk:
+    verify_tls = kwargs.pop("verify_tls", True)
+    sdk_kwargs = {"log_level": 0, "stats_interval_ms": 5000}
+    if not verify_tls:
+        sdk_kwargs["verify_server"] = False
+
+    with SDK(**sdk_kwargs) as sdk:
         sdk.set_aec(True)
         sdk.set_ns(True)
         sdk.set_agc(True)
@@ -177,7 +173,8 @@ def main():
                     else:
                         print("Waiting for incoming call...")
                 elif ev.state == "failed":
-                    print(f"Registration failed: {ev.error_str or '?'}")
+                    detail = ev.error_str or strerror(ev.error)
+                    print(f"Registration failed: {detail}")
                     break
 
             elif ev.type == "incoming_call":
@@ -213,23 +210,61 @@ def main():
                     msg += f"  error={ev.error}"
                 print(msg)
 
-                if ev.state == "established" and callee:
-                    print("Call active. Press 'h' + Enter to hang up.")
+                if ev.state == "established":
+                    print(f"Call active (stats every {STATS_INTERVAL_S}s). "
+                          f"Keys: h=hangup  o=hold  r=resume  m=mute  u=unmute  t=transfer  s=stats-now")
 
-                    def _do_hangup():
-                        with call_lock:
-                            if active_call:
-                                hangup(active_call)
+                    stats_trigger = queue.Queue()
 
-                    threading.Thread(
-                        target=stdin_watch, args=("h", _do_hangup), daemon=True
-                    ).start()
+                    def _stats_printer(call=active_call):
+                        for stats in account.stats_stream(
+                                call=call,
+                                interval=STATS_INTERVAL_S,
+                                trigger=stats_trigger):
+                            stats.print()
+                            if stats.is_final:
+                                break
+
+                    threading.Thread(target=_stats_printer, daemon=True).start()
+
+                    def _interactive():
+                        for line in sys.stdin:
+                            ch = line.strip().lower()
+                            with call_lock:
+                                c = active_call
+                            if not c:
+                                break
+                            if ch == "h":
+                                hangup(c); break
+                            elif ch == "o":
+                                try: c.hold();         print("On hold.")
+                                except Exception as e: print(f"hold: {e}")
+                            elif ch == "r":
+                                try: c.resume();       print("Resumed.")
+                                except Exception as e: print(f"resume: {e}")
+                            elif ch == "m":
+                                try: c.mute(True);     print("Muted.")
+                                except Exception as e: print(f"mute: {e}")
+                            elif ch == "u":
+                                try: c.mute(False);    print("Unmuted.")
+                                except Exception as e: print(f"unmute: {e}")
+                            elif ch == "s":
+                                stats_trigger.put(1)  # immediate refresh
+                            elif ch == "t":
+                                dest = input("Transfer to URI: ").strip()
+                                if dest:
+                                    try: c.transfer(dest); print("Transfer sent.")
+                                    except Exception as e: print(f"transfer: {e}")
+
+                    threading.Thread(target=_interactive, daemon=True).start()
 
                 if ev.state in ("ended", "failed", "cancelled"):
                     break
 
-            elif ev.type == "media_stats":
-                print_stats(ev)
+            elif ev.type == "transfer_request":
+                kind = "attended" if ev.has_replaces else "blind"
+                print(f"=== Transfer request ({kind}): REFER to {ev.refer_to_uri}")
+                print("    (to follow: hang up current call and dial the refer_to_uri)")
 
             elif ev.type == "sip_trace":
                 print(f"{'>>>' if ev.direction == 'tx' else '<<<'}\n{ev.raw_message}\n---")

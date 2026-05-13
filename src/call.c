@@ -115,6 +115,13 @@ static void invite_fn(void *arg)
 	invite_ctx_t *ctx = arg;
 	struct call *bc = NULL;
 
+	/* Refuse to dial when the transport never connected — ua_connect would
+	 * crash inside baresip trying to use a dead socket. */
+	if (ctx->acct->reg_state == BARESDK_REG_FAILED) {
+		ctx->result = ENOTCONN;
+		return;
+	}
+
 	ctx->result = ua_connect(ctx->acct->ua, &bc, NULL,
 	                         ctx->uri, VIDMODE_OFF);
 	if (ctx->result == EAFNOSUPPORT) {
@@ -140,7 +147,9 @@ static void invite_fn(void *arg)
 	lc->bc    = bc;
 	lc->acct  = ctx->acct;
 	lc->state = BARESDK_CALL_CALLING;
-	float _nan = NAN; memcpy(&lc->rx_level_bits, &_nan, 4);
+	uint32_t _nan_bits; float _nan = NAN; memcpy(&_nan_bits, &_nan, 4);
+	re_atomic_rlx_set(&lc->rx_level_bits, _nan_bits);
+	re_atomic_rlx_set(&lc->tx_level_bits, _nan_bits);
 
 	struct le *le;
 	LIST_FOREACH(&ctx->acct->custom_hdrs, le) {
@@ -243,6 +252,15 @@ int baresdk_call_resume(baresdk_call_handle_t call)
 	return err ? err : ctx.result;
 }
 
+/* ── baresdk_call_is_held ────────────────────────────────────────────────── */
+
+bool baresdk_call_is_held(baresdk_call_handle_t call)
+{
+	if (!call) return false;
+	struct baresdk_call *lc = call;
+	return lc->state == BARESDK_CALL_HELD;
+}
+
 /* ── baresdk_call_send_dtmf ──────────────────────────────────────────────── */
 
 typedef struct { struct baresdk_call *lc; char digit; int result; } dtmf_ctx_t;
@@ -280,6 +298,26 @@ int baresdk_call_transfer(baresdk_call_handle_t call, const char *uri)
 	str_ncpy(ctx.uri, uri, sizeof(ctx.uri));
 	int err = bsdk_dispatch_sync(transfer_fn, &ctx);
 	return err ? err : ctx.result;
+}
+
+/* ── baresdk_call_foreach ────────────────────────────────────────────────── */
+
+typedef struct {
+	baresdk_call_iter_fn fn;
+	void                *arg;
+} foreach_ctx_t;
+
+static void public_foreach_cb(struct baresdk_call *lc, void *arg)
+{
+	foreach_ctx_t *ctx = arg;
+	ctx->fn((baresdk_call_handle_t)lc, ctx->arg);
+}
+
+void baresdk_call_foreach(baresdk_call_iter_fn fn, void *arg)
+{
+	if (!fn) return;
+	foreach_ctx_t ctx = { .fn = fn, .arg = arg };
+	bsdk_call_foreach(public_foreach_cb, &ctx);
 }
 
 /* ── Per-dialog custom headers ─────────────────────────────────────────── */

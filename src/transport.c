@@ -127,6 +127,14 @@ int bsdk_parse_server_url(const char *url,
 	else
 		authority_len = strlen(rest);
 
+	/* Skip user part (before '@') in authority if present */
+	const char *at = memchr(rest, '@', authority_len);
+	if (at) {
+		size_t user_len = (size_t)(at - rest) + 1;
+		rest += user_len;
+		authority_len -= user_len;
+	}
+
 	if (slash && (!semi || slash < semi)) {
 		/* A bare "/" is not a meaningful path — leave path empty so the
 		 * caller can apply its own default (e.g. "/ws" for WebSocket). */

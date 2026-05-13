@@ -1,28 +1,13 @@
 {
   "enabled":      true,
-  "uri":          "ext@domain.com",
-  "password":     "Secrt",
-  "display_name": "Extension",
-  "auth_user":    null,
-
+  "uri":          "100@pbx.example.com",
+  "password":     "secret",
+  "display_name": "Extension 100",
   "transport":    "wss",
-  "server_url":   null,
-  "server_host":  null,
-  "server_port":  0,
-
-  "media_enc":    "none",
-  "ice_enabled":  false,
-  "stun_server":  null,
-  "turn_server":  null,
-  "turn_user":    null,
-  "turn_pass":    null,
+  "media_enc":    "dtls_srtp",
+  "ice_enabled":  true,
+  "rtcp_mux":     true,
+  "stun_server":  "stun:stun.l.google.com:19302",
   "verify_tls":   false,
-
-  "extra_headers": {
-    "X-Tenant-Id": "42"
-  },
-
-  "audio_codecs": "ulaw",
-
-  "rel100": "disabled"
+  "audio_codec":  "opus"
 }

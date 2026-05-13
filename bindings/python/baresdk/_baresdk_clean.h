@@ -26,6 +26,7 @@ typedef enum {
  BARESDK_CODEC_PCMU,
  BARESDK_CODEC_PCMA,
  BARESDK_CODEC_G722,
+ BARESDK_CODEC_G726_32,
 } baresdk_codec_t;
 
 typedef enum {
@@ -41,6 +42,26 @@ typedef enum {
  BARESDK_MEDIA_DIR_RX = 0,
  BARESDK_MEDIA_DIR_TX,
 } baresdk_media_dir_t;
+
+typedef enum {
+ BARESDK_DTMF_RFC4733 = 0,
+ BARESDK_DTMF_SIP_INFO = 1,
+ BARESDK_DTMF_AUTO = 2,
+} baresdk_dtmf_mode_t;
+
+typedef enum {
+ BARESDK_JBUF_ADAPTIVE = 0,
+ BARESDK_JBUF_FIXED = 1,
+} baresdk_jbuf_type_t;
+
+typedef struct {
+ int bitrate;
+ int complexity;
+ bool cbr;
+ bool dtx;
+ bool fec;
+ bool stereo;
+} baresdk_opus_config_t;
 
 typedef enum {
  BARESDK_OK = 0,
@@ -311,6 +332,7 @@ typedef struct {
  const char *user_agent;
  const char *ws_origin;
  const char **ws_extra_headers;
+ uint32_t ws_keepalive_ms;
  const char *stun_server;
  const char *turn_server;
  const char *turn_user;
@@ -329,6 +351,8 @@ typedef struct {
  float aec_suppression_level;
  float mic_gain_db;
  float speaker_gain_db;
+ baresdk_opus_config_t opus;
+ baresdk_jbuf_type_t jbuf_type;
  uint32_t jitter_buffer_min_ms;
  uint32_t jitter_buffer_max_ms;
  uint32_t reg_expires;
@@ -378,12 +402,15 @@ typedef struct {
 
  baresdk_media_enc_t media_enc;
  bool ice_enabled;
+ bool rtcp_mux;
+ bool rtcp_mux_set;
  const char *stun_server;
  const char *turn_server;
  const char *turn_user;
  const char *turn_pass;
 
  const char *outbound;
+ const char *outbound_proxy;
  bool verify_tls;
  baresdk_push_provider_t push_provider;
 
@@ -394,6 +421,7 @@ typedef struct {
  int audio_codec_count;
  char audio_codec_names[8][32];
  int audio_codec_name_count;
+ baresdk_dtmf_mode_t dtmf_mode;
 
 } baresdk_account_config_t;
  void baresdk_config_init(baresdk_config_t *cfg);
@@ -435,12 +463,15 @@ typedef struct {
  int baresdk_call_hangup(baresdk_call_handle_t call);
  int baresdk_call_hold(baresdk_call_handle_t call);
  int baresdk_call_resume(baresdk_call_handle_t call);
+ bool baresdk_call_is_held(baresdk_call_handle_t call);
  int baresdk_call_send_dtmf(baresdk_call_handle_t call, char digit);
  int baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
  int baresdk_call_add_header(baresdk_call_handle_t call,
                              const char *name, const char *value);
  int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
                                     baresdk_call_handle_t call_b);
+typedef void (*baresdk_call_iter_fn)(baresdk_call_handle_t call, void *arg);
+ void baresdk_call_foreach(baresdk_call_iter_fn fn, void *arg);
  int baresdk_message_send(baresdk_account_handle_t account,
                           const char *to_uri,
                           const char *body,
@@ -475,7 +506,9 @@ typedef struct {
  int baresdk_call_set_dscp_rtp(baresdk_call_handle_t call,
                                               uint8_t dscp);
  void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
+ void baresdk_set_jitter_buffer_type(baresdk_jbuf_type_t type);
  int baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
+ bool baresdk_audio_is_muted(baresdk_call_handle_t call);
  int baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);
  int baresdk_audio_set_input_device(const char *name);
  int baresdk_audio_set_output_device(const char *name);

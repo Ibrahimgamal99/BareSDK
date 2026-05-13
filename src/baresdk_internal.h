@@ -98,6 +98,7 @@ struct baresdk_account {
 	char                     *cfg_turn_user;
 	char                     *cfg_turn_pass;
 	char                     *cfg_outbound;
+	char                     *cfg_outbound_proxy;  /* alias for outbound */
 	char                     *cfg_push_token;
 	char                     *cfg_push_param;
 	/* derived from uri at create time */
@@ -159,8 +160,8 @@ struct baresdk_call {
 	float                      last_jitter_ms;
 	/* RX/TX audio levels — written by audio thread, read by stats timer.
 	 * Stored as bit-pattern of float dBov (0=max, -127=silence, NAN=no data). */
-	uint32_t                   rx_level_bits;
-	uint32_t                   tx_level_bits;
+	RE_ATOMIC uint32_t         rx_level_bits;
+	RE_ATOMIC uint32_t         tx_level_bits;
 };
 
 /* ── Event queue entry ─────────────────────────────────────────────────── */

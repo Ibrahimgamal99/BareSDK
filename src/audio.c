@@ -32,6 +32,27 @@ int baresdk_audio_mute(baresdk_call_handle_t call, bool mute)
 	return err ? err : ctx.result;
 }
 
+/* ── baresdk_audio_is_muted ──────────────────────────────────────────────── */
+
+typedef struct { struct baresdk_call *lc; bool result; } is_muted_ctx_t;
+
+static void is_muted_fn(void *arg)
+{
+	is_muted_ctx_t *ctx = arg;
+	struct baresdk_call *lc = ctx->lc;
+	if (!lc->bc) { ctx->result = false; return; }
+	struct audio *au = call_audio(lc->bc);
+	ctx->result = au ? audio_ismuted(au) : false;
+}
+
+bool baresdk_audio_is_muted(baresdk_call_handle_t call)
+{
+	if (!call) return false;
+	is_muted_ctx_t ctx = {.lc = call, .result = false};
+	bsdk_dispatch_sync(is_muted_fn, &ctx);
+	return ctx.result;
+}
+
 /* ── baresdk_audio_mute_rx ───────────────────────────────────────────────── */
 
 static void mute_rx_fn(void *arg)
@@ -398,4 +419,19 @@ void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms)
 	bsdk_dispatch_sync(set_jbuf_fn, bounds);
 	g_bsdk.cfg.jitter_buffer_min_ms = min_ms;
 	g_bsdk.cfg.jitter_buffer_max_ms = max_ms;
+}
+
+/* ── baresdk_set_jitter_buffer_type ──────────────────────────────────────── */
+
+static void set_jbuf_type_fn(void *arg)
+{
+	baresdk_jbuf_type_t *type = arg;
+	struct config *c = conf_config();
+	c->avt.audio.jbtype = (*type == BARESDK_JBUF_FIXED) ? JBUF_FIXED : JBUF_ADAPTIVE;
+}
+
+void baresdk_set_jitter_buffer_type(baresdk_jbuf_type_t type)
+{
+	bsdk_dispatch_sync(set_jbuf_type_fn, &type);
+	g_bsdk.cfg.jbuf_type = type;
 }

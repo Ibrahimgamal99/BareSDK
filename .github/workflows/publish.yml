@@ -1,0 +1,107 @@
+name: Build & Publish wheels
+
+on:
+  push:
+    tags: ["v*"]          # trigger on version tags: v1.0.0, v1.2.3, …
+  workflow_dispatch:       # allow manual runs from the Actions tab
+
+jobs:
+  # ── Build wheel on each OS ──────────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            plat: linux_x86_64
+          - os: windows-2022
+            plat: win_amd64
+
+    runs-on: ${{ matrix.os }}
+    name: Wheel · ${{ matrix.plat }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── Linux build ──────────────────────────────────────────────────────
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            cmake ninja-build gcc pkg-config \
+            libssl-dev zlib1g-dev \
+            libwebrtc-audio-processing-dev \
+            libpulse-dev
+          # libopus-dev not needed — opus is built from third_party/opus submodule
+
+      - name: Build SDK (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/build-linux.sh
+
+      - name: Copy .so into package (Linux)
+        if: runner.os == 'Linux'
+        run: cp dist/linux/x86_64/baresdk.so bindings/python/baresdk/baresdk.so
+
+      # ── Windows build ────────────────────────────────────────────────────
+      - name: Set up vcpkg (Windows)
+        if: runner.os == 'Windows'
+        uses: johnwason/vcpkg-action@v6
+        with:
+          pkgs: openssl zlib abseil
+          triplet: x64-windows-static-md
+          token: ${{ secrets.GITHUB_TOKEN }}
+          github-binarycache: true
+
+      - name: Build SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -VcpkgRoot $env:VCPKG_ROOT
+
+      - name: Copy .dll into package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item dist\windows\x64\baresdk.dll bindings\python\baresdk\baresdk.dll -Force
+
+      # ── Build the wheel ──────────────────────────────────────────────────
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel bindings/python --outdir dist/wheels/
+
+      - name: Show wheel name
+        run: ls dist/wheels/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.plat }}
+          path: dist/wheels/*.whl
+
+  # ── Publish all wheels to PyPI ──────────────────────────────────────────────
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Publish to PyPI
+    environment: pypi
+    permissions:
+      id-token: write   # required for trusted publishing (no API token needed)
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist/wheels/
+
+      - name: Show wheels to upload
+        run: ls -lh dist/wheels/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/wheels/

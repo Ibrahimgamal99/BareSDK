@@ -429,6 +429,21 @@ class BareSDKBindings {
   late final _baresdk_call_resume =
       _baresdk_call_resumePtr.asFunction<int Function(baresdk_call_handle_t)>();
 
+  /// Return true if the call is currently on local hold.
+  bool baresdk_call_is_held(
+    baresdk_call_handle_t call,
+  ) {
+    return _baresdk_call_is_held(
+      call,
+    );
+  }
+
+  late final _baresdk_call_is_heldPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function(baresdk_call_handle_t)>>(
+          'baresdk_call_is_held');
+  late final _baresdk_call_is_held =
+      _baresdk_call_is_heldPtr.asFunction<bool Function(baresdk_call_handle_t)>();
+
   /// Send DTMF digit via RFC 4733 RTP events. digit: '0'-'9', '*', '#', 'A'-'D'.
   int baresdk_call_send_dtmf(
     baresdk_call_handle_t call,
@@ -720,6 +735,21 @@ class BareSDKBindings {
       'baresdk_audio_mute');
   late final _baresdk_audio_mute = _baresdk_audio_mutePtr
       .asFunction<int Function(baresdk_call_handle_t, bool)>();
+
+  /// Return true if TX audio is currently muted on this call.
+  bool baresdk_audio_is_muted(
+    baresdk_call_handle_t call,
+  ) {
+    return _baresdk_audio_is_muted(
+      call,
+    );
+  }
+
+  late final _baresdk_audio_is_mutedPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function(baresdk_call_handle_t)>>(
+          'baresdk_audio_is_muted');
+  late final _baresdk_audio_is_muted =
+      _baresdk_audio_is_mutedPtr.asFunction<bool Function(baresdk_call_handle_t)>();
 
   /// Mute/unmute the speaker (RX path) for a call — silences incoming audio.
   int baresdk_audio_mute_rx(
@@ -1459,7 +1489,7 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Uint16()
   external int server_port;
 
-  /// NULL = direct; same URL grammar
+  /// NULL = auto from server info
   external ffi.Pointer<ffi.Char> outbound_proxy;
 
   /// ── TLS / WSS ──────────────────────────────────────────────────

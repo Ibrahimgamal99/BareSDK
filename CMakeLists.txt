@@ -103,7 +103,18 @@ add_custom_target(gen_hpp ALL
 set(BARESDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
 set(BARESDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
 option(BARESDK_SHARED "Also produce a shared library (.so/.dylib/.dll) from the merged archive" OFF)
-option(BARESDK_WITH_WEBRTC_AEC "Include WebRTC AEC module (desktop only; requires libwebrtc-audio-processing-1)" OFF)
+if(WIN32 OR ANDROID_ABI OR CMAKE_SYSTEM_NAME MATCHES "iOS")
+  set(_aec_default OFF)
+else()
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(WEBRTC_AP QUIET webrtc-audio-processing-1)
+  endif()
+  set(_aec_default ${WEBRTC_AP_FOUND})
+endif()
+option(BARESDK_WITH_WEBRTC_AEC
+       "Include WebRTC AEC module (desktop only; requires libwebrtc-audio-processing-1)"
+       ${_aec_default})
 
 set(BARESDK_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
     CACHE PATH "Path to libre source tree")
@@ -134,6 +145,10 @@ if(BARESDK_MODULES_PROFILE STREQUAL "mobile")
   endif()
 else()
   set(BARESDK_MODULES "${BARESDK_DESKTOP_MODULES}")
+  if(WIN32)
+    list(REMOVE_ITEM BARESDK_MODULES "pulse")
+    list(APPEND BARESDK_MODULES "wasapi")
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -364,6 +379,7 @@ ExternalProject_Add(baresdk_core_project
     -DBARESDK_SRC_MODE=ON
     -DBARESDK_SYSROOT=${SYSROOT}
     -DBARESDK_MODULES_PROFILE=${BARESDK_MODULES_PROFILE}
+    -DBARESDK_WITH_WEBRTC_AEC=${BARESDK_WITH_WEBRTC_AEC}
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     ${CROSS_ARGS}
   BUILD_BYPRODUCTS "${_CORE_A}"
@@ -410,11 +426,16 @@ if(BARESDK_SHARED)
     )
   elseif(MSVC)
     set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk.dll")
+    find_library(_SSL_LIB    NAMES libssl    ssl    PATH_SUFFIXES lib)
+    find_library(_CRYPTO_LIB NAMES libcrypto crypto PATH_SUFFIXES lib)
+    find_library(_ZLIB_LIB   NAMES zlib      z      PATH_SUFFIXES lib)
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
       COMMAND link.exe /DLL /NOLOGO "/OUT:${_SHARED_OUT}"
               "/WHOLEARCHIVE:${_OUT}"
-              ws2_32.lib iphlpapi.lib crypt32.lib
+              "${_SSL_LIB}" "${_CRYPTO_LIB}" "${_ZLIB_LIB}"
+              ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib
+              ole32.lib oleaut32.lib avrt.lib
       DEPENDS baresdk "${_OUT}"
       COMMENT "Linking baresdk.dll"
       VERBATIM
@@ -424,8 +445,12 @@ if(BARESDK_SHARED)
     if(ANDROID_ABI)
       set(_SHARED_PLATFORM_LIBS -llog -lOpenSLES -landroid)
     else()
-      set(_SHARED_PLATFORM_LIBS -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv)
+      set(_SHARED_PLATFORM_LIBS -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv -lpulse)
     endif()
+    if(BARESDK_WITH_WEBRTC_AEC)
+      list(APPEND _SHARED_PLATFORM_LIBS -lwebrtc-audio-processing-1)
+    endif()
+    # opus is already merged into baresdk.a via OPUS_EXTRA_LIBS — no -lopus needed
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
       COMMAND "${CMAKE_C_COMPILER}" -shared

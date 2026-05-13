@@ -66,9 +66,10 @@ typedef enum {
 
 typedef enum {
 	BARESDK_CODEC_OPUS = 0,
-	BARESDK_CODEC_PCMU,   /* G.711 µ-law */
-	BARESDK_CODEC_PCMA,   /* G.711 A-law */
+	BARESDK_CODEC_PCMU,     /* G.711 µ-law */
+	BARESDK_CODEC_PCMA,     /* G.711 A-law */
 	BARESDK_CODEC_G722,
+	BARESDK_CODEC_G726_32,  /* G.726 32 kbit/s, 8 kHz */
 } baresdk_codec_t;
 
 typedef enum {
@@ -105,6 +106,26 @@ typedef enum {
 	BARESDK_MEDIA_DIR_RX = 0,
 	BARESDK_MEDIA_DIR_TX,
 } baresdk_media_dir_t;
+
+typedef enum {
+	BARESDK_DTMF_RFC4733  = 0, /* RFC 4733 RTP telephony-event (default) */
+	BARESDK_DTMF_SIP_INFO = 1, /* SIP INFO application/dtmf-relay */
+	BARESDK_DTMF_AUTO     = 2, /* prefer RFC 4733, fall back to SIP INFO */
+} baresdk_dtmf_mode_t;
+
+typedef enum {
+	BARESDK_JBUF_ADAPTIVE = 0, /* adaptive jitter buffer (default) */
+	BARESDK_JBUF_FIXED    = 1, /* fixed-depth jitter buffer */
+} baresdk_jbuf_type_t;
+
+typedef struct {
+	int  bitrate;    /* 0 = auto/VBR; otherwise bps, e.g. 32000 */
+	int  complexity; /* 0-10 CPU trade-off; -1 = opus default (9) */
+	bool cbr;        /* constant bitrate; false = VBR (default) */
+	bool dtx;        /* discontinuous transmission (silence suppression) */
+	bool fec;        /* in-band forward error correction */
+	bool stereo;     /* stereo output; false = mono (default) */
+} baresdk_opus_config_t;
 
 /* ── Error codes ──────────────────────────────────────────────────────────── */
 
@@ -453,7 +474,7 @@ typedef struct {
 	const char  *server_host;   /* simple form */
 	uint16_t     server_port;   /* 0 = transport default */
 
-	const char  *outbound_proxy; /* NULL = direct; same URL grammar */
+	const char  *outbound_proxy; /* NULL = auto from server info */
 
 	/* ── TLS / WSS ────────────────────────────────────────────────── */
 	const char  *ca_cert_path;
@@ -472,6 +493,7 @@ typedef struct {
 	/* ── WebSocket-specific ───────────────────────────────────────── */
 	const char  *ws_origin;         /* NULL = auto-derived from server_url */
 	const char **ws_extra_headers;  /* NULL-terminated "Header: value" strings */
+	uint32_t     ws_keepalive_ms;   /* WS ping interval; 0 = libre default (15s); recommended 20000-30000 */
 
 	/* ── NAT ──────────────────────────────────────────────────────── */
 	const char  *stun_server;
@@ -497,9 +519,13 @@ typedef struct {
 	float mic_gain_db;            /* TX manual gain dB, clamped [-20,+20]; 0=unity */
 	float speaker_gain_db;        /* RX manual gain dB, clamped [-20,+20]; 0=unity */
 
+	/* ── Opus tuning ──────────────────────────────────────────────── */
+	baresdk_opus_config_t opus; /* all fields zero/false = use opus defaults */
+
 	/* ── Jitter buffer ────────────────────────────────────────────── */
-	uint32_t jitter_buffer_min_ms; /* minimum adaptive buffer depth; 0 = baresip default */
-	uint32_t jitter_buffer_max_ms; /* maximum adaptive buffer depth; 0 = baresip default */
+	baresdk_jbuf_type_t jbuf_type;          /* adaptive (default) or fixed */
+	uint32_t jitter_buffer_min_ms; /* JB min depth (default: 40 ms) */
+	uint32_t jitter_buffer_max_ms; /* JB max depth (default: 400 ms) */
 
 	/* ── Registration ─────────────────────────────────────────────── */
 	uint32_t  reg_expires;           /* seconds; default 3600 */
@@ -602,6 +628,8 @@ typedef struct {
 
 	baresdk_media_enc_t  media_enc;   /* BARESDK_MEDIA_ENC_NONE / SDES / DTLS_SRTP */
 	bool                 ice_enabled; /* false by default */
+	bool                 rtcp_mux;     /* used when rtcp_mux_set is true */
+	bool                 rtcp_mux_set; /* false = inherit global; true = use rtcp_mux above */
 	const char          *stun_server; /* NULL = no STUN, e.g. "stun:stun.l.google.com:19302" */
 	const char          *turn_server; /* NULL = no TURN, e.g. "turn:turn.example.com:3478" */
 	const char          *turn_user;
@@ -610,6 +638,7 @@ typedef struct {
 	/* ── Advanced overrides ────────────────────────────────────────────── */
 
 	const char          *outbound;   /* NULL = auto-derived from server */
+	const char          *outbound_proxy; /* alias for outbound; NULL = auto */
 	bool                 verify_tls; /* false = skip TLS cert verification */
 
 	/* ── Push notifications ─────────────────────────────────────────────── */
@@ -678,6 +707,9 @@ typedef struct {
 	 */
 	char  audio_codec_names[8][32];  /* codec name strings, each ≤ 31 chars */
 	int   audio_codec_name_count;    /* 0 = fall back to audio_codecs[] / global */
+
+	/* ── DTMF ──────────────────────────────────────────────────────────── */
+	baresdk_dtmf_mode_t dtmf_mode; /* default BARESDK_DTMF_RFC4733 (0) */
 
 } baresdk_account_config_t;
 
@@ -823,6 +855,9 @@ BARESDK_EXPORT int baresdk_call_hold(baresdk_call_handle_t call);
 /** Resume a held call (re-INVITE with sendrecv). */
 BARESDK_EXPORT int baresdk_call_resume(baresdk_call_handle_t call);
 
+/** Return true if the call is currently on local hold. */
+BARESDK_EXPORT bool baresdk_call_is_held(baresdk_call_handle_t call);
+
 /** Send DTMF digit via RFC 4733 RTP events. digit: '0'-'9', '*', '#', 'A'-'D'. */
 BARESDK_EXPORT int baresdk_call_send_dtmf(baresdk_call_handle_t call, char digit);
 
@@ -846,6 +881,12 @@ BARESDK_EXPORT int baresdk_call_add_header(baresdk_call_handle_t call,
  */
 BARESDK_EXPORT int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
                                     baresdk_call_handle_t call_b);
+
+/** Called once per active call by baresdk_call_foreach(). */
+typedef void (*baresdk_call_iter_fn)(baresdk_call_handle_t call, void *arg);
+
+/** Iterate all active calls. Safe to call from any thread. */
+BARESDK_EXPORT void baresdk_call_foreach(baresdk_call_iter_fn fn, void *arg);
 
 /* ── SIP MESSAGE ─────────────────────────────────────────────────────────── */
 
@@ -964,10 +1005,16 @@ BARESDK_EXPORT int baresdk_call_set_dscp_rtp(baresdk_call_handle_t call,
  */
 BARESDK_EXPORT void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
 
+/** Set jitter buffer type (adaptive or fixed). Takes effect on new calls. */
+BARESDK_EXPORT void baresdk_set_jitter_buffer_type(baresdk_jbuf_type_t type);
+
 /* ── Audio mute / device control ─────────────────────────────────────────── */
 
 /** Mute/unmute the microphone (TX path) for a call. */
 BARESDK_EXPORT int baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
+
+/** Return true if TX audio is currently muted on this call. */
+BARESDK_EXPORT bool baresdk_audio_is_muted(baresdk_call_handle_t call);
 
 /** Mute/unmute the speaker (RX path) for a call — silences incoming audio. */
 BARESDK_EXPORT int baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);

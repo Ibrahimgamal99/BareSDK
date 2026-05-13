@@ -1,20 +1,3 @@
-Metadata-Version: 2.4
-Name: baresdk
-Version: 1.0.0
-Summary: Python binding for baresdk — SIP/WebRTC/NAT SDK
-License: MIT
-Project-URL: Homepage, https://github.com/Ibrahimgamal99/BareSDK.git
-Classifier: Programming Language :: Python :: 3
-Classifier: License :: OSI Approved :: MIT License
-Classifier: Operating System :: POSIX :: Linux
-Classifier: Operating System :: Microsoft :: Windows
-Classifier: Topic :: Communications :: Telephony
-Classifier: Topic :: Communications :: Internet Phone
-Classifier: Intended Audience :: Developers
-Requires-Python: >=3.9
-Description-Content-Type: text/markdown
-Requires-Dist: cffi>=1.15
-
 # baresdk — Python SIP/VoIP SDK
 
 Python binding for **baresdk** — a thread-safe SIP/RTP library for desktop softphones,
