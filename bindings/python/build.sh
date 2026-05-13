@@ -48,8 +48,25 @@ cp "${DIST_DIR}/baresdk.so" "${SCRIPT_DIR}/baresdk/baresdk.so"
 echo "==> Installing Python package..."
 pip install -e "${SCRIPT_DIR}"
 
+echo "==> Building wheel..."
+pip install --quiet wheel
+cd "${SCRIPT_DIR}"
+rm -rf dist build
+python setup.py bdist_wheel --quiet
+
+echo "==> Retagging wheel to manylinux_2_39_x86_64..."
+python -m wheel tags --platform-tag manylinux_2_39_x86_64 \
+  dist/baresdk-*.whl --remove
+
+WHL="$(ls "${SCRIPT_DIR}/dist"/baresdk-*-manylinux_2_39_x86_64.whl)"
 echo ""
-echo "Done. Run an example:"
+echo "Done. Wheel ready at:"
+echo "  ${WHL}"
+echo ""
+echo "To upload to PyPI:"
+echo "  twine upload ${WHL}"
+echo ""
+echo "Run an example:"
 echo "  python ${SCRIPT_DIR}/examples/quickstart.py account.json                        # receive mode"
 echo "  python ${SCRIPT_DIR}/examples/quickstart.py account.json bob@pbx.example.com    # dial"
 echo "  python ${SCRIPT_DIR}/examples/quickstart.py alice@pbx.example.com secret        # legacy CLI (receive)"

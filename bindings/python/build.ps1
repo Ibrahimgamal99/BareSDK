@@ -29,6 +29,25 @@ Copy-Item $DllSrc $DllDst -Force
 Write-Host "==> Installing Python package..."
 pip install -e $ScriptDir
 
+# ── 4. Build wheel and retag for PyPI ────────────────────────────────────────
+Write-Host "==> Building wheel..."
+pip install --quiet wheel
+Push-Location $ScriptDir
+Remove-Item -Recurse -Force dist, build -ErrorAction SilentlyContinue
+python setup.py bdist_wheel --quiet
+
+Write-Host "==> Retagging wheel to win_amd64..."
+python -m wheel tags --platform-tag win_amd64 dist\baresdk-*.whl --remove
+Pop-Location
+
+$Whl = Get-ChildItem "$ScriptDir\dist\baresdk-*-win_amd64.whl" | Select-Object -First 1
+
 Write-Host ""
-Write-Host "Done. Run an example:"
+Write-Host "Done. Wheel ready at:"
+Write-Host "  $($Whl.FullName)"
+Write-Host ""
+Write-Host "To upload to PyPI:"
+Write-Host "  twine upload $($Whl.FullName)"
+Write-Host ""
+Write-Host "Run an example:"
 Write-Host "  python $ScriptDir\examples\quickstart.py account.json"
