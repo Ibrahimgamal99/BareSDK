@@ -330,6 +330,7 @@ ExternalProject_Add(re_project
     -DLIBRE_BUILD_SHARED=OFF
     -DLIBRE_BUILD_STATIC=ON
     -DUSE_REM=ON
+    -DHAVE_THREADS=OFF
     ${RE_PLATFORM_ARGS}
     ${MBEDTLS_ARGS}
     ${CROSS_ARGS}
@@ -360,6 +361,7 @@ ExternalProject_Add(baresip_project
     "-DMODULES=${BARESDK_MODULES_SEP}"
     -DBUILD_TESTING=OFF
     "-DCMAKE_C_FLAGS=-DJBUF_STAT=1"
+    -DHAVE_THREADS=OFF
     ${MBEDTLS_ARGS}
     ${OPUS_ARGS}
     ${CROSS_ARGS}

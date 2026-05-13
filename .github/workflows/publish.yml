@@ -6,52 +6,91 @@ on:
   workflow_dispatch:       # allow manual runs from the Actions tab
 
 jobs:
-  # ── Build wheel on each OS ──────────────────────────────────────────────────
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            plat: linux_x86_64
-          - os: windows-2022
-            plat: win_amd64
-
-    runs-on: ${{ matrix.os }}
-    name: Wheel · ${{ matrix.plat }}
+  # ── Build Linux wheel ────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-22.04
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    name: Wheel · linux_x86_64
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # ── Linux build ──────────────────────────────────────────────────────
-      - name: Install Linux build deps
-        if: runner.os == 'Linux'
+      - name: Install build deps
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            cmake ninja-build gcc pkg-config \
-            libssl-dev zlib1g-dev \
-            libwebrtc-audio-processing-dev \
-            libpulse-dev
-          # libopus-dev not needed — opus is built from third_party/opus submodule
+          yum install -y cmake ninja gcc gcc-c++ pkg-config \
+            openssl-devel zlib-devel pulseaudio-libs-devel
+          # Build webrtc-audio-processing from source
+          cd /tmp
+          curl -L -o webrtc.tar.gz https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/v1.3/webrtc-audio-processing-1.3.tar.gz
+          tar xzf webrtc.tar.gz
+          cd webrtc-audio-processing-1.3
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr -GNinja
+          ninja install
 
-      - name: Build SDK (Linux)
-        if: runner.os == 'Linux'
+      - name: Build SDK
         run: bash scripts/build-linux.sh
 
-      - name: Copy .so into package (Linux)
-        if: runner.os == 'Linux'
-        run: cp dist/linux/x86_64/baresdk.so bindings/python/baresdk/baresdk.so
+      - name: Generate CFFI header
+        run: |
+          cd bindings/python
+          gcc -E \
+              -D'__extension__=' \
+              -D'__attribute__(x)=' \
+              -D'__restrict=' \
+              -D'__inline__=inline' \
+              -D'inline=' \
+              ../../include/baresdk.h \
+              | awk -v src="../../include/baresdk.h" '
+                  /^# [0-9]+ / {
+                      match($0, /"([^"]+)"/, a)
+                      in_sdk = (a[1] == src)
+                      next
+                  }
+                  in_sdk { print }
+              ' \
+              | grep -v '__typeof__' \
+              | grep -v 'nullptr_t' \
+              | grep -v '__max_align' \
+              | grep -v 'max_align_t' \
+              | sed 's/_Bool/int/g' \
+              | sed '/^[[:space:]]*$/N;/^\n$/d' \
+              > baresdk/_baresdk_clean.h
+          {
+            printf 'typedef unsigned long size_t;\n'
+            printf 'typedef int wchar_t;\n'
+            cat baresdk/_baresdk_clean.h
+          } > baresdk/_baresdk_clean.h.tmp && mv baresdk/_baresdk_clean.h.tmp baresdk/_baresdk_clean.h
+          cp ../../dist/linux/x86_64/baresdk.so baresdk/baresdk.so
 
-      # ── Windows build ────────────────────────────────────────────────────
-      - name: Set up vcpkg (Windows)
-        if: runner.os == 'Windows'
+      - name: Build wheel
+        run: |
+          /opt/python/cp311-cp311/bin/pip install cffi setuptools wheel build auditwheel
+          cd bindings/python
+          /opt/python/cp311-cp311/bin/python -m build --wheel --outdir /tmp/wheel
+          /opt/python/cp311-cp311/bin/auditwheel repair /tmp/wheel/*.whl -w dist/wheels/
+
+      - name: Show wheel
+        run: ls -lh bindings/python/dist/wheels/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-linux_x86_64
+          path: bindings/python/dist/wheels/*.whl
+
+  # ── Build Windows wheel ───────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-2022
+    name: Wheel · win_amd64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up vcpkg
         uses: johnwason/vcpkg-action@v6
         with:
           pkgs: openssl zlib abseil
@@ -60,32 +99,29 @@ jobs:
           github-binarycache: true
 
       - name: Build SDK (Windows)
-        if: runner.os == 'Windows'
         shell: pwsh
         run: .\scripts\build-windows.ps1 -VcpkgRoot $env:VCPKG_ROOT
 
-      - name: Copy .dll into package (Windows)
-        if: runner.os == 'Windows'
+      - name: Copy .dll into package
         shell: pwsh
         run: Copy-Item dist\windows\x64\baresdk.dll bindings\python\baresdk\baresdk.dll -Force
 
-      # ── Build the wheel ──────────────────────────────────────────────────
       - name: Build wheel
         run: |
           pip install build
           python -m build --wheel bindings/python --outdir dist/wheels/
 
-      - name: Show wheel name
+      - name: Show wheel
         run: ls dist/wheels/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.plat }}
+          name: wheel-win_amd64
           path: dist/wheels/*.whl
 
   # ── Publish all wheels to PyPI ──────────────────────────────────────────────
   publish:
-    needs: build
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     name: Publish to PyPI
     environment: pypi

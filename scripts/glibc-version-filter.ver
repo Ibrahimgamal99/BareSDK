@@ -1,0 +1,6 @@
+{
+  global:
+    *;
+  local:
+    __isoc23_*;
+};

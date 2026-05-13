@@ -52,13 +52,17 @@ echo "==> Building wheel..."
 pip install --quiet wheel
 cd "${SCRIPT_DIR}"
 rm -rf dist build
+
+# Default to manylinux_2_28_x86_64 for broad compatibility
+MANYLINUX_TAG="manylinux_2_28_x86_64"
+
 python setup.py bdist_wheel --quiet
 
-echo "==> Retagging wheel to manylinux_2_39_x86_64..."
-python -m wheel tags --platform-tag manylinux_2_39_x86_64 \
+echo "==> Retagging wheel to ${MANYLINUX_TAG}..."
+python -m wheel tags --platform-tag "${MANYLINUX_TAG}" \
   dist/baresdk-*.whl --remove
 
-WHL="$(ls "${SCRIPT_DIR}/dist"/baresdk-*-manylinux_2_39_x86_64.whl)"
+WHL="$(ls "${SCRIPT_DIR}/dist"/baresdk-*-${MANYLINUX_TAG}.whl)"
 echo ""
 echo "Done. Wheel ready at:"
 echo "  ${WHL}"
