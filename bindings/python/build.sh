@@ -36,14 +36,10 @@ gcc -E \
     | sed 's/_Bool/int/g' \
     | sed '/^[[:space:]]*$/N;/^\n$/d' \
     > "${OUTPUT}"
-{
-  printf 'typedef unsigned long size_t;\n'
-  printf 'typedef int wchar_t;\n'
-  cat "${OUTPUT}"
-} > "${OUTPUT}.tmp" && mv "${OUTPUT}.tmp" "${OUTPUT}"
 
 echo "==> Copying shared library..."
 cp "${DIST_DIR}/baresdk.so" "${SCRIPT_DIR}/baresdk/baresdk.so"
+rm -f "${SCRIPT_DIR}/baresdk/baresdk.dll" "${SCRIPT_DIR}/baresdk/baresdk.dylib"
 
 echo "==> Installing Python package..."
 pip install -e "${SCRIPT_DIR}"
@@ -62,7 +58,7 @@ python setup.py bdist_wheel --quiet
 
 echo "==> Retagging wheel to ${MANYLINUX_TAG}..."
 python -m wheel tags --platform-tag "${MANYLINUX_TAG}" \
-  dist/baresdk-*.whl --remove
+  dist/baresdk-*-linux_x86_64.whl --remove
 
 WHL="$(ls "${SCRIPT_DIR}/dist"/baresdk-*-${MANYLINUX_TAG}.whl)"
 echo ""

@@ -331,6 +331,13 @@ set(RE_PLATFORM_ARGS "")
 if(ANDROID_ABI)
   list(APPEND RE_PLATFORM_ARGS "-DUSE_UNIXSOCK=OFF")
 endif()
+if(MSVC)
+  # websock.c exposes __real_websock_connect instead of websock_connect so
+  # ws_path.c can provide websock_connect as the wrapper without a duplicate
+  # symbol.  On Linux/macOS --wrap=websock_connect handles this at link time
+  # without touching the source.
+  list(APPEND RE_PLATFORM_ARGS "-DCMAKE_C_FLAGS=-DRE_WEBSOCK_CONNECT_OVERRIDE=1")
+endif()
 
 ExternalProject_Add(re_project
   DEPENDS ${MBEDTLS_DEPENDS}
@@ -360,21 +367,6 @@ if(WIN32)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix-msvc-headers.cmake
     DEPENDEES install
     COMMENT "Patching libre headers for MSVC compatibility"
-  )
-  # GNU ld supports --wrap=websock_connect to intercept the call from
-  # transp.c (see src/ws_path.c). MSVC's linker has no equivalent, so on
-  # Windows we rename the function *definition* in websock.c to
-  # __real_websock_connect at configure time.  Call sites (transp.c) still
-  # reference websock_connect, which the linker resolves to our wrapper
-  # in ws_path.c.  Same call shape as the Linux --wrap path, no special
-  # linker flag required at any link step.
-  ExternalProject_Add_Step(re_project patch_ws_def
-    COMMAND ${CMAKE_COMMAND}
-      -DSOURCE_DIR=${BARESDK_RE_SOURCE_DIR}
-      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix-msvc-re.cmake
-    DEPENDEES update
-    DEPENDERS configure
-    COMMENT "Patching libre websock.c definition for MSVC wrap"
   )
 endif()
 

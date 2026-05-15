@@ -1,3 +1,4 @@
+ 
               const char *baresdk_version(void);
  const char *baresdk_strerror(int err);
 

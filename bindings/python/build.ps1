@@ -24,6 +24,8 @@ if (-not (Test-Path $DllSrc)) {
 # ── 2. Copy DLL into the package directory ───────────────────────────────────
 Write-Host "==> Copying baresdk.dll into package..."
 Copy-Item $DllSrc $DllDst -Force
+Remove-Item -Force "$ScriptDir\baresdk\baresdk.so" -ErrorAction SilentlyContinue
+Remove-Item -Force "$ScriptDir\baresdk\baresdk.dylib" -ErrorAction SilentlyContinue
 
 # ── 3. Install the Python package ────────────────────────────────────────────
 Write-Host "==> Installing Python package..."
@@ -39,7 +41,7 @@ Remove-Item -Force dist\baresdk-*-win_amd64.whl -ErrorAction SilentlyContinue
 python setup.py bdist_wheel --quiet
 
 Write-Host "==> Retagging wheel to win_amd64..."
-python -m wheel tags --platform-tag win_amd64 dist\baresdk-*.whl --remove
+python -m wheel tags --platform-tag win_amd64 dist\baresdk-*-win_amd64.whl --remove
 Pop-Location
 
 $Whl = Get-ChildItem "$ScriptDir\dist\baresdk-*-win_amd64.whl" -ErrorAction SilentlyContinue | Select-Object -First 1

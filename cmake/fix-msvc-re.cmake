@@ -1,33 +1,21 @@
-# fix-msvc-re.cmake
-# Patch libre sources for MSVC builds.
-# Usage: cmake -DSOURCE_DIR=path/to/re -P fix-msvc-re.cmake
+# fix-msvc-re.cmake  (no-op — kept for reference only)
 #
-# Rationale: MSVC's linker has no equivalent of GNU ld's --wrap, which we use
-# on Linux/macOS to intercept websock_connect() (see src/ws_path.c).  Instead
-# we rename the function *definition* in websock.c from `websock_connect` to
-# `__real_websock_connect`.  Other libre TUs (transp.c) still call
-# `websock_connect`, which the linker then resolves to our wrapper in
-# ws_path.c.  The wrapper calls `__real_websock_connect` to reach the
-# original implementation — the same call shape as the Linux build.
+# Previously this script renamed websock_connect → __real_websock_connect in
+# libre's websock.c at build time so ws_path.c could provide websock_connect
+# as the MSVC wrapper without a duplicate symbol.  The in-place edit caused
+# the patched version to be accidentally committed to the re submodule, which
+# broke Linux builds (websock_connect became undefined for baresip_exe).
+#
+# The rename is now controlled by the RE_WEBSOCK_CONNECT_OVERRIDE compile
+# definition, which is passed via CMAKE_C_FLAGS in the re_project ExternalProject
+# when building with MSVC.  websock.c uses:
+#
+#   #ifdef RE_WEBSOCK_CONNECT_OVERRIDE
+#   int __real_websock_connect(...)
+#   #else
+#   int websock_connect(...)
+#   #endif
+#
+# This script is no longer called by CMakeLists.txt and does nothing.
 
-if(NOT DEFINED SOURCE_DIR)
-  message(FATAL_ERROR "SOURCE_DIR must be defined")
-endif()
-
-set(WEBSOCK_C "${SOURCE_DIR}/src/websock/websock.c")
-if(EXISTS "${WEBSOCK_C}")
-  file(READ "${WEBSOCK_C}" CONTENT)
-  string(FIND "${CONTENT}" "int __real_websock_connect(" ALREADY_PATCHED)
-  if(ALREADY_PATCHED EQUAL -1)
-    string(REPLACE
-      "int websock_connect(struct websock_conn **connp, struct websock *sock,"
-      "int __real_websock_connect(struct websock_conn **connp, struct websock *sock,"
-      CONTENT "${CONTENT}")
-    file(WRITE "${WEBSOCK_C}" "${CONTENT}")
-    message(STATUS "Patched ${WEBSOCK_C} for MSVC (websock_connect rename)")
-  else()
-    message(STATUS "${WEBSOCK_C} already patched")
-  endif()
-endif()
-
-message(STATUS "MSVC libre source patching complete")
+message(STATUS "fix-msvc-re.cmake: no-op (websock rename now handled via RE_WEBSOCK_CONNECT_OVERRIDE compile flag)")
