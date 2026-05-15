@@ -1,5 +1,13 @@
+import sys
 from setuptools import setup, Distribution
 from wheel.bdist_wheel import bdist_wheel
+
+if sys.platform == "win32":
+    native_lib = ["baresdk.dll"]
+elif sys.platform == "darwin":
+    native_lib = ["baresdk.dylib"]
+else:
+    native_lib = ["baresdk.so"]
 
 
 class BinaryDistribution(Distribution):
@@ -17,4 +25,8 @@ class BinaryWheel(bdist_wheel):
         return "py3", "none", plat  # any Python 3, no ABI, native platform
 
 
-setup(distclass=BinaryDistribution, cmdclass={"bdist_wheel": BinaryWheel})
+setup(
+    distclass=BinaryDistribution,
+    cmdclass={"bdist_wheel": BinaryWheel},
+    package_data={"baresdk": native_lib + ["_baresdk_clean.h"]},
+)

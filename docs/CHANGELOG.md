@@ -4,6 +4,20 @@ All notable changes to baresdk are documented here.
 
 ---
 
+## [1.4.1] — 2026-05-14
+
+### Fixed
+
+- **Windows build — MSBuild tlog locking** — sub-project builds (`libre`, `baresip`, `opus`) could fail with "The requested operation cannot be performed on a file with a user-mapped section open" when Windows Defender (or any AV) held `.tlog` dependency-tracking files mapped. Fixed by passing `CMAKE_VS_GLOBALS=TrackFileAccess=false` to every `ExternalProject_Add` so MSBuild skips the tlog write step entirely.
+- **Windows DLL — missing exports** — `baresdk_strerror` and `baresdk_version` were absent from `baresdk.def` because the DEF-generation regex required whitespace before the function name, which doesn't match pointer-returning signatures (`const char *fn(`). Fixed regex to accept either whitespace or `*` as the separator.
+
+### Changed
+
+- **Windows build consolidation** — `generate-def.ps1` and `relink-dll.ps1` are removed; their logic is now inlined into `scripts/build-windows.ps1`. One script does everything: configure → build → install → DEF → link DLL.
+- **Windows build script** — auto-detects vcpkg at common locations (`C:\vcpkg`, `D:\vcpkg`, `%USERPROFILE%\vcpkg`) when `VCPKG_ROOT` is not set.
+
+---
+
 ## [1.4.0] — 2026-05-11
 
 ### Fixed

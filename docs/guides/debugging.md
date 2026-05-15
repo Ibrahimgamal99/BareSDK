@@ -1,5 +1,34 @@
 # Debugging SIP
 
+## Init/shutdown trace
+
+`baresdk_init()` and `baresdk_shutdown()` walk through ~14 stages. To trace which step a hang or crash occurs at, set the `BARESDK_DEBUG_INIT` env var before launching:
+
+```bash
+# Linux / macOS
+BARESDK_DEBUG_INIT=1 ./your_app
+```
+
+```powershell
+# Windows
+$env:BARESDK_DEBUG_INIT=1
+.\your_app.exe
+```
+
+Output looks like:
+
+```
+[bsdk] step 1: deep_copy
+[bsdk] step 2: log_init
+[bsdk] step 3: libre_init
+...
+[bsdk] step 14: done
+```
+
+Leave the variable unset for normal (silent) operation.
+
+---
+
 ## Log levels
 
 Start with `log_level = 2` (info) for call flow visibility:

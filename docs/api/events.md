@@ -6,21 +6,54 @@ Event payloads are in the `ev->u` union — access the member matching `ev->type
 
 ## Python
 
-In Python, events are yielded from `account.events()`. Every event object has a `.type` string so you can dispatch without importing event classes or integer constants:
+Events are dispatched via `@sdk.on(name)` decorators. Every handler receives a single event object with a `.type` string and type-specific fields:
 
 ```python
-for ev in account.events():
-    if ev.type == "reg_state" and ev.state == "registered":
-        ...
-    elif ev.type == "incoming_call":
-        answer(ev.call)
-    elif ev.type == "call_state" and ev.state in ("ended", "failed", "cancelled"):
-        break
-    elif ev.type == "media_stats":
-        print(ev.mos_lq, ev.rtt_ms)
-    elif ev.type == "sip_trace":
-        print(">>>" if ev.direction == "tx" else "<<<", ev.raw_message)
+import baresdk as sdk
+
+@sdk.on("registered")
+def _(ev):
+    print("registered")
+
+@sdk.on("reg_failed")
+def _(ev):
+    print(f"registration failed: {ev.error_str}  retry in {ev.retry_delay_ms} ms")
+
+@sdk.on("incoming_call")
+def _(ev):
+    ev.call.answer()
+
+@sdk.on("established")
+def _(ev):
+    ev.call.poll_stats(interval=5.0, on_update=lambda s: print(s.mos_lq, s.rtt_ms))
+
+@sdk.on("ended")
+def _(ev):
+    sdk.stop()
+
+@sdk.on("media_stats")
+def _(ev):
+    print(f"MOS={ev.mos_lq:.2f}  RTT={ev.rtt_ms:.0f}ms  loss={ev.loss_pct:.1f}%")
+
+@sdk.on("sip_trace")
+def _(ev):
+    print(">>>" if ev.direction == "tx" else "<<<", ev.raw_message)
 ```
+
+Valid event names for `@sdk.on()`:
+
+| Name | Umbrella / sub-state |
+|---|---|
+| `reg_state` | Umbrella — fires for any reg change |
+| `registering` · `registered` · `unregistered` · `reg_failed` | Sub-states of `reg_state` |
+| `call_state` | Umbrella — fires for any call change |
+| `calling` · `ringing` · `established` · `held` · `ended` · `cancelled` · `call_failed` | Sub-states of `call_state` |
+| `incoming_call` · `dtmf` · `sdp_negotiation` · `sip_trace` | Direct events |
+| `media_stats` · `log` · `registrar_warning` | Direct events |
+| `transfer_request` · `mwi` · `message` · `presence_state` · `quality_alert` | Direct events |
+| `*` | Wildcard — every event |
+
+A sub-state handler and its umbrella handler both fire for the same event. An unknown name raises `ValueError` at decoration time (typo protection).
 
 State fields use strings instead of integer constants:
 

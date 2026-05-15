@@ -1,27 +1,34 @@
 """
-baresdk — Pythonic wrapper around the baresdk C SDK.
+baresdk — simple, flat Python SDK for SIP/RTP.
 
-Quick start:
+    import baresdk as sdk
 
-    from baresdk import SDK
+    sdk.configure(transport="wss", media_enc="dtls_srtp")
 
-    sdk = SDK(log_level=2)
-    account = sdk.create_account("alice@pbx.example.com", "secret")
-    account.register()
+    alice = sdk.create_account("alice@pbx.example.com", "secret")
+    alice.register()
 
-    for ev in account.events():
-        if ev.__class__.__name__ == "RegStateEvent" and ev.state == 2:  # REGISTERED
-            call = account.call("bob@pbx.example.com")
-        elif ev.__class__.__name__ == "CallStateEvent" and ev.state == 4:  # ENDED
-            break
+    @sdk.on("registered")
+    def _(ev):
+        sdk.call("120")
 
-    sdk.shutdown()
+    @sdk.on("incoming_call")
+    def _(ev):
+        ev.call.answer()
+
+    @sdk.on("ended")
+    def _(ev):
+        sdk.stop()
+
+    sdk.run()
 """
 
+import logging
 import queue
+import signal
 import sys
 import threading
-from typing import Iterator, Optional
+from typing import Callable, Optional
 
 from ._loader import ffi, lib
 from .events import (
@@ -32,101 +39,103 @@ from .events import (
     CallStats,
 )
 
-# ── C constant mirrors ────────────────────────────────────────────────────────
-REG_UNREGISTERED  = 0
-REG_REGISTERING   = 1
-REG_REGISTERED    = 2
-REG_FAILED        = 3
-REG_UNREGISTERING = 4
+_log = logging.getLogger("baresdk")
 
-CALL_CALLING     = 0
-CALL_RINGING     = 1
-CALL_ESTABLISHED = 2
-CALL_HELD        = 3
-CALL_ENDED       = 4
-CALL_CANCELLED   = 5
-CALL_FAILED      = 6
-
-TRANSPORT_UDP = 0
-TRANSPORT_TCP = 1
-TRANSPORT_TLS = 2
-TRANSPORT_WS  = 3
-TRANSPORT_WSS = 4
-
-MEDIA_ENC_NONE      = 0
-MEDIA_ENC_SDES      = 1
-MEDIA_ENC_DTLS_SRTP = 2
-
-PRESENCE_UNKNOWN = 0
-PRESENCE_OPEN    = 1
-PRESENCE_CLOSED  = 2
-PRESENCE_BUSY    = 3
-
+# ── Push provider constants (no string equivalent in the C API) ───────────────
 PUSH_PROVIDER_NONE         = 0
 PUSH_PROVIDER_APNS         = 1
 PUSH_PROVIDER_APNS_SANDBOX = 2
 PUSH_PROVIDER_FCM          = 3
 
-QUALITY_MOS    = 0
-QUALITY_LOSS   = 1
-QUALITY_JITTER = 2
-QUALITY_RTT    = 3
+# ── Valid names for @sdk.on() ─────────────────────────────────────────────────
+_VALID_NAMES = frozenset({
+    # umbrella
+    "reg_state", "call_state",
+    # reg sub-states
+    "registering", "registered", "unregistered", "reg_failed",
+    # call sub-states
+    "calling", "ringing", "established", "held", "ended", "cancelled", "call_failed",
+    # direct events
+    "incoming_call", "dtmf", "sdp_negotiation", "sip_trace", "media_stats",
+    "log", "registrar_warning", "transfer_request", "mwi", "message",
+    "presence_state", "quality_alert",
+    # wildcard
+    "*",
+})
 
-CODEC_OPUS    = 0
-CODEC_PCMU    = 1
-CODEC_PCMA    = 2
-CODEC_G722    = 3
-CODEC_G726_32 = 4
+# ── String → int maps ─────────────────────────────────────────────────────────
+_STR_TRANSPORT = {"udp": 0, "tcp": 1, "tls": 2, "ws": 3, "wss": 4}
+_STR_MEDIA_ENC = {"none": 0, "sdes": 1, "dtls_srtp": 2}
+_STR_REL100    = {"disabled": 0, "enabled": 1, "required": 2}
+_STR_DTMF      = {"rfc4733": 0, "sip_info": 1, "auto": 2}
 
-DTMF_RFC4733  = 0
-DTMF_SIP_INFO = 1
-DTMF_AUTO     = 2
+# ── Module-level state ────────────────────────────────────────────────────────
+_config: dict        = {}
+_config_locked       = False
+_init_done           = False
+_init_lock           = threading.Lock()
+_handlers: dict      = {}            # name → list[Callable]
+_accounts: list      = []
+_accounts_by_handle: dict = {}       # int(cdata handle) → Account
+_accounts_lock       = threading.Lock()
+_event_q             = queue.SimpleQueue()
+_dispatcher: Optional[threading.Thread] = None
+_stop_evt            = threading.Event()
+_cdata_keepalive: list = []          # keep C char[] / struct refs alive
 
-AEC_OFF        = 0
-AEC_SUPPRESSOR = 1
-AEC_WEBRTC     = 2
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _s(cptr) -> Optional[str]:
-    """Decode a C const char * to str (or None if NULL)."""
     if cptr == ffi.NULL:
         return None
     return ffi.string(cptr).decode("utf-8", errors="replace")
 
 
 def _str_array(arr) -> list:
-    """Decode a NULL-terminated const char ** to list[str]."""
-    result = []
-    i = 0
+    result, i = [], 0
     while arr[i] != ffi.NULL:
         result.append(_s(arr[i]))
         i += 1
     return result
 
 
-# ── Global event router ───────────────────────────────────────────────────────
-
-_accounts_lock = threading.Lock()
-_accounts: dict = {}          # {c_handle_int: Account}
-_sdk_ref   = None             # the single active SDK instance
+def _check(rc, what):
+    if rc != 0:
+        raise RuntimeError(f"baresdk.{what} failed (code {rc}): {strerror(rc)}")
 
 
-def _register_account(c_handle, account):
-    with _accounts_lock:
-        _accounts[int(ffi.cast("uintptr_t", c_handle))] = account
-
-
-def _unregister_account(c_handle):
-    with _accounts_lock:
-        _accounts.pop(int(ffi.cast("uintptr_t", c_handle)), None)
-
-
-def _lookup_account(c_handle):
-    return _accounts.get(int(ffi.cast("uintptr_t", c_handle)))
+def _ensure_init():
+    global _init_done, _config_locked
+    if _init_done:
+        return
+    with _init_lock:
+        if _init_done:
+            return
+        _config_locked = True
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+        except AttributeError:
+            pass
+        cfg = ffi.new("baresdk_config_t *")
+        lib.baresdk_config_init(cfg)
+        for key, val in _config.items():
+            if isinstance(val, str):
+                ref = ffi.new("char[]", val.encode())
+                _cdata_keepalive.append(ref)
+                setattr(cfg, key, ref)
+            elif isinstance(val, bool):
+                setattr(cfg, key, int(val))
+            else:
+                setattr(cfg, key, val)
+        cfg.event_cb       = _global_event_cb
+        cfg.event_userdata = ffi.NULL
+        _cdata_keepalive.append(cfg)  # C may hold pointers into this struct
+        _check(lib.baresdk_init(cfg), "init")
+        _init_done = True
 
 
 def _raw_stats_to_event(s) -> MediaStatsEvent:
-    """Convert a baresdk_ev_media_stats_t C struct to a MediaStatsEvent."""
     return MediaStatsEvent(
         call=None,
         packets_sent            = s.packets_sent,
@@ -177,17 +186,27 @@ def _raw_stats_to_event(s) -> MediaStatsEvent:
     )
 
 
+def _list_audio_devices(fn) -> list:
+    buf = ffi.new("baresdk_audio_device_t[32]")
+    n = fn(buf, 32)
+    out = []
+    for i in range(max(n, 0)):
+        out.append({
+            "name":        ffi.string(buf[i].name).decode("utf-8", errors="replace"),
+            "description": ffi.string(buf[i].description).decode("utf-8", errors="replace"),
+            "is_default":  bool(buf[i].is_default),
+        })
+    return out
+
+
+# ── C event callback → global queue ──────────────────────────────────────────
+
 @ffi.callback("void(const baresdk_event_t *, void *)")
 def _global_event_cb(ev_ptr, _userdata):
-    """Single C callback; routes decoded events to the right Account queue."""
     ev  = ev_ptr[0]
     typ = ev.type
 
     try:
-        # Figure out the destination account handle
-        acct_handle = ffi.NULL
-        call_handle = ffi.NULL
-
         _REG_STATES  = ("unregistered", "registering", "registered",
                         "failed", "unregistering")
         _CALL_STATES = ("calling", "ringing", "established", "held",
@@ -195,30 +214,27 @@ def _global_event_cb(ev_ptr, _userdata):
         _PRESENCE    = ("unknown", "open", "closed", "busy")
         _QUALITY     = ("mos", "loss", "jitter", "rtt")
 
-        if typ == 0:    # LOG — broadcast to all accounts
+        acct_handle = ffi.NULL
+        call_handle = ffi.NULL
+
+        if typ == 0:    # LOG
             obj = LogEvent(message=_s(ev.u.log.message) or "")
-            with _accounts_lock:
-                targets = list(_accounts.values())
-            for a in targets:
-                a._put(obj)
-            return
 
         elif typ == 1:  # REG_STATE
             acct_handle = ev.u.reg.account
-            call_handle = ffi.NULL
             obj = RegStateEvent(
-                state        = _REG_STATES[ev.u.reg.state],
-                error        = ev.u.reg.error,
-                error_str    = _s(ev.u.reg.error_str),
-                retry_attempt= ev.u.reg.retry_attempt,
-                retry_delay_ms=ev.u.reg.retry_delay_ms,
+                state         = _REG_STATES[ev.u.reg.state],
+                error         = ev.u.reg.error,
+                error_str     = _s(ev.u.reg.error_str),
+                retry_attempt = ev.u.reg.retry_attempt,
+                retry_delay_ms= ev.u.reg.retry_delay_ms,
             )
 
         elif typ == 2:  # INCOMING_CALL
             acct_handle = ev.u.incoming.account
             call_handle = ev.u.incoming.call
             obj = IncomingCallEvent(
-                call=None,  # set after lookup
+                call=None,
                 from_uri    = _s(ev.u.incoming.from_uri) or "",
                 display_name= _s(ev.u.incoming.display_name),
             )
@@ -241,12 +257,12 @@ def _global_event_cb(ev_ptr, _userdata):
             call_handle = ev.u.sdp.call
             obj = SdpNegotiationEvent(
                 call=None,
-                local_sdp          = _s(ev.u.sdp.local_sdp) or "",
-                remote_sdp         = _s(ev.u.sdp.remote_sdp) or "",
-                negotiated_codec   = _s(ev.u.sdp.negotiated_codec),
-                negotiated_crypto  = _s(ev.u.sdp.negotiated_crypto),
-                rejected_codecs    = _str_array(ev.u.sdp.rejected_codecs),
-                warnings           = _str_array(ev.u.sdp.warnings),
+                local_sdp         = _s(ev.u.sdp.local_sdp) or "",
+                remote_sdp        = _s(ev.u.sdp.remote_sdp) or "",
+                negotiated_codec  = _s(ev.u.sdp.negotiated_codec),
+                negotiated_crypto = _s(ev.u.sdp.negotiated_crypto),
+                rejected_codecs   = _str_array(ev.u.sdp.rejected_codecs),
+                warnings          = _str_array(ev.u.sdp.warnings),
             )
 
         elif typ == 6:  # SIP_TRACE
@@ -257,11 +273,6 @@ def _global_event_cb(ev_ptr, _userdata):
                 raw_message= _s(ev.u.sip_trace.raw_message) or "",
                 timestamp_us=ev.u.sip_trace.timestamp_us,
             )
-            with _accounts_lock:
-                targets = list(_accounts.values())
-            for a in targets:
-                a._put(obj)
-            return
 
         elif typ == 7:  # MEDIA_STATS
             call_handle = ev.u.stats.call
@@ -319,33 +330,397 @@ def _global_event_cb(ev_ptr, _userdata):
         else:
             return
 
-        # Attach Call wrapper if needed
+        # Attach Call wrapper
         if call_handle != ffi.NULL and hasattr(obj, "call"):
             obj.call = Call(call_handle)
 
-        # Route to owning account
+        # Attach account reference (dynamic attribute — dataclasses allow it)
         if acct_handle != ffi.NULL:
-            acct = _lookup_account(acct_handle)
-            if acct:
-                acct._put(obj)
-        elif call_handle != ffi.NULL:
-            # find account by call owner (best-effort: put on all)
-            with _accounts_lock:
-                targets = list(_accounts.values())
-            for a in targets:
-                a._put(obj)
+            acct = _accounts_by_handle.get(int(ffi.cast("uintptr_t", acct_handle)))
+            if acct is not None:
+                obj.account = acct
+
+        _event_q.put(obj)
 
     except Exception:
         pass  # never let Python exceptions escape into C
 
 
+# ── Event dispatcher ──────────────────────────────────────────────────────────
+
+def _sub_event_name(obj) -> Optional[str]:
+    if isinstance(obj, RegStateEvent):
+        return "reg_failed" if obj.state == "failed" else obj.state
+    if isinstance(obj, CallStateEvent):
+        return "call_failed" if obj.state == "failed" else obj.state
+    return None
+
+
+def _dispatch_event(obj):
+    base = obj.type
+    sub  = _sub_event_name(obj)
+    fired = set()
+    for name in ([base, sub, "*"] if sub else [base, "*"]):
+        if name is None:
+            continue
+        for h in list(_handlers.get(name, ())):
+            hid = id(h)
+            if hid in fired:
+                continue
+            fired.add(hid)
+            try:
+                h(obj)
+            except Exception:
+                _log.exception("baresdk handler %r raised", h)
+
+
+def _dispatcher_loop():
+    while not _stop_evt.is_set():
+        try:
+            obj = _event_q.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if obj is None:
+            break
+        _dispatch_event(obj)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def configure(**kwargs):
+    """Set global SDK options. Must be called before the first create_account().
+
+    Common options:
+      log_level         — int (0=off, 1=error, 2=warning, 3=info, 4=debug)
+      stats_interval_ms — how often media_stats events fire (default 5000)
+      verify_server     — bool, validate TLS certificates (default True)
+      transport         — "udp" | "tcp" | "tls" | "ws" | "wss"
+    """
+    global _config_locked
+    if _config_locked:
+        raise RuntimeError("baresdk.configure() must be called before create_account()")
+    _config.update(kwargs)
+
+
+def on(name: str):
+    """Decorator — register a handler for a named event.
+
+    Valid names:
+      reg_state, call_state
+      registering, registered, unregistered, reg_failed
+      calling, ringing, established, held, ended, cancelled, call_failed
+      incoming_call, dtmf, sdp_negotiation, sip_trace, media_stats,
+      log, registrar_warning, transfer_request, mwi, message,
+      presence_state, quality_alert
+      * (wildcard — every event)
+
+    Each handler receives a single event object whose fields depend on the
+    event type (see events.py).  Call objects are at ev.call; account at ev.account.
+
+        @sdk.on("incoming_call")
+        def _(ev):
+            print(f"call from {ev.from_uri}")
+            ev.call.answer()
+
+        @sdk.on("established")
+        def _(ev):
+            ev.call.poll_stats(interval=2.0, on_update=lambda s: s.print())
+    """
+    if name not in _VALID_NAMES:
+        raise ValueError(
+            f"baresdk.on({name!r}): unknown event name. "
+            f"Valid names: {sorted(_VALID_NAMES)}"
+        )
+    def decorator(fn: Callable) -> Callable:
+        _handlers.setdefault(name, []).append(fn)
+        return fn
+    return decorator
+
+
+def run():
+    """Start the event dispatcher and block until stop() is called or Ctrl-C.
+
+    Installs a SIGINT handler that calls stop() unless one is already set.
+    On exit: drains remaining events, destroys accounts, shuts down the C SDK.
+    """
+    global _dispatcher
+
+    if not _handlers:
+        raise RuntimeError("baresdk.run() called with no @sdk.on() handlers registered")
+
+    _stop_evt.clear()
+    _dispatcher = threading.Thread(
+        target=_dispatcher_loop, name="baresdk-dispatcher", daemon=True)
+    _dispatcher.start()
+
+    old_sigint = signal.getsignal(signal.SIGINT)
+    installed  = False
+    if old_sigint in (signal.SIG_DFL, None):
+        def _on_sigint(sig, frame):
+            stop()
+        signal.signal(signal.SIGINT, _on_sigint)
+        installed = True
+
+    try:
+        _stop_evt.wait()
+    finally:
+        if installed:
+            signal.signal(signal.SIGINT, old_sigint)
+
+        # Wake the dispatcher so it can exit the get() block
+        _event_q.put(None)
+        if _dispatcher.is_alive():
+            _dispatcher.join(timeout=0.3)
+
+        with _accounts_lock:
+            accs = list(_accounts)
+        for acc in accs:
+            try:
+                acc.destroy()
+            except Exception:
+                pass
+
+        if _init_done:
+            lib.baresdk_shutdown()
+
+
+def stop():
+    """Signal run() to finish cleanly. Safe to call from any thread or handler."""
+    _stop_evt.set()
+
+
+def create_account(uri: str, password: str,
+                   transport=None,
+                   push_provider: int = PUSH_PROVIDER_NONE,
+                   push_token: Optional[str] = None,
+                   push_param: Optional[str] = None,
+                   audio_codecs: Optional[list] = None,
+                   **kwargs) -> "Account":
+    """Create and return a SIP account. Initializes the SDK on first call.
+
+    Common kwargs:
+      transport     — "udp" | "tcp" | "tls" | "ws" | "wss"
+      media_enc     — "none" | "sdes" | "dtls_srtp"
+      ice_enabled   — bool
+      stun_server   — "stun:host:port"
+      turn_server / turn_user / turn_pass
+      display_name, auth_user, server_url, server_host, server_port
+      rtcp_mux      — bool
+      rel100        — "disabled" | "enabled" | "required"
+      dtmf_mode     — "rfc4733" | "sip_info" | "auto"
+      audio_codecs  — list of codec name strings, e.g. ["opus", "pcmu"]
+      extra_headers — dict of SIP headers added to all requests
+    """
+    _ensure_init()
+
+    if transport is None:
+        transport = _config.get("transport", 0)
+    if isinstance(transport, str):
+        transport = _STR_TRANSPORT[transport]
+
+    if isinstance(kwargs.get("media_enc"), str):
+        kwargs["media_enc"] = _STR_MEDIA_ENC[kwargs["media_enc"]]
+    if "rtcp_mux" in kwargs:
+        kwargs["rtcp_mux_set"] = True
+    rel100_val = kwargs.pop("rel100", None)
+    if isinstance(rel100_val, str):
+        rel100_val = _STR_REL100[rel100_val]
+    dtmf_val = kwargs.pop("dtmf_mode", None)
+    if isinstance(dtmf_val, str):
+        dtmf_val = _STR_DTMF[dtmf_val]
+    if dtmf_val is not None:
+        kwargs["dtmf_mode"] = dtmf_val
+    extra_headers = kwargs.pop("extra_headers", {})
+
+    cfg = ffi.new("baresdk_account_config_t *")
+    keepalive = [cfg]
+    uri_ref  = ffi.new("char[]", uri.encode())
+    pass_ref = ffi.new("char[]", password.encode())
+    keepalive += [uri_ref, pass_ref]
+    cfg.uri           = uri_ref
+    cfg.password      = pass_ref
+    cfg.transport     = transport
+    cfg.push_provider = push_provider
+
+    if push_token is not None:
+        ref = ffi.new("char[]", push_token.encode())
+        cfg.push_token = ref; keepalive.append(ref)
+    if push_param is not None:
+        ref = ffi.new("char[]", push_param.encode())
+        cfg.push_param = ref; keepalive.append(ref)
+
+    if audio_codecs:
+        str_codecs = [c for c in audio_codecs if isinstance(c, str)]
+        int_codecs = [c for c in audio_codecs if isinstance(c, int)]
+        if str_codecs:
+            count = min(len(str_codecs), 8)
+            for i, name in enumerate(str_codecs[:count]):
+                encoded = name.encode()[:31]
+                for j, b in enumerate(encoded):
+                    cfg.audio_codec_names[i][j] = bytes([b])
+                cfg.audio_codec_names[i][len(encoded)] = b'\x00'
+            cfg.audio_codec_name_count = count
+        elif int_codecs:
+            count = min(len(int_codecs), 8)
+            for i, c in enumerate(int_codecs[:count]):
+                cfg.audio_codecs[i] = c
+            cfg.audio_codec_count = count
+
+    for key, val in kwargs.items():
+        if isinstance(val, str):
+            ref = ffi.new("char[]", val.encode())
+            keepalive.append(ref)
+            setattr(cfg, key, ref)
+        elif isinstance(val, bool):
+            setattr(cfg, key, int(val))
+        else:
+            setattr(cfg, key, val)
+
+    h = ffi.new("baresdk_account_handle_t *")
+    _check(lib.baresdk_account_create(cfg, h), "account_create")
+
+    account = Account(h[0], uri, keepalive)
+    if rel100_val is not None:
+        lib.baresdk_account_set_100rel(account._h, rel100_val)
+    for k, v in extra_headers.items():
+        account.add_header(k, v)
+
+    with _accounts_lock:
+        _accounts.append(account)
+        _accounts_by_handle[int(ffi.cast("uintptr_t", h[0]))] = account
+
+    return account
+
+
+def _normalize_target(target: str, account: "Account") -> str:
+    """Auto-prefix sip: and auto-append @domain from the account's URI."""
+    if not target.startswith("sip:"):
+        target = "sip:" + target
+    if "@" not in target:
+        acct_uri = account._uri
+        if acct_uri.startswith("sip:"):
+            acct_uri = acct_uri[4:]
+        if "@" in acct_uri:
+            domain = acct_uri.split("@", 1)[1].split(":")[0]
+            target = f"{target}@{domain}"
+    return target
+
+
+def call(target: str, account: Optional["Account"] = None) -> "Call":
+    """Place an outbound call.
+
+    target  — full SIP URI, bare extension ("120"), or phone number ("+15551234")
+    account — which account to dial from; required when multiple accounts exist
+
+        call = sdk.call("120")                    # single-account shorthand
+        call = sdk.call("+15551234", account=acc) # explicit
+    """
+    if account is None:
+        with _accounts_lock:
+            n = len(_accounts)
+            if n == 0:
+                raise RuntimeError(
+                    "baresdk.call() requires an account; none have been created")
+            if n > 1:
+                raise RuntimeError(
+                    f"baresdk.call() is ambiguous: {n} accounts registered, "
+                    "pass account=...")
+            account = _accounts[0]
+    return account.call(_normalize_target(target, account))
+
+
+def version() -> str:
+    """Return the baresdk library version string."""
+    _ensure_init()
+    return ffi.string(lib.baresdk_version()).decode()
+
+
+def strerror(err: int) -> str:
+    """Return a human-readable string for a BARESDK_ERR_* code."""
+    return ffi.string(lib.baresdk_strerror(err)).decode("utf-8", errors="replace")
+
+
+# ── Audio (module-level) ─────────────────────────────────────────────────────
+
+def list_input_devices() -> list:
+    """Return a list of dicts with keys: name, description, is_default."""
+    return _list_audio_devices(lib.baresdk_audio_list_input_devices)
+
+
+def list_output_devices() -> list:
+    """Return a list of dicts with keys: name, description, is_default."""
+    return _list_audio_devices(lib.baresdk_audio_list_output_devices)
+
+
+def set_input_device(name: str):
+    lib.baresdk_audio_set_input_device(name.encode())
+
+
+def set_output_device(name: str):
+    lib.baresdk_audio_set_output_device(name.encode())
+
+
+def set_aec(enable: bool):
+    """Enable or disable acoustic echo cancellation."""
+    lib.baresdk_set_aec(int(enable))
+
+
+def set_aec_mode(mode: int):
+    """0=off, 1=suppressor, 2=webrtc. AEC_WEBRTC requires a desktop build."""
+    _check(lib.baresdk_set_aec_mode(mode), "set_aec_mode")
+
+
+def set_aec_suppression_level(level: float):
+    """Suppressor aggressiveness: 0.0=none, 1.0=maximum (default)."""
+    lib.baresdk_set_aec_suppression_level(float(level))
+
+
+def set_ns(enable: bool):
+    """Enable or disable noise suppression."""
+    lib.baresdk_set_ns(int(enable))
+
+
+def set_agc(enable: bool):
+    """Enable or disable automatic gain control."""
+    lib.baresdk_set_agc(int(enable))
+
+
+def set_mic_gain(db: float):
+    """Microphone (TX) gain in dB. Range: -20 to +20. 0 = unity."""
+    lib.baresdk_set_mic_gain_db(float(db))
+
+
+def set_speaker_gain(db: float):
+    """Speaker (RX) gain in dB. Range: -20 to +20. 0 = unity."""
+    lib.baresdk_set_speaker_gain_db(float(db))
+
+
+def set_jitter_buffer(min_ms: int, max_ms: int):
+    lib.baresdk_set_jitter_buffer(min_ms, max_ms)
+
+
+def pcap_start(path: str):
+    """Start capturing SIP/RTP to a pcap file."""
+    _check(lib.baresdk_pcap_start(path.encode()), "pcap_start")
+
+
+def pcap_stop():
+    """Stop pcap capture and finalize the file."""
+    lib.baresdk_pcap_stop()
+
+
 # ── Call ──────────────────────────────────────────────────────────────────────
 
 class Call:
-    """Wrapper around a baresdk_call_handle_t."""
+    """Wrapper around a baresdk_call_handle_t.
+
+    Obtained from sdk.call(...), account.call(...), or ev.call in a handler.
+    """
 
     def __init__(self, handle):
-        self._h = handle
+        self._h          = handle
+        self._poll_stop  = threading.Event()
+        self._poll_thread: Optional[threading.Thread] = None
 
     def answer(self):
         _check(lib.baresdk_call_answer(self._h), "answer")
@@ -380,33 +755,51 @@ class Call:
     def set_dscp_rtp(self, dscp: int):
         _check(lib.baresdk_call_set_dscp_rtp(self._h, dscp), "set_dscp_rtp")
 
-    def stats(self) -> "CallStats":
-        """Synchronously read current stats and return a new CallStats snapshot."""
+    def stats(self) -> CallStats:
+        """Return a fresh CallStats snapshot (synchronous, one-shot)."""
         s = ffi.new("baresdk_ev_media_stats_t *")
         lib.baresdk_call_get_stats(self._h, s)
         cs = CallStats()
         cs._update(_raw_stats_to_event(s[0]))
         return cs
 
-    def fetch_stats(self, target: "CallStats") -> "CallStats":
-        """Synchronously read current stats and update *target* in-place.
-
-        Use this to trigger an immediate refresh without waiting for the next
-        stats_interval_ms tick:
-
-            stats = CallStats()
-            # ... later, whenever you want fresh data:
-            call.fetch_stats(stats)
-            print(stats.mos_lq)
-        """
+    def fetch_stats(self, target: CallStats) -> CallStats:
+        """Update *target* in-place with the current stats and return it."""
         s = ffi.new("baresdk_ev_media_stats_t *")
         lib.baresdk_call_get_stats(self._h, s)
-        ev = _raw_stats_to_event(s[0])
-        target._update(ev)
+        target._update(_raw_stats_to_event(s[0]))
         return target
 
+    def poll_stats(self, interval: float, on_update: Callable):
+        """Poll stats at a fixed rate, calling on_update(stats) each tick.
+
+        Runs in a background daemon thread; call stop_polling() to cancel,
+        or it stops automatically when is_final is set on the stats.
+
+            call.poll_stats(interval=2.0, on_update=lambda s: s.print())
+        """
+        self._poll_stop.clear()
+        stats = CallStats()
+
+        def _loop():
+            while not self._poll_stop.wait(interval):
+                self.fetch_stats(stats)
+                try:
+                    on_update(stats)
+                except Exception:
+                    _log.exception("baresdk poll_stats on_update raised")
+                if stats.is_final:
+                    break
+
+        self._poll_thread = threading.Thread(target=_loop, daemon=True)
+        self._poll_thread.start()
+
+    def stop_polling(self):
+        """Stop a poll_stats() loop started on this call."""
+        self._poll_stop.set()
+
     def record_start(self, path: str):
-        """Record mixed call audio (RX+TX) to a single WAV file."""
+        """Record mixed call audio (RX+TX) to a WAV file."""
         _check(lib.baresdk_call_record_start(self._h, path.encode()), "record_start")
 
     def record_stop(self):
@@ -418,65 +811,29 @@ class Call:
         return self._h
 
 
-def strerror(err: int) -> str:
-    """Return a human-readable string for a BARESDK_ERR_* code."""
-    return ffi.string(lib.baresdk_strerror(err)).decode("utf-8", errors="replace")
-
-
-def _check(rc, what):
-    if rc != 0:
-        raise RuntimeError(f"baresdk.{what} failed (code {rc})")
-
-
 # ── Account ───────────────────────────────────────────────────────────────────
 
 class Account:
-    """A SIP account. Receives events via the events() generator."""
+    """A SIP account. Create via sdk.create_account()."""
 
-    def __init__(self, handle):
-        self._h = handle
-        self._q: queue.SimpleQueue = queue.SimpleQueue()
-        self._stats_queues: list = []  # additional queues fed by stats_stream()
-        _register_account(handle, self)
-
-    def _put(self, obj):
-        self._q.put(obj)
-        if isinstance(obj, MediaStatsEvent) and self._stats_queues:
-            with _accounts_lock:
-                for sq in self._stats_queues:
-                    sq.put(obj)
+    def __init__(self, handle, uri: str, keepalive: list):
+        self._h         = handle
+        self._uri       = uri
+        self._keepalive = keepalive   # C cdata refs that must not be GC'd
 
     def register(self):
+        """Send a SIP REGISTER to activate this account."""
         _check(lib.baresdk_account_register(self._h), "register")
 
     def unregister(self):
+        """Send an unregistration (Expires: 0)."""
         lib.baresdk_account_unregister(self._h)
 
-    def set_retry_policy(self, initial_ms: int, max_ms: int,
-                         backoff: float, max_attempts: int = 0):
-        """Override the retry policy for this account."""
-        _check(lib.baresdk_account_set_retry_policy(
-            self._h, initial_ms, max_ms, backoff, max_attempts),
-            "set_retry_policy")
-
-    def cancel_retry(self):
-        """Cancel a pending retry timer. Account stays FAILED."""
-        lib.baresdk_account_cancel_retry(self._h)
-
-    def retry_now(self):
-        """Skip the current backoff delay and re-register immediately."""
-        lib.baresdk_account_retry_now(self._h)
-
     def call(self, uri: str) -> Call:
+        """Place an outbound call to a full SIP URI."""
         ch = ffi.new("baresdk_call_handle_t *")
         _check(lib.baresdk_call_invite(self._h, uri.encode(), ch), "call_invite")
         return Call(ch[0])
-
-    def dial(self, uri: str) -> Call:
-        """Alias for call(); auto-prefixes sip: if missing."""
-        if not uri.startswith("sip:"):
-            uri = "sip:" + uri
-        return self.call(uri)
 
     def send_message(self, to: str, body: str, content_type: str = "text/plain"):
         _check(
@@ -496,140 +853,41 @@ class Account:
                "add_header")
 
     def add_register_header(self, name: str, value: str):
-        """Add a custom SIP header sent on REGISTER requests only.
-
-        Unlike add_header(), this header is NOT included on INVITE, BYE, or
-        REFER — the push token is not leaked to call peers. Use for vendor push
-        schemes (X-Push-Token, etc.) on hosted servers.
-        """
+        """Add a header sent only on REGISTER (not on INVITE/BYE)."""
         _check(lib.baresdk_account_add_register_header(
             self._h, name.encode(), value.encode()), "add_register_header")
 
     def set_push_token(self, push_token: Optional[str]) -> int:
-        """Update the push notification token at runtime (e.g. on token rotation).
-
-        Stores the new token and triggers a fresh REGISTER unless a call is
-        active or a transaction is in flight (deferred to next natural
-        re-registration). Pass None to clear push params.
-        """
+        """Update the push notification token at runtime. Pass None to clear."""
         tok = push_token.encode() if push_token is not None else ffi.NULL
         return lib.baresdk_account_set_push_token(self._h, tok)
 
-    def events(self, timeout: Optional[float] = None) -> Iterator:
-        """
-        Blocking generator that yields event objects one at a time.
-        Stops when a sentinel None is put on the queue.
+    def set_retry_policy(self, initial_ms: int, max_ms: int,
+                         backoff: float, max_attempts: int = 0):
+        _check(lib.baresdk_account_set_retry_policy(
+            self._h, initial_ms, max_ms, backoff, max_attempts),
+            "set_retry_policy")
 
-            for ev in account.events():
-                if isinstance(ev, RegStateEvent) and ev.state == REG_REGISTERED:
-                    ...
-        """
-        while True:
-            try:
-                ev = self._q.get(timeout=timeout)
-                if ev is None:
-                    return
-                yield ev
-            except queue.Empty:
-                return
+    def cancel_retry(self):
+        lib.baresdk_account_cancel_retry(self._h)
 
-    def stats_stream(self,
-                     call: Optional["Call"] = None,
-                     interval: Optional[float] = None,
-                     trigger: Optional[queue.Queue] = None,
-                     timeout: Optional[float] = None) -> Iterator:
-        """
-        Blocking generator that yields a live CallStats object on every update.
-        The same object is updated in-place each tick — hold a reference to it
-        and read from any thread.
+    def retry_now(self):
+        lib.baresdk_account_retry_now(self._h)
 
-        Args:
-            call:     Call to poll. Required when interval or trigger is given.
-            interval: Polling interval in seconds.  When set, a background timer
-                      polls call.fetch_stats() at this rate independently of the
-                      SDK-level stats_interval_ms.  Default: follow the SDK timer.
-
-                          # update every 2 s instead of the SDK default 5 s
-                          for stats in account.stats_stream(call=c, interval=2):
-                              stats.print()
-
-            trigger:  Optional queue.Queue for on-demand refreshes.  Put anything
-                      into it from any thread to force an immediate update:
-
-                          trigger = queue.Queue()
-                          for stats in account.stats_stream(call=c, trigger=trigger):
-                              stats.print()
-
-                          trigger.put(1)   # immediate refresh from another thread
-
-            timeout:  Stop if no update arrives within this many seconds.
-
-        Stops when the account is destroyed, timeout expires, or is_final is set.
-        """
-        stats = CallStats()
-
-        # Private queue fed by: SDK timed events, interval timer, and triggers.
-        # Keeps stats_stream isolated from the main events() loop.
-        stats_q: queue.SimpleQueue = queue.SimpleQueue()
-        with _accounts_lock:
-            self._stats_queues.append(stats_q)
-
-        stop_timer = threading.Event()
-
-        def _timer_loop(interval_s: float):
-            while not stop_timer.wait(interval_s):
-                if call is not None:
-                    s = ffi.new("baresdk_ev_media_stats_t *")
-                    lib.baresdk_call_get_stats(call._h, s)
-                    stats_q.put(_raw_stats_to_event(s[0]))
-
-        timer_thread = None
-        if interval is not None and call is not None:
-            timer_thread = threading.Thread(
-                target=_timer_loop, args=(interval,), daemon=True)
-            timer_thread.start()
-
-        try:
-            while True:
-                # Check ad-hoc trigger first (non-blocking).
-                if trigger is not None and call is not None:
-                    try:
-                        trigger.get_nowait()
-                        call.fetch_stats(stats)
-                        yield stats
-                        if stats.is_final:
-                            return
-                        continue
-                    except queue.Empty:
-                        pass
-
-                # Block until the next update (interval timer or SDK event).
-                try:
-                    ev = stats_q.get(timeout=timeout)
-                except queue.Empty:
-                    return
-                if ev is None:
-                    return
-                stats._update(ev)
-                yield stats
-                if stats.is_final:
-                    return
-        finally:
-            stop_timer.set()
-            with _accounts_lock:
-                try:
-                    self._stats_queues.remove(stats_q)
-                except ValueError:
-                    pass
+    def set_100rel(self, mode: int):
+        lib.baresdk_account_set_100rel(self._h, mode)
 
     def destroy(self):
-        _unregister_account(self._h)
+        if self._h is None:
+            return
+        with _accounts_lock:
+            try:
+                _accounts.remove(self)
+            except ValueError:
+                pass
+            _accounts_by_handle.pop(int(ffi.cast("uintptr_t", self._h)), None)
         lib.baresdk_account_destroy(self._h)
         self._h = None
-        self._q.put(None)  # unblock any waiting events() caller
-        with _accounts_lock:
-            for sq in self._stats_queues:
-                sq.put(None)  # unblock any waiting stats_stream() caller
 
     def __enter__(self):
         return self
@@ -637,271 +895,30 @@ class Account:
     def __exit__(self, *_):
         self.destroy()
 
-
-def _list_audio_devices(fn) -> list:
-    buf = ffi.new("baresdk_audio_device_t[32]")
-    n = fn(buf, 32)
-    out = []
-    for i in range(max(n, 0)):
-        out.append({
-            "name":        ffi.string(buf[i].name).decode("utf-8", errors="replace"),
-            "description": ffi.string(buf[i].description).decode("utf-8", errors="replace"),
-            "is_default":  bool(buf[i].is_default),
-        })
-    return out
+    def __repr__(self):
+        return f"Account({self._uri!r})"
 
 
-# ── SDK ───────────────────────────────────────────────────────────────────────
-
-class SDK:
-    """
-    Top-level SDK object. One per process.
-
-        sdk = SDK(log_level=2, transport=TRANSPORT_TLS, server_host="pbx.example.com")
-        account = sdk.create_account("alice@pbx.example.com", "secret")
-        account.register()
-    """
-
-    def __init__(self, **kwargs):
-        # Python defaults to block-buffering when stdout is not a TTY, which
-        # causes event output (e.g. media stats) to appear only at process exit.
-        # Force line-buffering so prints flush after every newline.
-        try:
-            sys.stdout.reconfigure(line_buffering=True)
-        except AttributeError:
-            pass  # Python < 3.7 fallback — no-op
-
-        self._cfg = ffi.new("baresdk_config_t *")
-        lib.baresdk_config_init(self._cfg)
-
-        for key, val in kwargs.items():
-            if isinstance(val, str):
-                # keep reference so GC doesn't collect the cdata
-                setattr(self, f"_str_{key}", ffi.new("char[]", val.encode()))
-                setattr(self._cfg, key, getattr(self, f"_str_{key}"))
-            else:
-                setattr(self._cfg, key, val)
-
-        self._cfg.event_cb       = _global_event_cb
-        self._cfg.event_userdata = ffi.NULL
-        _check(lib.baresdk_init(self._cfg), "init")
-
-    def create_account(self, uri: str, password: str,
-                       transport: int = TRANSPORT_UDP,
-                       push_provider: int = PUSH_PROVIDER_NONE,
-                       push_token: Optional[str] = None,
-                       push_param: Optional[str] = None,
-                       audio_codecs: Optional[list] = None,
-                       **kwargs) -> Account:
-        cfg = ffi.new("baresdk_account_config_t *")
-        # keep cdata alive
-        self._acfg_uri  = ffi.new("char[]", uri.encode())
-        self._acfg_pass = ffi.new("char[]", password.encode())
-        cfg.uri           = self._acfg_uri
-        cfg.password      = self._acfg_pass
-        cfg.transport     = transport
-        cfg.push_provider = push_provider
-        if push_token is not None:
-            self._acfg_push_token = ffi.new("char[]", push_token.encode())
-            cfg.push_token = self._acfg_push_token
-        if push_param is not None:
-            self._acfg_push_param = ffi.new("char[]", push_param.encode())
-            cfg.push_param = self._acfg_push_param
-        if audio_codecs:
-            str_codecs = [c for c in audio_codecs if isinstance(c, str)]
-            int_codecs = [c for c in audio_codecs if isinstance(c, int)]
-            if str_codecs:
-                count = min(len(str_codecs), 8)
-                for i, name in enumerate(str_codecs[:count]):
-                    encoded = name.encode()[:31]
-                    for j, b in enumerate(encoded):
-                        cfg.audio_codec_names[i][j] = bytes([b])
-                    cfg.audio_codec_names[i][len(encoded)] = b'\x00'
-                cfg.audio_codec_name_count = count
-            elif int_codecs:
-                count = min(len(int_codecs), 8)
-                for i, c in enumerate(int_codecs[:count]):
-                    cfg.audio_codecs[i] = c
-                cfg.audio_codec_count = count
-        for key, val in kwargs.items():
-            if isinstance(val, str):
-                ref = ffi.new("char[]", val.encode())
-                setattr(self, f"_acfg_{key}", ref)
-                setattr(cfg, key, ref)
-            else:
-                setattr(cfg, key, val)
-
-        h = ffi.new("baresdk_account_handle_t *")
-        _check(lib.baresdk_account_create(cfg, h), "account_create")
-        account = Account(h[0])
-        account._uri = uri
-        return account
-
-    def list_input_devices(self):
-        """Return a list of dicts with keys: name, description, is_default."""
-        return _list_audio_devices(lib.baresdk_audio_list_input_devices)
-
-    def list_output_devices(self):
-        """Return a list of dicts with keys: name, description, is_default."""
-        return _list_audio_devices(lib.baresdk_audio_list_output_devices)
-
-    def set_input_device(self, name: str):
-        lib.baresdk_audio_set_input_device(name.encode())
-
-    def set_output_device(self, name: str):
-        lib.baresdk_audio_set_output_device(name.encode())
-
-    def set_aec(self, enable: bool):
-        """Enable or disable echo cancellation. Re-enables the aec_mode set at init."""
-        lib.baresdk_set_aec(int(enable))
-
-    def set_aec_mode(self, mode: int):
-        """Switch AEC backend: AEC_OFF / AEC_SUPPRESSOR / AEC_WEBRTC.
-        Only AEC_OFF ↔ init_mode transitions are valid at runtime.
-        AEC_WEBRTC requires a desktop build with BARESDK_WITH_WEBRTC_AEC=ON."""
-        _check(lib.baresdk_set_aec_mode(mode), "set_aec_mode")
-
-    def set_aec_suppression_level(self, level: float):
-        """Tune the half-duplex echo suppressor aggressiveness (SUPPRESSOR mode only).
-        0.0 = no TX suppression; 1.0 = maximum suppression (default)."""
-        lib.baresdk_set_aec_suppression_level(float(level))
-
-    def set_ns(self, enable: bool):
-        lib.baresdk_set_ns(int(enable))
-
-    def set_agc(self, enable: bool):
-        lib.baresdk_set_agc(int(enable))
-
-    def set_mic_gain(self, db: float):
-        """Set microphone (TX) gain in dB. Range: -20 to +20. 0 = unity (no processing)."""
-        lib.baresdk_set_mic_gain_db(float(db))
-
-    def set_speaker_gain(self, db: float):
-        """Set speaker (RX) gain in dB. Range: -20 to +20. 0 = unity (no processing)."""
-        lib.baresdk_set_speaker_gain_db(float(db))
-
-    def set_jitter_buffer(self, min_ms: int, max_ms: int):
-        lib.baresdk_set_jitter_buffer(min_ms, max_ms)
-
-    def pcap_start(self, path: str):
-        _check(lib.baresdk_pcap_start(path.encode()), "pcap_start")
-
-    def pcap_stop(self):
-        lib.baresdk_pcap_stop()
-
-    @property
-    def version(self) -> str:
-        return ffi.string(lib.baresdk_version()).decode()
-
-    def shutdown(self):
-        lib.baresdk_shutdown()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        self.shutdown()
-
-
-# ── Top-level convenience functions ──────────────────────────────────────────
-
-
-_STR_TRANSPORT = {"udp": TRANSPORT_UDP, "tcp": TRANSPORT_TCP,
-                  "tls": TRANSPORT_TLS, "ws": TRANSPORT_WS, "wss": TRANSPORT_WSS}
-_STR_MEDIA_ENC = {"none": MEDIA_ENC_NONE, "sdes": MEDIA_ENC_SDES,
-                  "dtls_srtp": MEDIA_ENC_DTLS_SRTP}
-_STR_REL100    = {"disabled": 0, "enabled": 1, "required": 2}
-_STR_DTMF      = {"rfc4733": DTMF_RFC4733, "sip_info": DTMF_SIP_INFO, "auto": DTMF_AUTO}
-
-
-def create_account(sdk: SDK, uri: str, password: str, **kwargs) -> Account:
-    """
-    Create a SIP account.  All kwargs pass directly to sdk.create_account():
-      transport    — int constant OR string: "udp" | "tcp" | "tls" | "ws" | "wss"
-      media_enc    — int constant OR string: "none" | "sdes" | "dtls_srtp"
-      rel100       — int (0/1/2)  OR string: "disabled" | "enabled" | "required"
-      rtcp_mux     — bool: override global rtcp_mux setting for this account
-      display_name, auth_user, server_url, server_host, server_port,
-      ice_enabled, stun_server, turn_server, turn_user, turn_pass,
-      verify_tls, audio_codecs, push_provider, push_token, push_param, …
-
-    One extra convenience key (not a C field):
-      extra_headers (dict[str, str]) — calls account.add_header() for each pair.
-    """
-    if isinstance(kwargs.get("transport"), str):
-        kwargs["transport"] = _STR_TRANSPORT[kwargs["transport"]]
-    if isinstance(kwargs.get("media_enc"), str):
-        kwargs["media_enc"] = _STR_MEDIA_ENC[kwargs["media_enc"]]
-    if "rtcp_mux" in kwargs:
-        kwargs["rtcp_mux_set"] = True
-    rel100_val = kwargs.pop("rel100", None)
-    if isinstance(rel100_val, str):
-        rel100_val = _STR_REL100[rel100_val]
-    dtmf_val = kwargs.pop("dtmf_mode", None)
-    if isinstance(dtmf_val, str):
-        dtmf_val = _STR_DTMF[dtmf_val]
-    if dtmf_val is not None:
-        kwargs["dtmf_mode"] = dtmf_val
-    extra_headers = kwargs.pop("extra_headers", {})
-    account = sdk.create_account(uri, password, **kwargs)
-    if rel100_val is not None:
-        lib.baresdk_account_set_100rel(account._h, rel100_val)
-    for k, v in extra_headers.items():
-        account.add_header(k, v)
-    return account
-
-
-def register(account: Account) -> Account:
-    """Register the account and return it (chainable)."""
-    account.register()
-    return account
-
-
-def dial(account: Account, uri: str) -> Call:
-    """Place an outbound call.
-    - Auto-prefixes sip: if missing.
-    - Auto-appends @domain from the account URI if no @ is present (e.g. "*43" → "*43@pbx.example.com").
-    """
-    if not uri.startswith("sip:"):
-        uri = "sip:" + uri
-    if "@" not in uri:
-        acct_uri = getattr(account, "_uri", "")
-        if acct_uri.startswith("sip:"):
-            acct_uri = acct_uri[4:]
-        if "@" in acct_uri:
-            domain = acct_uri.split("@", 1)[1].split(":")[0]
-            uri = f"{uri}@{domain}"
-    return account.call(uri)
-
-
-def hangup(call: Call):
-    """Hang up or reject a call."""
-    call.hangup()
-
-
-def answer(call: Call):
-    """Answer an incoming call."""
-    call.answer()
-
+# ── Public surface ────────────────────────────────────────────────────────────
 
 __all__ = [
-    "SDK", "Account", "Call", "CallStats", "strerror",
-    "create_account", "register", "dial", "hangup", "answer",
+    # Core API
+    "configure", "create_account", "call", "on", "run", "stop",
+    "version", "strerror",
+    # Audio
+    "list_input_devices", "list_output_devices",
+    "set_input_device", "set_output_device",
+    "set_aec", "set_aec_mode", "set_aec_suppression_level",
+    "set_ns", "set_agc", "set_mic_gain", "set_speaker_gain",
+    "set_jitter_buffer", "pcap_start", "pcap_stop",
+    # Classes
+    "Account", "Call", "CallStats",
+    # Event dataclasses
     "RegStateEvent", "IncomingCallEvent", "CallStateEvent", "CallDtmfEvent",
     "SdpNegotiationEvent", "SipTraceEvent", "MediaStatsEvent", "LogEvent",
     "RegistrarWarningEvent", "TransferRequestEvent", "MwiEvent",
     "MessageEvent", "PresenceStateEvent", "QualityAlertEvent",
-    "REG_UNREGISTERED", "REG_REGISTERING", "REG_REGISTERED",
-    "REG_FAILED", "REG_UNREGISTERING",
-    "CALL_CALLING", "CALL_RINGING", "CALL_ESTABLISHED", "CALL_HELD",
-    "CALL_ENDED", "CALL_CANCELLED", "CALL_FAILED",
-    "TRANSPORT_UDP", "TRANSPORT_TCP", "TRANSPORT_TLS", "TRANSPORT_WS", "TRANSPORT_WSS",
-    "MEDIA_ENC_NONE", "MEDIA_ENC_SDES", "MEDIA_ENC_DTLS_SRTP",
-    "PRESENCE_UNKNOWN", "PRESENCE_OPEN", "PRESENCE_CLOSED", "PRESENCE_BUSY",
-    "PUSH_PROVIDER_NONE", "PUSH_PROVIDER_APNS", "PUSH_PROVIDER_APNS_SANDBOX",
-    "PUSH_PROVIDER_FCM",
-    "QUALITY_MOS", "QUALITY_LOSS", "QUALITY_JITTER", "QUALITY_RTT",
-    "CODEC_OPUS", "CODEC_PCMU", "CODEC_PCMA", "CODEC_G722", "CODEC_G726_32",
-    "DTMF_RFC4733", "DTMF_SIP_INFO", "DTMF_AUTO",
-    "AEC_OFF", "AEC_SUPPRESSOR", "AEC_WEBRTC",
+    # Push provider constants (no string form in the C API)
+    "PUSH_PROVIDER_NONE", "PUSH_PROVIDER_APNS",
+    "PUSH_PROVIDER_APNS_SANDBOX", "PUSH_PROVIDER_FCM",
 ]

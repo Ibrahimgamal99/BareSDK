@@ -92,10 +92,14 @@ int bsdk_log_init(void)
 	dbg_handler_set(re_dbg_handler, NULL);
 
 	/* Some re library paths (e.g. sip/transp.c) use re_fprintf(stderr,...)
-	 * directly, bypassing dbg_handler.  Redirect stderr to /dev/null so
+	 * directly, bypassing dbg_handler.  Redirect stderr to null so
 	 * these don't leak to the terminal; all real diagnostics go through
 	 * the SDK event system. */
+#ifdef _WIN32
+	freopen("NUL", "w", stderr);
+#else
 	freopen("/dev/null", "w", stderr);
+#endif
 	return 0;
 }
 

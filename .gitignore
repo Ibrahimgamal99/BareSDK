@@ -1,8 +1,59 @@
+# Build output
 build/
 dist/
-third_party/
-tools/_smoketest
-tools/_smoketest.c
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+
+# Compiled binaries / libraries
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.exe
+*.out
+*.app
+*.ipa
+*.apk
+
+# Object files
+*.o
+*.obj
+*.lo
+*.slo
+
+# Python bindings
+bindings/python/build/
+bindings/python/dist/
+bindings/python/*.egg-info/
+bindings/python/__pycache__/
+bindings/python/*.pyc
+bindings/python/baresdk.so
+bindings/python/baresdk.pyd
+
+# C++ bindings build artifacts
+bindings/cpp/build/
+
+# Editor / IDE
+.vscode/
+.vs/
+*.suo
+*.user
+*.sdf
+*.opensdf
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code / Kilo
 .claude/
 .kilo/
-/bindings/python/baresdk.egg-info

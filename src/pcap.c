@@ -13,25 +13,64 @@
 
 #include <stdint.h>
 #include <string.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
+/* Windows implementation of gettimeofday */
+static int gettimeofday(struct timeval *tv, void *tz)
+{
+	FILETIME ft;
+	uint64_t tmpres = 0;
+
+	GetSystemTimeAsFileTime(&ft);
+
+	tmpres |= ft.dwHighDateTime;
+	tmpres <<= 32;
+	tmpres |= ft.dwLowDateTime;
+
+	/* Convert file time to unix epoch */
+	tmpres /= 10;  /* Convert to microseconds */
+	tmpres -= 11644473600000000ULL; /* Convert from 1601 to 1970 epoch */
+
+	tv->tv_sec = (long)(tmpres / 1000000UL);
+	tv->tv_usec = (long)(tmpres % 1000000UL);
+
+	return 0;
+}
+#else
 #include <sys/time.h>
 #include <arpa/inet.h>
+#endif
 #include "baresdk_internal.h"
 
-/* ── pcap format constants ───────────────────────────────────────────────── */
+/* Packing must apply ONLY to the on-wire pcap/IP/UDP/TCP structs below.
+ * Pushing pack(1) before baresdk_internal.h would change the layout of
+ * struct bsdk_ctx in this TU only, breaking access to g_bsdk fields. */
+#ifdef _WIN32
+#pragma pack(push, 1)
+#define PACKED_STRUCT struct
+#else
+#define PACKED_STRUCT struct __attribute__((packed))
+#endif
 
-#define PCAP_MAGIC       0xa1b2c3d4u
-#define PCAP_VERSION_MAJ 2
-#define PCAP_VERSION_MIN 4
-#define PCAP_LINKTYPE_RAW 101   /* Raw IPv4 */
-#define IP_PROTO_UDP     17
-#define IP_PROTO_TCP     6
-#define IP_HDR_LEN       20
-#define UDP_HDR_LEN       8
-#define TCP_HDR_LEN      20
+/* PCAP format constants */
+#define PCAP_MAGIC        0xa1b2c3d4
+#define PCAP_VERSION_MAJ  2
+#define PCAP_VERSION_MIN  4
+#define PCAP_LINKTYPE_RAW 101
 
-/* ── pcap binary structs (packed LE) ─────────────────────────────────────── */
+/* IP constants */
+#define IP_HDR_LEN     20
+#define IP_PROTO_UDP   17
+#define IP_PROTO_TCP   6
 
-typedef struct __attribute__((packed)) {
+/* Transport layer header sizes */
+#define UDP_HDR_LEN    8
+#define TCP_HDR_LEN    20
+
+typedef PACKED_STRUCT {
 	uint32_t magic;
 	uint16_t version_major;
 	uint16_t version_minor;
@@ -41,34 +80,34 @@ typedef struct __attribute__((packed)) {
 	uint32_t network;
 } pcap_global_hdr_t;
 
-typedef struct __attribute__((packed)) {
+typedef PACKED_STRUCT {
 	uint32_t ts_sec;
 	uint32_t ts_usec;
 	uint32_t incl_len;
 	uint32_t orig_len;
 } pcap_pkt_hdr_t;
 
-typedef struct __attribute__((packed)) {
-	uint8_t  ihl_ver;       /* 0x45 = IPv4, IHL=5 */
+typedef PACKED_STRUCT {
+	uint8_t  ihl_ver;
 	uint8_t  tos;
 	uint16_t total_len;
 	uint16_t id;
 	uint16_t frag_off;
 	uint8_t  ttl;
 	uint8_t  proto;
-	uint16_t checksum;      /* zero — Wireshark doesn't verify */
+	uint16_t checksum;
 	uint8_t  src[4];
 	uint8_t  dst[4];
 } ip_hdr_t;
 
-typedef struct __attribute__((packed)) {
+typedef PACKED_STRUCT {
 	uint16_t src_port;
 	uint16_t dst_port;
 	uint16_t length;
 	uint16_t checksum;
 } udp_hdr_t;
 
-typedef struct __attribute__((packed)) {
+typedef PACKED_STRUCT {
 	uint16_t src_port;
 	uint16_t dst_port;
 	uint32_t seq;
@@ -133,12 +172,19 @@ int bsdk_pcap_open(const char *path)
 
 void bsdk_pcap_close(void)
 {
+	{
+		const uint64_t *p = (const uint64_t*)&g_bsdk.pcap_lock;
+		BSDK_TRACE("[bsdk] pcap_close: addr=%p bytes=%016llx %016llx %016llx %016llx %016llx\n",
+		       (void*)p, p[0], p[1], p[2], p[3], p[4]);
+	}
 	mtx_lock(&g_bsdk.pcap_lock);
+	BSDK_TRACE("[bsdk] pcap_close: locked\n");
 	if (g_bsdk.pcap_file) {
 		fclose(g_bsdk.pcap_file);
 		g_bsdk.pcap_file = NULL;
 	}
 	mtx_unlock(&g_bsdk.pcap_lock);
+	BSDK_TRACE("[bsdk] pcap_close: done\n");
 }
 
 void bsdk_pcap_write_sip(const char *data, size_t len,
@@ -264,3 +310,7 @@ int baresdk_pcap_stop(void)
 	bsdk_pcap_close();
 	return BARESDK_OK;
 }
+
+#ifdef _WIN32
+#pragma pack(pop)
+#endif

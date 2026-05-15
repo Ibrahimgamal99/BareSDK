@@ -51,10 +51,12 @@ pip install -e "${SCRIPT_DIR}"
 echo "==> Building wheel..."
 pip install --quiet wheel
 cd "${SCRIPT_DIR}"
-rm -rf dist build
+rm -rf build
+mkdir -p dist
+rm -f dist/baresdk-*-manylinux*.whl dist/baresdk-*-linux*.whl
 
-# Default to manylinux_2_28_x86_64 for broad compatibility
-MANYLINUX_TAG="manylinux_2_28_x86_64"
+# Default to manylinux_2_34_x86_64 for broad compatibility
+MANYLINUX_TAG="manylinux_2_34_x86_64"
 
 python setup.py bdist_wheel --quiet
 

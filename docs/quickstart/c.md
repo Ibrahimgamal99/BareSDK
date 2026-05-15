@@ -2,6 +2,7 @@
 
 ## Prerequisites
 
+**Linux**
 ```bash
 # Ubuntu/Debian
 sudo apt install cmake ninja-build gcc g++ libssl-dev
@@ -9,6 +10,11 @@ sudo apt install cmake ninja-build gcc g++ libssl-dev
 # Fedora/RHEL
 sudo dnf install cmake ninja-build gcc gcc-c++ openssl-devel
 ```
+
+**Windows**
+- Visual Studio 2022 (Desktop C++ workload)
+- [vcpkg](https://vcpkg.io) — `vcpkg install openssl zlib:x64-windows-static-md`
+- CMake 3.19+ in PATH (bundled with VS or standalone)
 
 ---
 
@@ -55,10 +61,10 @@ int main(void) {
 }
 ```
 
-**Build + compile (Linux):**
+**Linux / macOS**
 ```bash
 # 1. Build SDK
-bash scripts/build-linux.sh
+bash scripts/build-linux.sh    # or build-macos.sh
 
 # 2. Compile — .so has OpenSSL/zlib/pthreads baked in; no extra -l flags needed
 gcc main.c -I dist/linux/x86_64/include \
@@ -68,7 +74,15 @@ gcc main.c -I dist/linux/x86_64/include \
 ./demo
 ```
 
-macOS / Windows / Android: run the corresponding build script — the shared lib is produced in the same step.
+**Windows (PowerShell)**
+```powershell
+# 1. Build SDK
+.\scripts\build-windows.ps1
+# Output: dist\windows\x64\baresdk.dll  +  baresdk.lib  +  bare.lib
+
+# 2. Compile — link against the import library (baresdk.lib), ship baresdk.dll alongside the exe
+cl main.c /I dist\windows\x64\include /link dist\windows\x64\baresdk.lib /out:demo.exe
+```
 
 ---
 
@@ -76,22 +90,38 @@ macOS / Windows / Android: run the corresponding build script — the shared lib
 
 ### One-command setup
 
+**Linux / macOS**
 ```bash
 bash bindings/cpp/build.sh
 ```
+Builds the SDK if needed, compiles all examples in `bindings/cpp/examples/`, and places the binary and `baresdk.so` together so no `LD_LIBRARY_PATH` is needed.
 
-Builds the SDK if needed, then compiles all examples in `bindings/cpp/examples/`. The binary and `baresdk.so` are placed together so no `LD_LIBRARY_PATH` is needed.
+**Windows (PowerShell)**
+```powershell
+cd bindings\cpp
+.\build-examples.ps1
+# Output: build\Release\quickstart.exe  (baresdk.dll copied alongside)
+```
 
 ### Manual compile
 
+**Linux / macOS**
 ```bash
 # After running bash scripts/build-linux.sh
 g++ -std=c++17 main.cpp \
     -I dist/linux/x86_64/include -I bindings/cpp \
     dist/linux/x86_64/baresdk.so \
     -o demo
-
 ./demo
+```
+
+**Windows**
+```powershell
+# After running .\scripts\build-windows.ps1
+# Use CMake (recommended) or compile directly with cl:
+cl /std:c++17 main.cpp ^
+   /I dist\windows\x64\include /I bindings\cpp ^
+   /link dist\windows\x64\baresdk.lib /out:demo.exe
 ```
 
 ### Code
@@ -123,6 +153,22 @@ int main() {
     return 0;
 }
 ```
+
+---
+
+## Debugging init issues
+
+If `baresdk_init()` hangs or crashes, set `BARESDK_DEBUG_INIT=1` to see which of the 14 init stages is the culprit:
+
+```bash
+BARESDK_DEBUG_INIT=1 ./demo                  # Linux / macOS
+```
+
+```powershell
+$env:BARESDK_DEBUG_INIT=1; .\demo.exe        # Windows
+```
+
+See [debugging guide](../guides/debugging.md) for the full set of diagnostic options.
 
 ---
 

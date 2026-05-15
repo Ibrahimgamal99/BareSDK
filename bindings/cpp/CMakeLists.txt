@@ -41,6 +41,11 @@ set_target_properties(baresdk PROPERTIES
   IMPORTED_LOCATION             "${_sdk_lib}"
   INTERFACE_INCLUDE_DIRECTORIES "${BARESDK_DIST_DIR}/include;${CMAKE_CURRENT_SOURCE_DIR}")
 
+if(WIN32)
+  set_target_properties(baresdk PROPERTIES
+    IMPORTED_IMPLIB "${BARESDK_DIST_DIR}/baresdk.lib")
+endif()
+
 # ── Examples ──────────────────────────────────────────────────────────────────
 file(GLOB EXAMPLE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.cpp")
 foreach(src ${EXAMPLE_SRCS})

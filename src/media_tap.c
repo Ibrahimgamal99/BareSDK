@@ -33,6 +33,64 @@ struct tap_dec_st {
 /* ── Forward declaration ─────────────────────────────────────────────────── */
 static struct baresdk_call *tap_find_call(const struct audio *au);
 
+/* Compute dBov level from a PCM frame in any supported format.
+ * Returns -127.0f for silence/empty/unsupported. */
+static float tap_compute_dbov(const void *sampv, size_t sampc, int fmt)
+{
+	if (!sampv || sampc == 0)
+		return -127.0f;
+
+	double sum_sq = 0.0;
+	double norm   = 1.0;
+
+	switch (fmt) {
+	case AUFMT_S16LE: {
+		const int16_t *s = sampv;
+		for (size_t i = 0; i < sampc; i++)
+			sum_sq += (double)s[i] * (double)s[i];
+		norm = 32768.0;
+		break;
+	}
+	case AUFMT_S32LE: {
+		const int32_t *s = sampv;
+		for (size_t i = 0; i < sampc; i++) {
+			double v = (double)s[i];
+			sum_sq += v * v;
+		}
+		norm = 2147483648.0;
+		break;
+	}
+	case AUFMT_FLOAT: {
+		const float *s = sampv;
+		for (size_t i = 0; i < sampc; i++) {
+			double v = (double)s[i];
+			sum_sq += v * v;
+		}
+		norm = 1.0;
+		break;
+	}
+	case AUFMT_S24_3LE: {
+		const uint8_t *p = sampv;
+		for (size_t i = 0; i < sampc; i++) {
+			int32_t v = (int32_t)p[0]
+			          | ((int32_t)p[1] << 8)
+			          | ((int32_t)(int8_t)p[2] << 16);
+			sum_sq += (double)v * (double)v;
+			p += 3;
+		}
+		norm = 8388608.0;
+		break;
+	}
+	default:
+		return -127.0f;
+	}
+
+	double rms = sqrt(sum_sq / (double)sampc);
+	if (rms <= 0.0)
+		return -127.0f;
+	return (float)(20.0 * log10(rms / norm));
+}
+
 /* ── Filter callbacks ────────────────────────────────────────────────────── */
 
 static int tap_encupd(struct aufilt_enc_st **stp, void **ctx,
@@ -44,6 +102,10 @@ static int tap_encupd(struct aufilt_enc_st **stp, void **ctx,
 	if (!st) return ENOMEM;
 	st->au = au;
 	st->lc = tap_find_call(au);
+	fprintf(stderr, "[tap_encupd] au=%p prm.fmt=%d prm.srate=%u lc=%p\n",
+	        (void *)au, prm ? prm->fmt : -1, prm ? prm->srate : 0,
+	        (void *)st->lc);
+	fflush(stderr);
 	*stp = (struct aufilt_enc_st *)st;
 	return 0;
 }
@@ -81,24 +143,33 @@ static struct baresdk_call *tap_find_call(const struct audio *au)
 static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 {
 	struct tap_enc_st *ts = (struct tap_enc_st *)st;
-	if (af->fmt != AUFMT_S16LE) return 0;
+	static int dbg = 0;
+	if (dbg < 5) {
+		fprintf(stderr, "[tap_encode] call=%d fmt=%d sampc=%zu au=%p ts->lc=%p\n",
+		        dbg, af->fmt, af->sampc, (void *)ts->au, (void *)ts->lc);
+		fflush(stderr);
+		dbg++;
+	}
 
 	if (!ts->lc)
 		ts->lc = tap_find_call(ts->au);
 	struct baresdk_call *lc = ts->lc;
-	if (!lc) return 0;
-
-	const int16_t *samples = (const int16_t *)af->sampv;
-	size_t n = af->sampc;
-	if (n > 0) {
-		double sum_sq = 0.0;
-		for (size_t i = 0; i < n; i++)
-			sum_sq += (double)samples[i] * (double)samples[i];
-		double rms = sqrt(sum_sq / (double)n);
-		float dbov = (rms > 0.0) ? (float)(20.0 * log10(rms / 32768.0)) : -127.0f;
-		uint32_t bits; memcpy(&bits, &dbov, 4);
-		re_atomic_rlx_set(&lc->tx_level_bits, bits);
+	if (!lc) {
+		static int nlc = 0;
+		if (nlc < 3) {
+			fprintf(stderr, "[tap_encode] no lc found for au=%p\n", (void *)ts->au);
+			fflush(stderr);
+			nlc++;
+		}
+		return 0;
 	}
+
+	float dbov = tap_compute_dbov(af->sampv, af->sampc, af->fmt);
+	uint32_t bits; memcpy(&bits, &dbov, 4);
+	re_atomic_rlx_set(&lc->tx_level_bits, bits);
+
+	/* Raw-PCM delivery (consumer cb + recording) requires S16LE. */
+	if (af->fmt != AUFMT_S16LE) return 0;
 
 	mtx_lock(&lc->tap_lock);
 	baresdk_media_tap_cb_t cb = lc->tap_cb;
@@ -120,25 +191,21 @@ static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 static int tap_decode(struct aufilt_dec_st *st, struct auframe *af)
 {
 	struct tap_dec_st *ts = (struct tap_dec_st *)st;
-	if (af->fmt != AUFMT_S16LE) return 0;
 
 	if (!ts->lc)
 		ts->lc = tap_find_call(ts->au);
 	struct baresdk_call *lc = ts->lc;
 	if (!lc) return 0;
 
+	float dbov = tap_compute_dbov(af->sampv, af->sampc, af->fmt);
+	uint32_t bits; memcpy(&bits, &dbov, 4);
+	re_atomic_rlx_set(&lc->rx_level_bits, bits);
+
+	/* Raw-PCM delivery (consumer cb + recording) requires S16LE. */
+	if (af->fmt != AUFMT_S16LE) return 0;
+
 	const int16_t *samples = (const int16_t *)af->sampv;
 	size_t n = af->sampc;
-
-	if (n > 0) {
-		double sum_sq = 0.0;
-		for (size_t i = 0; i < n; i++)
-			sum_sq += (double)samples[i] * (double)samples[i];
-		double rms = sqrt(sum_sq / (double)n);
-		float dbov = (rms > 0.0) ? (float)(20.0 * log10(rms / 32768.0)) : -127.0f;
-		uint32_t bits; memcpy(&bits, &dbov, 4);
-		re_atomic_rlx_set(&lc->rx_level_bits, bits);
-	}
 
 	mtx_lock(&lc->tap_lock);
 	baresdk_media_tap_cb_t cb = lc->tap_cb;

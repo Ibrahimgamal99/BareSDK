@@ -7,6 +7,9 @@ Usage:
     python quickstart.py alice@pbx.example.com secret          # legacy CLI mode (receive)
     python quickstart.py alice@pbx.example.com secret bob@...  # legacy CLI mode (dial)
 
+Debug:
+    BARESDK_DEBUG_INIT=1 python quickstart.py account.json     # verbose init/shutdown trace
+
 Minimal JSON account config (account.json):
 {
   "enabled":      true,
@@ -21,10 +24,6 @@ Minimal JSON account config (account.json):
   "verify_tls":   false,
   "audio_codec":  "opus"
 }
-
-server_url, outbound_proxy, server_host, server_port, auth_user are all
-auto-derived from uri + transport. Port defaults: udp/tcp=5060, tls=5061,
-ws=8088, wss=8089. Include a port in the uri to override: "120@host:443".
 
 Optional overrides (add when needed):
   "server_url":     "wss://pbx.example.com:443/ws"
@@ -41,27 +40,23 @@ Media stats:
 """
 
 import json
-import queue
 import sys
 import threading
 from typing import Optional
 
-from baresdk import SDK, Call, CallStats, create_account, register, dial, hangup, answer, strerror
+import baresdk as sdk
 
-# How often to refresh media stats during a call.
-# Change to any float in seconds — independent of the SDK stats_interval_ms.
 STATS_INTERVAL_S = 5.0
 
 
 def _config_from_json(path_or_str: str):
-    """Parse JSON config. Returns (uri, password, enabled, kwargs)."""
     j = json.loads(path_or_str) if path_or_str.startswith("{") else json.load(open(path_or_str))
 
     uri      = j.pop("uri", "")
     password = j.pop("password", "")
     enabled  = j.pop("enabled", True)
 
-    # audio_codec (singular) alias — use when audio_codecs is absent
+    # audio_codec (singular) alias
     if "audio_codec" in j and "audio_codecs" not in j:
         v = j.pop("audio_codec")
         if v:
@@ -69,41 +64,43 @@ def _config_from_json(path_or_str: str):
     elif "audio_codec" in j:
         j.pop("audio_codec")
 
-    # audio_codecs: normalize string → list
-    ac = j.get("audio_codecs")
-    if isinstance(ac, str):
-        j["audio_codecs"] = [ac] if ac else []
+    if isinstance(j.get("audio_codecs"), str):
+        j["audio_codecs"] = [j["audio_codecs"]] if j["audio_codecs"] else []
 
-    # drop null values — let SDK use its defaults
-    kwargs = {k: v for k, v in j.items() if v is not None}
-    return uri, password, enabled, kwargs
+    # verify_tls → global SDK setting
+    verify_tls = j.pop("verify_tls", True)
+
+    sdk_kwargs = {}
+    if not verify_tls:
+        sdk_kwargs["verify_server"] = False
+
+    account_kwargs = {k: v for k, v in j.items() if v is not None}
+    return uri, password, enabled, account_kwargs, sdk_kwargs
 
 
 def _config_from_cli(sip_uri: str, password: str):
-    """Derive minimal config from bare CLI args."""
     u    = sip_uri[4:] if sip_uri.startswith("sip:") else sip_uri
     at   = u.find("@")
     host = u[at + 1:] if at != -1 else u
     host = host[:host.find(":")] if ":" in host else host
-    return sip_uri, password, True, {
+    account_kwargs = {
         "transport":   "wss",
         "server_url":  f"wss://{host}:443/",
         "media_enc":   "dtls_srtp",
         "ice_enabled": True,
         "stun_server": "stun:stun.l.google.com:19302",
-        "verify_tls":  False,
     }
+    sdk_kwargs = {"verify_server": False}
+    return sip_uri, password, True, account_kwargs, sdk_kwargs
 
 
-def print_devices(sdk: SDK):
+def print_devices():
     for label, fn in (("Input", sdk.list_input_devices), ("Output", sdk.list_output_devices)):
         devices = fn()
         if devices:
             print(f"{label} devices ({len(devices)}):")
             for i, d in enumerate(devices):
                 print(f"  [{i}] {d['name']}{'  *default*' if d['is_default'] else ''}")
-
-
 
 
 def main():
@@ -118,7 +115,7 @@ def main():
 
     if arg1.endswith(".json") or arg1.startswith("{"):
         try:
-            uri, password, enabled, kwargs = _config_from_json(arg1)
+            uri, password, enabled, account_kwargs, sdk_kwargs = _config_from_json(arg1)
         except Exception as e:
             print(f"Failed to load config: {e}")
             return 1
@@ -128,7 +125,7 @@ def main():
         if len(sys.argv) < 3:
             print(f"usage: {sys.argv[0]} <sip-uri> <password> [<callee-uri>]")
             return 1
-        uri, password, enabled, kwargs = _config_from_cli(arg1, sys.argv[2])
+        uri, password, enabled, account_kwargs, sdk_kwargs = _config_from_cli(arg1, sys.argv[2])
         if len(sys.argv) >= 4:
             callee = sys.argv[3]
 
@@ -139,141 +136,136 @@ def main():
         print("No URI in config.")
         return 1
 
-    active_call: Optional[Call] = None
+    # Global SDK config
+    sdk.configure(log_level=0, stats_interval_ms=5000, **sdk_kwargs)
+    sdk.set_aec(True)
+    sdk.set_ns(True)
+    sdk.set_agc(True)
+
+    acc = sdk.create_account(uri, password, **account_kwargs)
+    acc.register()
+
+    active_call: Optional[sdk.Call] = None
     call_lock = threading.Lock()
 
-    def stdin_watch(char: str, action):
-        for line in sys.stdin:
-            if line.strip().lower() == char:
-                action()
-                break
+    # ── Event handlers ────────────────────────────────────────────────────────
 
-    verify_tls = kwargs.pop("verify_tls", True)
-    sdk_kwargs = {"log_level": 0, "stats_interval_ms": 5000}
-    if not verify_tls:
-        sdk_kwargs["verify_server"] = False
+    @sdk.on("registered")
+    def _(ev):
+        nonlocal active_call
+        print("Registered OK.")
+        print_devices()
+        if callee:
+            print(f"Dialling {callee} ...")
+            with call_lock:
+                active_call = sdk.call(callee)
+        else:
+            print("Waiting for incoming call...")
 
-    with SDK(**sdk_kwargs) as sdk:
-        sdk.set_aec(True)
-        sdk.set_ns(True)
-        sdk.set_agc(True)
+    @sdk.on("reg_failed")
+    def _(ev):
+        detail = ev.error_str or sdk.strerror(ev.error)
+        print(f"Registration failed: {detail}")
+        sdk.stop()
 
-        account = create_account(sdk, uri, password, **kwargs)
-        register(account)
+    @sdk.on("incoming_call")
+    def _(ev):
+        nonlocal active_call
+        print(f"\n=== Incoming call from {ev.from_uri} ===")
+        print("Press 'a' + Enter to answer, 'r' + Enter to reject")
+        with call_lock:
+            active_call = ev.call
 
-        for ev in account.events():
-            if ev.type == "reg_state":
-                if ev.state == "registered":
-                    print("Registered OK.")
-                    print_devices(sdk)
-                    if callee:
-                        print(f"Dialling {callee} ...")
-                        with call_lock:
-                            active_call = dial(account, callee)
-                    else:
-                        print("Waiting for incoming call...")
-                elif ev.state == "failed":
-                    detail = ev.error_str or strerror(ev.error)
-                    print(f"Registration failed: {detail}")
+        def _answer_or_reject():
+            for line in sys.stdin:
+                ch = line.strip().lower()
+                if ch == "a":
+                    with call_lock:
+                        if active_call:
+                            try:
+                                active_call.answer()
+                            except Exception as e:
+                                print(f"answer failed: {e}")
+                    break
+                elif ch == "r":
+                    with call_lock:
+                        if active_call:
+                            active_call.hangup()
                     break
 
-            elif ev.type == "incoming_call":
-                print(f"\n=== Incoming call from {ev.from_uri} ===")
-                print("Press 'a' + Enter to answer, 'r' + Enter to reject")
-                with call_lock:
-                    active_call = ev.call
+        threading.Thread(target=_answer_or_reject, daemon=True).start()
 
-                def _answer_or_reject():
-                    for line in sys.stdin:
-                        ch = line.strip().lower()
-                        if ch == "a":
-                            with call_lock:
-                                if active_call:
-                                    try:
-                                        answer(active_call)
-                                    except Exception as e:
-                                        print(f"answer failed: {e}")
-                            break
-                        elif ch == "r":
-                            with call_lock:
-                                if active_call:
-                                    hangup(active_call)
-                            break
+    @sdk.on("call_state")
+    def _(ev):
+        nonlocal active_call
+        msg = f"Call state: {ev.state}"
+        if ev.reason:
+            msg += f"  reason={ev.reason!r}"
+        if ev.error:
+            msg += f"  error={ev.error}"
+        print(msg)
 
-                threading.Thread(target=_answer_or_reject, daemon=True).start()
+        if ev.state == "established":
+            print(f"Call active (stats every {STATS_INTERVAL_S}s). "
+                  f"Keys: h=hangup  o=hold  r=resume  m=mute  u=unmute  t=transfer  s=stats-now")
+            with call_lock:
+                c = active_call
+            if c:
+                c.poll_stats(interval=STATS_INTERVAL_S, on_update=lambda s: s.print())
 
-            elif ev.type == "call_state":
-                msg = f"Call state: {ev.state}"
-                if ev.reason:
-                    msg += f"  reason={ev.reason!r}"
-                if ev.error:
-                    msg += f"  error={ev.error}"
-                print(msg)
+            def _interactive():
+                for line in sys.stdin:
+                    ch = line.strip().lower()
+                    with call_lock:
+                        c = active_call
+                    if not c:
+                        break
+                    if ch == "h":
+                        c.hangup(); break
+                    elif ch == "o":
+                        try: c.hold();         print("On hold.")
+                        except Exception as e: print(f"hold: {e}")
+                    elif ch == "r":
+                        try: c.resume();       print("Resumed.")
+                        except Exception as e: print(f"resume: {e}")
+                    elif ch == "m":
+                        try: c.mute(True);     print("Muted.")
+                        except Exception as e: print(f"mute: {e}")
+                    elif ch == "u":
+                        try: c.mute(False);    print("Unmuted.")
+                        except Exception as e: print(f"unmute: {e}")
+                    elif ch == "s":
+                        c.stats().print()
+                    elif ch == "t":
+                        dest = input("Transfer to URI: ").strip()
+                        if dest:
+                            try: c.transfer(dest); print("Transfer sent.")
+                            except Exception as e: print(f"transfer: {e}")
 
-                if ev.state == "established":
-                    print(f"Call active (stats every {STATS_INTERVAL_S}s). "
-                          f"Keys: h=hangup  o=hold  r=resume  m=mute  u=unmute  t=transfer  s=stats-now")
+            threading.Thread(target=_interactive, daemon=True).start()
 
-                    stats_trigger = queue.Queue()
+        if ev.state in ("ended", "failed", "cancelled"):
+            with call_lock:
+                active_call = None
+            sdk.stop()
 
-                    def _stats_printer(call=active_call):
-                        for stats in account.stats_stream(
-                                call=call,
-                                interval=STATS_INTERVAL_S,
-                                trigger=stats_trigger):
-                            stats.print()
-                            if stats.is_final:
-                                break
+    @sdk.on("transfer_request")
+    def _(ev):
+        kind = "attended" if ev.has_replaces else "blind"
+        print(f"=== Transfer request ({kind}): REFER to {ev.refer_to_uri}")
+        print("    (to follow: hang up current call and dial the refer_to_uri)")
 
-                    threading.Thread(target=_stats_printer, daemon=True).start()
+    @sdk.on("sip_trace")
+    def _(ev):
+        print(f"{'>>>' if ev.direction == 'tx' else '<<<'}\n{ev.raw_message}\n---")
 
-                    def _interactive():
-                        for line in sys.stdin:
-                            ch = line.strip().lower()
-                            with call_lock:
-                                c = active_call
-                            if not c:
-                                break
-                            if ch == "h":
-                                hangup(c); break
-                            elif ch == "o":
-                                try: c.hold();         print("On hold.")
-                                except Exception as e: print(f"hold: {e}")
-                            elif ch == "r":
-                                try: c.resume();       print("Resumed.")
-                                except Exception as e: print(f"resume: {e}")
-                            elif ch == "m":
-                                try: c.mute(True);     print("Muted.")
-                                except Exception as e: print(f"mute: {e}")
-                            elif ch == "u":
-                                try: c.mute(False);    print("Unmuted.")
-                                except Exception as e: print(f"unmute: {e}")
-                            elif ch == "s":
-                                stats_trigger.put(1)  # immediate refresh
-                            elif ch == "t":
-                                dest = input("Transfer to URI: ").strip()
-                                if dest:
-                                    try: c.transfer(dest); print("Transfer sent.")
-                                    except Exception as e: print(f"transfer: {e}")
+    @sdk.on("log")
+    def _(ev):
+        print(f"[sdk] {ev.message}")
 
-                    threading.Thread(target=_interactive, daemon=True).start()
+    # ── Run ───────────────────────────────────────────────────────────────────
 
-                if ev.state in ("ended", "failed", "cancelled"):
-                    break
-
-            elif ev.type == "transfer_request":
-                kind = "attended" if ev.has_replaces else "blind"
-                print(f"=== Transfer request ({kind}): REFER to {ev.refer_to_uri}")
-                print("    (to follow: hang up current call and dial the refer_to_uri)")
-
-            elif ev.type == "sip_trace":
-                print(f"{'>>>' if ev.direction == 'tx' else '<<<'}\n{ev.raw_message}\n---")
-
-            elif ev.type == "log":
-                print(f"[sdk] {ev.message}")
-
-        account.destroy()
-
+    sdk.run()
     print("Done.")
     return 0
 

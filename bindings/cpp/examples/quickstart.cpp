@@ -11,6 +11,10 @@
  *   ./quickstart alice@pbx.example.com secret          # legacy CLI mode (receive)
  *   ./quickstart alice@pbx.example.com secret bob@...  # legacy CLI mode (dial)
  *
+ * Debug:
+ *   BARESDK_DEBUG_INIT=1 ./quickstart account.json     # verbose init/shutdown trace
+ *   $env:BARESDK_DEBUG_INIT=1; .\quickstart.exe ...    # PowerShell equivalent
+ *
  * Minimal JSON account config (account.json):
  * {
  *   "enabled":      true,
@@ -40,6 +44,11 @@
  */
 
 #include "../baresdk.hpp"
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#endif
 #include <chrono>
 #include <condition_variable>
 #include <cmath>
@@ -526,6 +535,9 @@ static bool looks_like_json_path(const char* arg) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 int main(int argc, char* argv[])
 {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif
     if (argc < 2) {
         std::cerr
         << "Usage:\n"

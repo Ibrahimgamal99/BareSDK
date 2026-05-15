@@ -18,7 +18,6 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <strings.h>   /* strncasecmp */
 #include "baresdk_internal.h"
 
 /* ── Presence publish ────────────────────────────────────────────────────── */

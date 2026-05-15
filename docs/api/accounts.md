@@ -208,10 +208,13 @@ Accepted name aliases:
 ### Python
 
 ```python
+import baresdk as sdk
+
 account = sdk.create_account(
     "alice@pbx.example.com", "secret",
     audio_codecs=["ulaw", "alaw", "opus"],
 )
+account.register()
 ```
 
 ### Flutter

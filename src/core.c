@@ -4,7 +4,9 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #ifdef _WIN32
+#include <winsock2.h>
 #include <windows.h>
 #endif
 #include "baresdk_internal.h"
@@ -14,6 +16,17 @@
 struct bsdk_ctx g_bsdk;
 
 #define BARESDK_EV_QUEUE_MAX 4096
+
+/* Cached result of getenv("BARESDK_DEBUG_INIT"); set on first call. */
+int bsdk_trace_enabled(void)
+{
+	static int cached = -1;
+	if (cached == -1) {
+		const char *v = getenv("BARESDK_DEBUG_INIT");
+		cached = (v && *v && *v != '0') ? 1 : 0;
+	}
+	return cached;
+}
 
 /* ── Deep-copy helpers ───────────────────────────────────────────────────── */
 
@@ -209,6 +222,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 		return BARESDK_ERR_ALREADY;
 	}
 
+	BSDK_TRACE("[bsdk] step 1: deep_copy\n");
 	bsdk_cfg_deep_copy(&g_bsdk.cfg, cfg, &g_bsdk);
 
 	list_init(&g_bsdk.ev_queue);
@@ -219,16 +233,24 @@ int baresdk_init(const baresdk_config_t *cfg)
 	cnd_init(&g_bsdk.ev_cond);
 	mtx_init(&g_bsdk.acct_lock, mtx_plain);
 	mtx_init(&g_bsdk.pcap_lock, mtx_plain);
+	{
+		const uint64_t *p = (const uint64_t*)&g_bsdk.pcap_lock;
+		BSDK_TRACE("[bsdk] pcap_lock init: addr=%p bytes=%016llx %016llx %016llx %016llx %016llx\n",
+		       (void*)p, p[0], p[1], p[2], p[3], p[4]);
+	}
 	bsdk_call_global_init();
 
+	BSDK_TRACE("[bsdk] step 2: log_init\n");
 	err = bsdk_log_init();
 	if (err)
 		goto fail;
 
+	BSDK_TRACE("[bsdk] step 3: libre_init\n");
 	err = libre_init();
 	if (err)
 		goto fail;
 
+	BSDK_TRACE("[bsdk] step 4: conf_path\n");
 	/* Redirect baresip's config directory so it never finds or reads
 	 * ~/.config/baresip/{config,accounts,contacts,...} from disk.
 	 * All SDK configuration is driven exclusively through baresdk_config_t.
@@ -243,7 +265,30 @@ int baresdk_init(const baresdk_config_t *cfg)
 	}
 	conf_configure_buf((const uint8_t *)"#\n", 2);
 
+	BSDK_TRACE("[bsdk] step 5: baresip_init (cfg=%p)\n", (void*)conf_config());
+#ifdef _WIN32
+	{
+		DWORD _seh = 0;
+		PVOID _crash_addr = NULL;
+		__try { err = baresip_init(conf_config()); }
+		__except ((_crash_addr = ((EXCEPTION_POINTERS*)GetExceptionInformation())->ExceptionRecord->ExceptionAddress),
+		          EXCEPTION_EXECUTE_HANDLER) {
+			_seh = GetExceptionCode();
+			err = -1;
+		}
+		if (_seh) {
+			HMODULE _hm = GetModuleHandleA("baresdk.dll");
+			BSDK_TRACE("[bsdk] baresip_init SEH crash! code=0x%08lX at %p (RVA=0x%llX baresdk_base=%p)\n",
+			       _seh, _crash_addr,
+			       _hm ? (unsigned long long)((char*)_crash_addr - (char*)_hm) : 0,
+			       (void*)_hm);
+			goto fail;
+		}
+	}
+#else
 	err = baresip_init(conf_config());
+#endif
+	BSDK_TRACE("[bsdk] step 5 done: err=%d\n", err);
 	if (err)
 		goto fail;
 
@@ -253,6 +298,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 
 	conf_config()->call.accept = true;
 
+	BSDK_TRACE("[bsdk] step 6: dns_init\n");
 	err = bsdk_dns_init();
 	if (err)
 		goto fail;
@@ -267,6 +313,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 	                                (1u << SIP_TRANSP_WS)  |
 	                                (1u << SIP_TRANSP_WSS);
 
+	BSDK_TRACE("[bsdk] step 7: ua_init\n");
 	{
 		const char *sw = g_bsdk.cfg.user_agent ? g_bsdk.cfg.user_agent
 		                                       : "baresdk/1.0";
@@ -285,6 +332,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 		}
 	}
 
+	BSDK_TRACE("[bsdk] step 8: event_init\n");
 	err = bsdk_event_init();
 	if (err)
 		goto fail;
@@ -295,9 +343,11 @@ int baresdk_init(const baresdk_config_t *cfg)
 			goto fail;
 	}
 
+	BSDK_TRACE("[bsdk] step 9: modules_init\n");
 	err = modules_init();
 	if (err)
 		goto fail;
+	BSDK_TRACE("[bsdk] step 9 done\n");
 
 	{
 		const baresdk_opus_config_t *op = &g_bsdk.cfg.opus;
@@ -325,6 +375,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 		c->avt.audio.jbtype = JBUF_FIXED;
 	}
 
+	BSDK_TRACE("[bsdk] step 10: audio_processing_init\n");
 	bsdk_audio_processing_init(g_bsdk.cfg.ns, g_bsdk.cfg.agc,
 	                           g_bsdk.cfg.aec_mode,
 	                           g_bsdk.cfg.aec_suppression_level,
@@ -332,10 +383,12 @@ int baresdk_init(const baresdk_config_t *cfg)
 	                           g_bsdk.cfg.speaker_gain_db);
 	bsdk_tap_global_init();
 
+	BSDK_TRACE("[bsdk] step 11: message_init\n");
 	err = bsdk_message_init();
 	if (err)
 		goto fail;
 
+	BSDK_TRACE("[bsdk] step 12: presence_init\n");
 	err = bsdk_presence_init();
 	if (err)
 		goto fail;
@@ -352,15 +405,18 @@ int baresdk_init(const baresdk_config_t *cfg)
 			goto fail;
 	}
 
+	BSDK_TRACE("[bsdk] step 13: re_loop_start\n");
 	err = bsdk_re_loop_start();
 	if (err)
 		goto fail;
 
+	BSDK_TRACE("[bsdk] step 14: done\n");
 	g_bsdk.initialized = true;
 	mtx_unlock(&g_bsdk.lock);
 	return BARESDK_OK;
 
 fail:
+	BSDK_TRACE("[bsdk] fail: cleanup start\n");
 	warning("baresdk: init failed: %m\n", err);
 	bsdk_re_loop_stop();
 	bsdk_stats_close();
@@ -369,7 +425,12 @@ fail:
 	ua_close();
 	bsdk_call_global_reset();
 	bsdk_dns_close();
+#ifdef _WIN32
+	{ __try { baresip_close(); } __except(EXCEPTION_EXECUTE_HANDLER) {
+		BSDK_TRACE("[bsdk] baresip_close crash: 0x%08lX\n", GetExceptionCode()); } }
+#else
 	baresip_close();
+#endif
 	libre_close();
 	bsdk_log_close();
 	bsdk_pcap_close();
@@ -399,14 +460,17 @@ void baresdk_shutdown(void)
 		return;
 	}
 
+	BSDK_TRACE("[bsdk] shutdown: event_close\n");
 	bsdk_event_close();
 
+	BSDK_TRACE("[bsdk] shutdown: stats/trace/msg/presence/audio\n");
 	bsdk_stats_close();
 	bsdk_trace_close();
 	bsdk_message_close();
 	bsdk_presence_close();
 	bsdk_audio_processing_close();
 
+	BSDK_TRACE("[bsdk] shutdown: account loop\n");
 	/* Hang up all active calls and free UAs on the re thread BEFORE stopping
 	 * the event loop.  ua_hangup() triggers audio stream teardown; audio
 	 * drivers interact with their own mainloops and must be called from the
@@ -423,20 +487,31 @@ void baresdk_shutdown(void)
 		mem_deref(acct);
 	}
 
+	BSDK_TRACE("[bsdk] shutdown: re_loop_stop\n");
 	bsdk_re_loop_stop();
 
+	BSDK_TRACE("[bsdk] shutdown: ua_close\n");
 	ua_close();
+	BSDK_TRACE("[bsdk] shutdown: module_app_unload\n");
 	module_app_unload();
+	BSDK_TRACE("[bsdk] shutdown: dns_close\n");
 	bsdk_dns_close();
+	BSDK_TRACE("[bsdk] shutdown: baresip_close\n");
 	baresip_close();
-	libre_close();
-	bsdk_log_close();
-	bsdk_pcap_close();
+	BSDK_TRACE("[bsdk] shutdown: cfg_deep_free\n");
 	bsdk_cfg_deep_free(&g_bsdk);
+	BSDK_TRACE("[bsdk] shutdown: pcap_close\n");
+	bsdk_pcap_close();
+	BSDK_TRACE("[bsdk] shutdown: libre_close\n");
+	libre_close();
+	BSDK_TRACE("[bsdk] shutdown: log_close\n");
+	bsdk_log_close();
 
+	BSDK_TRACE("[bsdk] shutdown: call/tap reset\n");
 	bsdk_call_global_reset();
 	bsdk_tap_global_reset();
 
+	BSDK_TRACE("[bsdk] shutdown: done\n");
 	g_bsdk.initialized = false;
 	mtx_unlock(&g_bsdk.lock);
 }

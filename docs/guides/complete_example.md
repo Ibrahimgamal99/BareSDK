@@ -16,7 +16,7 @@ then jump to whichever operation you need.
 | Full SDK config (transport, TLS, ICE…) | ✓ | ✓ | ✓ | partial¹ |
 | Full account config (STUN, TURN, media enc…) | ✓ | ✓ | ✓ | partial¹ |
 | Codec selection (string names) | ✓ | ✓ | ✓ | ✓ |
-| Events | callback | `on_event` lambda | `account.events()` generator | `account.events` Stream |
+| Events | callback | `on_event` lambda | `@sdk.on()` decorators | `account.events` Stream |
 | Outgoing call | ✓ | ✓ | ✓ | ✓ |
 | Incoming call | ✓ | ✓ | ✓ | ✓ |
 | Hold / resume | ✓ | ✓ | ✓ | ✓ |
@@ -138,24 +138,23 @@ sdk.on_event([](const baresdk_event_t& ev) {
 
 **Python**
 ```python
-from baresdk import SDK
+import baresdk as sdk
 
-from baresdk import SDK, AEC_SUPPRESSOR
-
-sdk = SDK(
-    log_level        = 1,
-    stats_interval_ms= 5000,
-    verify_server    = True,
-    aec_mode         = AEC_SUPPRESSOR,  # or AEC_WEBRTC for full-duplex (desktop opt-in)
-    aec_suppression_level = 1.0,        # 0=off .. 1=max
-    mic_gain_db      = 0.0,             # 0=unity; +6 boosts a quiet USB mic
-    speaker_gain_db  = 0.0,
-    ns               = True,
-    agc              = True,
-    jitter_buffer_min_ms = 20,
-    jitter_buffer_max_ms = 300,
+# sdk.configure() accepts every field from baresdk_config_t as a keyword argument.
+# Must be called before the first sdk.create_account().
+sdk.configure(
+    log_level             = 1,
+    stats_interval_ms     = 5000,
+    verify_server         = True,
+    aec_mode              = 1,    # 1=SUPPRESSOR (default); 2=WEBRTC (desktop opt-in build)
+    aec_suppression_level = 1.0,  # 0=off .. 1=max
+    mic_gain_db           = 0.0,  # 0=unity; +6 boosts a quiet USB mic
+    speaker_gain_db       = 0.0,
+    ns                    = True,
+    agc                   = True,
+    jitter_buffer_min_ms  = 20,
+    jitter_buffer_max_ms  = 300,
 )
-# SDK() accepts every field from baresdk_config_t as a keyword argument.
 ```
 
 **Flutter**
@@ -267,10 +266,8 @@ acct.register_account();
 
 **Python**
 ```python
-from baresdk import create_account, register
-
 # transport and media_enc accept strings — no constants needed.
-account = create_account(sdk,
+account = sdk.create_account(
     "alice@pbx.example.com", "secret",
     transport    = "tls",
     display_name = "Alice",
@@ -280,11 +277,10 @@ account = create_account(sdk,
     turn_server  = "turn:turn.example.com:3478",
     turn_user    = "alice",
     turn_pass    = "turn_secret",
-    verify_tls   = True,
     audio_codecs = ["ulaw", "alaw", "opus"],
     extra_headers = {"X-Tenant-Id": "42"},
 )
-register(account)
+account.register()
 ```
 
 **Flutter**
@@ -422,53 +418,67 @@ sdk.on_event([&](const baresdk_event_t& ev) {
 
 **Python**
 ```python
-# No constants needed — events have a .type string and string states.
+# No constants needed — events use string names and string state values.
+import baresdk as sdk
+
 active_call = None
 
-for ev in account.events():
+@sdk.on("registered")
+def _(ev):
+    print("Registered")
 
-    if ev.type == "reg_state":
-        if ev.state == "registered":
-            print("Registered")
-        elif ev.state == "failed":
-            print(f"Reg failed: {ev.error_str}  retry in {ev.retry_delay_ms} ms")
+@sdk.on("reg_failed")
+def _(ev):
+    print(f"Reg failed: {ev.error_str}  retry in {ev.retry_delay_ms} ms")
 
-    elif ev.type == "incoming_call":
-        print(f"Incoming from {ev.from_uri}")
-        active_call = ev.call
-        active_call.answer()
+@sdk.on("incoming_call")
+def _(ev):
+    global active_call
+    print(f"Incoming from {ev.from_uri}")
+    active_call = ev.call
+    active_call.answer()
 
-    elif ev.type == "call_state":
-        print(f"Call state: {ev.state}  reason: {ev.reason}")
-        if ev.state in ("ended", "failed", "cancelled"):
-            active_call = None
-            break
+@sdk.on("call_state")
+def _(ev):
+    global active_call
+    print(f"Call state: {ev.state}  reason: {ev.reason}")
+    if ev.state in ("ended", "failed", "cancelled"):
+        active_call = None
+        sdk.stop()
 
-    elif ev.type == "dtmf":
-        print(f"DTMF: {ev.digit}")
+@sdk.on("dtmf")
+def _(ev):
+    print(f"DTMF: {ev.digit}")
 
-    elif ev.type == "sdp_negotiation":
-        print(f"Codec: {ev.negotiated_codec}  Crypto: {ev.negotiated_crypto}")
+@sdk.on("sdp_negotiation")
+def _(ev):
+    print(f"Codec: {ev.negotiated_codec}  Crypto: {ev.negotiated_crypto}")
 
-    elif ev.type == "media_stats":
-        print(f"MOS-LQ {ev.mos_lq:.2f}  RTT {ev.rtt_ms:.0f} ms  "
-              f"loss TX {ev.loss_pct:.1f}%  RX {ev.loss_pct_rx:.1f}%")
+@sdk.on("media_stats")
+def _(ev):
+    print(f"MOS-LQ {ev.mos_lq:.2f}  RTT {ev.rtt_ms:.0f} ms  "
+          f"loss TX {ev.loss_pct:.1f}%  RX {ev.loss_pct_rx:.1f}%")
 
-    elif ev.type == "transfer_request":
-        print(f"Transfer to {ev.refer_to_uri}  attended={ev.has_replaces}")
+@sdk.on("transfer_request")
+def _(ev):
+    print(f"Transfer to {ev.refer_to_uri}  attended={ev.has_replaces}")
 
-    elif ev.type == "message":
-        print(f"MESSAGE from {ev.from_uri}: {ev.body}")
+@sdk.on("message")
+def _(ev):
+    print(f"MESSAGE from {ev.from_uri}: {ev.body}")
 
-    elif ev.type == "mwi":
-        print(f"Voicemail: {ev.new_voice} new, {ev.old_voice} old")
+@sdk.on("mwi")
+def _(ev):
+    print(f"Voicemail: {ev.new_voice} new, {ev.old_voice} old")
 
-    elif ev.type == "presence_state":
-        print(f"Presence {ev.target_uri} → {ev.status}")
+@sdk.on("presence_state")
+def _(ev):
+    print(f"Presence {ev.target_uri} → {ev.status}")
 
-    elif ev.type == "sip_trace":
-        arrow = ">>>" if ev.direction == "tx" else "<<<"
-        print(f"{arrow}\n{ev.raw_message}\n---")
+@sdk.on("sip_trace")
+def _(ev):
+    arrow = ">>>" if ev.direction == "tx" else "<<<"
+    print(f"{arrow}\n{ev.raw_message}\n---")
 ```
 
 **Flutter**
@@ -533,9 +543,11 @@ auto call = acct.call("sip:bob@pbx.example.com");
 
 **Python**
 ```python
-from baresdk import dial
-
-call = dial(account, "bob@pbx.example.com")   # sip: prefix added automatically
+call = sdk.call("bob@pbx.example.com")   # sip: prefix and @domain added automatically
+# or with explicit account when multiple accounts exist:
+call = sdk.call("bob@pbx.example.com", account=account)
+# or via the account directly:
+call = account.call("sip:bob@pbx.example.com")
 ```
 
 **Flutter**
@@ -777,7 +789,7 @@ for d in sdk.list_output_devices():
     print(f"out {d['name']}{'  *' if d['is_default'] else ''}")
 
 sdk.set_input_device("HDA Intel PCH: ALC3204 Analog (hw:0,0)")
-sdk.set_output_device(None)   # None = platform default (not yet supported — pass "" instead)
+sdk.set_output_device("")   # empty string = platform default
 ```
 
 **Flutter**
@@ -820,14 +832,29 @@ auto s = call.stats();   /* returns baresdk_ev_media_stats_t by value */
 std::cout << "MOS-LQ " << s.mos_lq << "  RTT " << s.rtt_ms << " ms\n";
 ```
 
-**Python — from MediaStatsEvent**
+**Python — event-driven (automatic)**
 ```python
-elif isinstance(ev, MediaStatsEvent):
+@sdk.on("media_stats")
+def _(ev):
     print(f"MOS-LQ {ev.mos_lq:.2f}  MOS-CQ {ev.mos_cq:.2f}")
     print(f"RTT {ev.rtt_ms:.0f} ms  jitter {ev.jitter_ms:.1f} ms")
     print(f"loss TX {ev.loss_pct:.1f}%  RX {ev.loss_pct_rx:.1f}%")
     print(f"bw TX {ev.bandwidth_kbps_tx} kbps  RX {ev.bandwidth_kbps_rx} kbps")
     print(f"codec {ev.codec_name}  {ev.codec_clock_rate // 1000} kHz  PT {ev.payload_type}")
+```
+
+**Python — custom polling rate**
+```python
+@sdk.on("established")
+def _(ev):
+    # Poll every 2 s regardless of stats_interval_ms
+    ev.call.poll_stats(interval=2.0, on_update=lambda s: s.print())
+```
+
+**Python — one-shot snapshot**
+```python
+snap = call.stats()               # new CallStats object
+call.fetch_stats(existing_stats)  # update existing CallStats in-place
 ```
 
 **Flutter — from MediaStatsEvent**
@@ -886,6 +913,7 @@ sdk.pcap_stop();
 
 ```python
 sdk.pcap_start("/tmp/call.pcap")
+# ... calls happen here ...
 sdk.pcap_stop()
 ```
 
@@ -994,13 +1022,12 @@ sdk.set_aec_suppression_level(0.6f);
 
 **Python**
 ```python
-from baresdk import AEC_OFF, AEC_SUPPRESSOR, AEC_WEBRTC
-
 sdk.set_aec(True)                     # enable
 sdk.set_aec(False)                    # disable
-sdk.set_aec_mode(AEC_OFF)             # explicit off
-sdk.set_aec_mode(AEC_SUPPRESSOR)      # restore suppressor
-sdk.set_aec_suppression_level(0.6)    # tune aggressiveness
+sdk.set_aec_mode(0)                   # 0=off
+sdk.set_aec_mode(1)                   # 1=suppressor (restore default)
+sdk.set_aec_mode(2)                   # 2=webrtc (desktop only, opt-in build)
+sdk.set_aec_suppression_level(0.6)    # tune aggressiveness (suppressor only)
 ```
 
 **AEC mode comparison**
@@ -1134,7 +1161,8 @@ case BARESDK_EV_REG_STATE:
 
 **Python**
 ```python
-elif ev.type == "reg_state" and ev.state == "failed":
+@sdk.on("reg_failed")
+def _(ev):
     if ev.retry_attempt > 0:
         print(f"retry {ev.retry_attempt} in {ev.retry_delay_ms} ms")
 ```
@@ -1172,9 +1200,9 @@ acct.unregister();
 ```python
 call.hangup()
 account.unregister()
-account.destroy()   # blocks until complete
-sdk.shutdown()
-# Or use SDK as a context manager: `with SDK(...) as sdk:`
+# Teardown is automatic when sdk.run() exits (Ctrl-C or sdk.stop()).
+# To tear down manually without run():
+account.destroy()
 ```
 
 **Flutter**

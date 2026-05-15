@@ -93,17 +93,28 @@ int modules_init(void)
 #endif
 
 	/* Wire the platform audio module name into baresip config so audio_alloc
-	 * can find the right module when opening devices. We use PLATFORM_AUDIO[0]
-	 * directly rather than walking the registered list, which could return an
-	 * earlier-registered module (e.g. aubridge) instead of the platform one. */
+	 * picks the real device module.  Must overwrite unconditionally:
+	 * aubridge loads earlier (DESKTOP_EXTRA) and ausrc_register/auplay_register
+	 * set cfg->audio.{src,play}_mod to the first ausrc/auplay registered.
+	 * If we only filled when empty, the platform module would never win. */
 	if (PLATFORM_AUDIO[0]) {
 		struct config *cfg = conf_config();
-		if (cfg->audio.src_mod[0] == '\0')
-			str_ncpy(cfg->audio.src_mod, PLATFORM_AUDIO[0],
-			         sizeof(cfg->audio.src_mod));
-		if (cfg->audio.play_mod[0] == '\0')
-			str_ncpy(cfg->audio.play_mod, PLATFORM_AUDIO[0],
-			         sizeof(cfg->audio.play_mod));
+		str_ncpy(cfg->audio.src_mod, PLATFORM_AUDIO[0],
+		         sizeof(cfg->audio.src_mod));
+		str_ncpy(cfg->audio.play_mod, PLATFORM_AUDIO[0],
+		         sizeof(cfg->audio.play_mod));
+#if defined(BARESDK_AUDIO_WASAPI)
+		/* wasapi src/play accept either a real endpoint ID or the literal
+		 * string "default" — an empty device name makes IMMDeviceEnumerator_
+		 * GetDevice("") fail with E_INVALIDARG and the audio thread bails
+		 * out before producing any frames. */
+		if (cfg->audio.src_dev[0] == '\0')
+			str_ncpy(cfg->audio.src_dev, "default",
+			         sizeof(cfg->audio.src_dev));
+		if (cfg->audio.play_dev[0] == '\0')
+			str_ncpy(cfg->audio.play_dev, "default",
+			         sizeof(cfg->audio.play_dev));
+#endif
 	}
 
 	return 0;

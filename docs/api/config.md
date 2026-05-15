@@ -144,7 +144,7 @@ server_url = "wss://pbx.example.com:8089/ws"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `stats_interval_ms` | `uint32_t` | 0 | 0=disabled; fires `BARESDK_EV_MEDIA_STATS`. Python: `stats_stream(interval=)` overrides this per-stream. |
+| `stats_interval_ms` | `uint32_t` | 0 | 0=disabled; fires `BARESDK_EV_MEDIA_STATS`. Python: `call.poll_stats(interval=)` overrides this per-call. |
 | `mos_method` | `baresdk_mos_method_t` | `EMODEL` | `EMODEL` or `SIMPLIFIED` |
 | `trace_sip` | `bool` | false | Emit `BARESDK_EV_SIP_TRACE` per message |
 | `trace_sdp_diff` | `bool` | false | Emit `BARESDK_EV_SDP_NEGOTIATION` |

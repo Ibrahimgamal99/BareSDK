@@ -147,9 +147,9 @@ static void invite_fn(void *arg)
 	lc->bc    = bc;
 	lc->acct  = ctx->acct;
 	lc->state = BARESDK_CALL_CALLING;
-	uint32_t _nan_bits; float _nan = NAN; memcpy(&_nan_bits, &_nan, 4);
-	re_atomic_rlx_set(&lc->rx_level_bits, _nan_bits);
-	re_atomic_rlx_set(&lc->tx_level_bits, _nan_bits);
+	uint32_t _sil_bits; float _sil = -127.0f; memcpy(&_sil_bits, &_sil, 4);
+	re_atomic_rlx_set(&lc->rx_level_bits, _sil_bits);
+	re_atomic_rlx_set(&lc->tx_level_bits, _sil_bits);
 
 	struct le *le;
 	LIST_FOREACH(&ctx->acct->custom_hdrs, le) {

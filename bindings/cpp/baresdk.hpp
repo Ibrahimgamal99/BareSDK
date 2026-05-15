@@ -1168,6 +1168,16 @@ public:
     Account(Account&& o) noexcept
         : h_(o.h_), global_cb_(o.global_cb_) { o.h_ = nullptr; }
 
+    Account& operator=(Account&& o) noexcept {
+        if (this != &o) {
+            if (h_) baresdk_account_destroy(h_);
+            h_         = o.h_;
+            global_cb_ = o.global_cb_;
+            o.h_       = nullptr;
+        }
+        return *this;
+    }
+
     void register_account() {
         detail::check(baresdk_account_register(h_), "register_account");
     }

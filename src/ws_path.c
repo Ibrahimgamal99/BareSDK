@@ -2,16 +2,23 @@
  * @file ws_path.c  WebSocket path workaround and header injection
  *
  * libre's transp.c hardcodes the WebSocket request path as "/" with no public
- * API to change it.  We intercept websock_connect() at link time via
- * -Wl,--wrap=websock_connect and substitute the configured path before the
- * HTTP upgrade request is sent.
+ * API to change it.  We intercept websock_connect() and substitute the
+ * configured path before the HTTP upgrade request is sent.
  *
  * Additionally, we inject the configured Origin header and any extra
  * WebSocket headers (ws_origin / ws_extra_headers from baresdk_config_t),
  * and override the keepalive interval (ws_keepalive_ms).
  *
- * The shared library CMakeLists.txt adds -Wl,--wrap=websock_connect to the
- * baresdk.so link command.  The static archive is unaffected (no link step).
+ * Linux/macOS: the shared-library link adds -Wl,--wrap=websock_connect, which
+ *   rewrites callers to __wrap_websock_connect (defined here) and exposes the
+ *   original as __real_websock_connect.
+ *
+ * Windows/MSVC has no --wrap.  Equivalent shape achieved via build-system
+ *   surgery: cmake/fix-msvc-re.cmake renames the function *definition* in
+ *   libre's websock.c from websock_connect to __real_websock_connect.  Call
+ *   sites (transp.c) still reference websock_connect; the linker resolves
+ *   them to our wrapper below, which is named `websock_connect` on Windows.
+ *   No special linker flag required at any link step.
  */
 
 #include <string.h>
@@ -21,7 +28,12 @@
  * Empty means no substitution — libre's trailing "/" is passed through as-is. */
 char g_bsdk_ws_path[256] = "";
 
-/* Declarations supplied by the linker --wrap machinery. */
+#ifdef _WIN32
+#  define BSDK_WS_WRAP_NAME websock_connect
+#else
+#  define BSDK_WS_WRAP_NAME __wrap_websock_connect
+#endif
+
 int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
                             struct http_cli *cli, const char *uri,
                             unsigned kaint,
@@ -29,12 +41,12 @@ int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
                             websock_close_h *closeh, void *arg,
                             const char *fmt, ...);
 
-int __wrap_websock_connect(struct websock_conn **connp, struct websock *sock,
-                            struct http_cli *cli, const char *uri,
-                            unsigned kaint,
-                            websock_estab_h *estabh, websock_recv_h *recvh,
-                            websock_close_h *closeh, void *arg,
-                            const char *fmt, ...)
+int BSDK_WS_WRAP_NAME(struct websock_conn **connp, struct websock *sock,
+                       struct http_cli *cli, const char *uri,
+                       unsigned kaint,
+                       websock_estab_h *estabh, websock_recv_h *recvh,
+                       websock_close_h *closeh, void *arg,
+                       const char *fmt, ...)
 {
 	char patched[512];
 	const char *use_uri = uri;

@@ -36,6 +36,9 @@ if(BARESDK_SRC_MODE)
   endif()
 
   file(GLOB CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
+  if(WIN32)
+    list(FILTER CORE_SRCS EXCLUDE REGEX ".*glibc_symver\\.c$")
+  endif()
 
   add_library(baresdk_core STATIC ${CORE_SRCS} ${PLAT_SRCS})
 
@@ -202,17 +205,26 @@ if(MSVC)
   set(_RE_LIB   "re-static.lib")
   set(_BARE_LIB "libbaresip.lib")
   set(_CORE_LIB "baresdk_core.lib")
+  # Embed TrackFileAccess=false in every generated .vcxproj for sub-projects.
+  # This prevents CL.exe's PostExecuteTool from writing .tlog files, which
+  # fails with "user-mapped section open" when another process has them mapped.
+  set(_NOTRACK_ARG "-DCMAKE_VS_GLOBALS=TrackFileAccess=false")
 else()
   set(_LPFX "lib")
   set(_EXT  ".a")
   set(_RE_LIB   "libre.a")
   set(_BARE_LIB "libbaresip.a")
   set(_CORE_LIB "baresdk_core.a")
+  set(_NOTRACK_ARG "")
 endif()
 
 set(_RE_A   "${SYSROOT}/lib/${_RE_LIB}")
 set(_BARE_A "${SYSROOT}/lib/${_BARE_LIB}")
-set(_CORE_A "${CMAKE_BINARY_DIR}/baresdk-core-build/${_CORE_LIB}")
+if(MSVC)
+  set(_CORE_A "${CMAKE_BINARY_DIR}/baresdk-core-build/$<CONFIG>/${_CORE_LIB}")
+else()
+  set(_CORE_A "${CMAKE_BINARY_DIR}/baresdk-core-build/${_CORE_LIB}")
+endif()
 
 # ---------------------------------------------------------------------------
 # Phase 1 (mobile only): build mbedTLS
@@ -244,6 +256,7 @@ if(BARESDK_TLS STREQUAL "mbedtls")
       -DENABLE_PROGRAMS=OFF
       -DUSE_SHARED_MBEDTLS_LIBRARY=OFF
       -DUSE_STATIC_MBEDTLS_LIBRARY=ON
+      ${_NOTRACK_ARG}
       ${CROSS_ARGS}
     BUILD_BYPRODUCTS "${_MBEDTLS_A}" "${_MBEDX509_A}" "${_MBEDCRYPTO_A}"
   )
@@ -298,6 +311,7 @@ if("opus" IN_LIST BARESDK_MODULES)
       -DOPUS_BUILD_SHARED_LIBRARY=OFF
       -DOPUS_BUILD_TESTING=OFF
       -DOPUS_INSTALL_PKG_CONFIG_MODULE=OFF
+      ${_NOTRACK_ARG}
       ${CROSS_ARGS}
     BUILD_BYPRODUCTS "${_OPUS_A}"
   )
@@ -333,9 +347,36 @@ ExternalProject_Add(re_project
     -DHAVE_THREADS=OFF
     ${RE_PLATFORM_ARGS}
     ${MBEDTLS_ARGS}
+    ${_NOTRACK_ARG}
     ${CROSS_ARGS}
   BUILD_BYPRODUCTS "${_RE_A}"
 )
+
+# Patch libre headers for MSVC compatibility on Windows
+if(WIN32)
+  ExternalProject_Add_Step(re_project patch_headers
+    COMMAND ${CMAKE_COMMAND}
+      -DSYSROOT=${SYSROOT}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix-msvc-headers.cmake
+    DEPENDEES install
+    COMMENT "Patching libre headers for MSVC compatibility"
+  )
+  # GNU ld supports --wrap=websock_connect to intercept the call from
+  # transp.c (see src/ws_path.c). MSVC's linker has no equivalent, so on
+  # Windows we rename the function *definition* in websock.c to
+  # __real_websock_connect at configure time.  Call sites (transp.c) still
+  # reference websock_connect, which the linker resolves to our wrapper
+  # in ws_path.c.  Same call shape as the Linux --wrap path, no special
+  # linker flag required at any link step.
+  ExternalProject_Add_Step(re_project patch_ws_def
+    COMMAND ${CMAKE_COMMAND}
+      -DSOURCE_DIR=${BARESDK_RE_SOURCE_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix-msvc-re.cmake
+    DEPENDEES update
+    DEPENDERS configure
+    COMMENT "Patching libre websock.c definition for MSVC wrap"
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # Phase 3: build libbaresip (STATIC=ON links all modules in)
@@ -364,10 +405,22 @@ ExternalProject_Add(baresip_project
     -DHAVE_THREADS=OFF
     ${MBEDTLS_ARGS}
     ${OPUS_ARGS}
+    ${_NOTRACK_ARG}
     ${CROSS_ARGS}
   BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target baresip
   BUILD_BYPRODUCTS "${_BARE_A}"
 )
+
+if(WIN32)
+  ExternalProject_Add_Step(baresip_project patch_sources
+    COMMAND ${CMAKE_COMMAND}
+      -DSOURCE_DIR=${BARESDK_BARESIP_SOURCE_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix-msvc-baresip.cmake
+    DEPENDEES update
+    DEPENDERS configure
+    COMMENT "Patching baresip sources for MSVC compatibility"
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # Phase 3.5: compile baresdk source layer against installed headers
@@ -383,6 +436,7 @@ ExternalProject_Add(baresdk_core_project
     -DBARESDK_MODULES_PROFILE=${BARESDK_MODULES_PROFILE}
     -DBARESDK_WITH_WEBRTC_AEC=${BARESDK_WITH_WEBRTC_AEC}
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+    ${_NOTRACK_ARG}
     ${CROSS_ARGS}
   BUILD_BYPRODUCTS "${_CORE_A}"
   INSTALL_COMMAND ""
@@ -430,14 +484,15 @@ if(BARESDK_SHARED)
     set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk.dll")
     find_library(_SSL_LIB    NAMES libssl    ssl    PATH_SUFFIXES lib)
     find_library(_CRYPTO_LIB NAMES libcrypto crypto PATH_SUFFIXES lib)
-    find_library(_ZLIB_LIB   NAMES zlib      z      PATH_SUFFIXES lib)
+    find_library(_ZLIB_LIB   NAMES zlib      z      zs     PATH_SUFFIXES lib)
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
       COMMAND link.exe /DLL /NOLOGO "/OUT:${_SHARED_OUT}"
               "/WHOLEARCHIVE:${_OUT}"
               "${_SSL_LIB}" "${_CRYPTO_LIB}" "${_ZLIB_LIB}"
               ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib
-              ole32.lib oleaut32.lib avrt.lib
+              ole32.lib oleaut32.lib avrt.lib advapi32.lib user32.lib
+              shell32.lib qwave.lib
       DEPENDS baresdk "${_OUT}"
       COMMENT "Linking baresdk.dll"
       VERBATIM

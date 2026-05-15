@@ -6,7 +6,12 @@
 #define BARESDK_INTERNAL_H
 
 #include <string.h>
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#else
 #include <strings.h>
+#endif
 #include <re.h>
 #include <baresip.h>
 #include "../include/baresdk.h"
@@ -55,6 +60,7 @@ struct bsdk_ctx {
 	/* re_main thread */
 	thrd_t             re_thread;
 	bool               re_thread_running;
+	struct mqueue     *re_wakeup_mq;  /* wakes select() so re_cancel takes effect */
 
 	/* Event dispatch thread (separate from re_main to prevent consumer
 	 * deadlocks when they call back into baresdk from inside an event) */
@@ -79,6 +85,13 @@ struct bsdk_ctx {
 };
 
 extern struct bsdk_ctx g_bsdk;
+
+/* ── Init/shutdown trace ───────────────────────────────────────────────────
+ * Verbose "[bsdk] step N: ..." traces are gated behind the BARESDK_DEBUG_INIT
+ * env var. Set BARESDK_DEBUG_INIT=1 to see them; default is silent. */
+int bsdk_trace_enabled(void);
+#define BSDK_TRACE(...) \
+	do { if (bsdk_trace_enabled()) { printf(__VA_ARGS__); fflush(stdout); } } while (0)
 
 /* ── Account ───────────────────────────────────────────────────────────── */
 
@@ -159,7 +172,9 @@ struct baresdk_call {
 	float                      last_loss_pct;
 	float                      last_jitter_ms;
 	/* RX/TX audio levels — written by audio thread, read by stats timer.
-	 * Stored as bit-pattern of float dBov (0=max, -127=silence, NAN=no data). */
+	 * Stored as bit-pattern of float dBov (0=max, -127=silence).
+	 * Initialized to -127 (silence) so reads before the first frame
+	 * return a usable value rather than NaN. */
 	RE_ATOMIC uint32_t         rx_level_bits;
 	RE_ATOMIC uint32_t         tx_level_bits;
 };

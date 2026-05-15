@@ -42,32 +42,45 @@ sudo pacman -S openssl libpulse                       # Arch
 ## Quick start
 
 ```python
-from baresdk import SDK, create_account, register, answer, dial
+import baresdk as sdk
 
 # Receive calls
-with SDK() as sdk:
-    acc = create_account(sdk, "alice@pbx.example.com", "secret")
-    register(acc)
-    for ev in acc.events(timeout=60):
-        if ev.type == "incoming_call":
-            answer(ev.call)
-        elif ev.type == "call_state" and ev.state in ("ended", "failed"):
-            break
+sdk.configure(log_level=1)
+acc = sdk.create_account("alice@pbx.example.com", "secret")
+acc.register()
 
+@sdk.on("incoming_call")
+def _(ev):
+    ev.call.answer()
+
+@sdk.on("ended")
+def _(ev):
+    sdk.stop()
+
+sdk.run()
+```
+
+```python
 # Make a call
-with SDK() as sdk:
-    acc = create_account(sdk, "alice@pbx.example.com", "secret")
-    register(acc)
-    for ev in acc.events(timeout=30):
-        if ev.type == "reg_state" and ev.state == "registered":
-            call = dial(acc, "bob@pbx.example.com")
-        elif ev.type == "call_state" and ev.state == "ended":
-            break
+sdk.configure(log_level=1)
+acc = sdk.create_account("alice@pbx.example.com", "secret")
+acc.register()
+
+@sdk.on("registered")
+def _(ev):
+    sdk.call("bob@pbx.example.com")
+
+@sdk.on("ended")
+def _(ev):
+    sdk.stop()
+
+sdk.run()
 ```
 
 **WSS + DTLS-SRTP + ICE:**
 ```python
-acc = create_account(sdk, "alice@pbx.example.com", "secret",
+sdk.configure(verify_server=True)
+acc = sdk.create_account("alice@pbx.example.com", "secret",
     transport="wss", server_url="wss://pbx.example.com/ws",
     media_enc="dtls_srtp", ice_enabled=True,
     stun_server="stun:stun.l.google.com:19302")
@@ -78,7 +91,9 @@ acc = create_account(sdk, "alice@pbx.example.com", "secret",
 ## Audio
 
 ```python
-sdk.set_aec(True); sdk.set_ns(True); sdk.set_agc(True)
+sdk.set_aec(True)
+sdk.set_ns(True)
+sdk.set_agc(True)
 sdk.set_mic_gain(6.0)       # dB, range −20 to +20
 sdk.set_speaker_gain(-3.0)
 sdk.set_jitter_buffer(20, 200)
@@ -86,17 +101,17 @@ sdk.set_jitter_buffer(20, 200)
 
 | AEC mode | Quality | Requires |
 |---|---|---|
-| `AEC_SUPPRESSOR` *(default)* | Half-duplex | nothing |
-| `AEC_WEBRTC` | Full-duplex | `libwebrtc-audio-processing-1` |
+| Suppressor *(default, mode=1)* | Half-duplex | nothing |
+| WebRTC *(mode=2)* | Full-duplex | `libwebrtc-audio-processing-1` |
 
 ```python
-from baresdk import AEC_WEBRTC
-sdk = SDK(aec_mode=AEC_WEBRTC)
+# WebRTC full-duplex AEC — configure before first account (desktop only, opt-in build)
+sdk.configure(aec_mode=2)   # 2 = WEBRTC; requires cmake -DBARESDK_WITH_WEBRTC_AEC=ON
 ```
 
 ---
 
-## `create_account` parameters
+## `sdk.create_account` parameters
 
 | Parameter | Type | Example |
 |---|---|---|
@@ -106,26 +121,50 @@ sdk = SDK(aec_mode=AEC_WEBRTC)
 | `stun_server` | str | `"stun:stun.l.google.com:19302"` |
 | `turn_server` | str | `"turn:turn.example.com:3478"` |
 | `server_url` | str | WebSocket URL — overrides host/port |
-| `verify_tls` | bool | |
 | `audio_codecs` | list[str] | `["opus", "ulaw", "alaw"]` |
 | `extra_headers` | dict | Added to every REGISTER/INVITE |
 
+`sdk.configure()` accepts global options (applies before first account):
+
+| Key | Example |
+|---|---|
+| `log_level` | `0`–`3` |
+| `stats_interval_ms` | `5000` |
+| `verify_server` | `False` to skip TLS verification |
+| `transport` | `"wss"` |
+
 ---
 
-## Events
+## Events — `@sdk.on(name)` names
 
-| `ev.type` | When |
-|---|---|
-| `reg_state` | Registration changed — `unregistered` · `registering` · `registered` · `failed` |
-| `incoming_call` | INVITE received |
-| `call_state` | Call changed — `calling` · `ringing` · `established` · `held` · `ended` · `failed` |
-| `dtmf` | Digit received |
-| `media_stats` | Periodic RTCP/MOS report |
-| `transfer_request` | REFER received |
-| `message` | SIP MESSAGE received |
-| `presence_state` | Buddy presence changed |
-| `mwi` | Voicemail notification |
-| `quality_alert` | MOS/loss/jitter/RTT threshold crossed |
-| `sip_trace` | Raw SIP message *(enable with `trace_sip=True`)* |
+| Name | When | Sub-names (also available) |
+|---|---|---|
+| `reg_state` | Registration changed | `registering` · `registered` · `unregistered` · `reg_failed` |
+| `incoming_call` | INVITE received | — |
+| `call_state` | Call changed | `calling` · `ringing` · `established` · `held` · `ended` · `cancelled` · `call_failed` |
+| `dtmf` | Digit received | — |
+| `media_stats` | Periodic RTCP/MOS report | — |
+| `transfer_request` | REFER received | — |
+| `message` | SIP MESSAGE received | — |
+| `presence_state` | Buddy presence changed | — |
+| `mwi` | Voicemail notification | — |
+| `quality_alert` | MOS/loss/jitter/RTT threshold crossed | — |
+| `sip_trace` | Raw SIP message *(enable with `trace_sip=True`)* | — |
+| `*` | Every event (wildcard) | — |
+
+```python
+@sdk.on("registered")
+def _(ev):
+    print("registered!")
+
+@sdk.on("incoming_call")
+def _(ev):
+    print(f"call from {ev.from_uri}")
+    ev.call.answer()
+
+@sdk.on("media_stats")
+def _(ev):
+    print(f"MOS={ev.mos_lq:.2f}  RTT={ev.rtt_ms:.0f}ms  loss={ev.loss_pct:.1f}%")
+```
 
 ---

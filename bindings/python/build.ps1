@@ -17,7 +17,7 @@ $DllDst    = Join-Path $ScriptDir "baresdk\baresdk.dll"
 
 # ── 1. Build the SDK if the DLL is missing ───────────────────────────────────
 if (-not (Test-Path $DllSrc)) {
-    Write-Host "==> DLL not found — building SDK first..."
+    Write-Host "==> DLL not found -- building SDK first..."
     & "$Root\scripts\build-windows.ps1" -VcpkgRoot $VcpkgRoot
 }
 
@@ -31,16 +31,22 @@ pip install -e $ScriptDir
 
 # ── 4. Build wheel and retag for PyPI ────────────────────────────────────────
 Write-Host "==> Building wheel..."
-pip install --quiet wheel
+pip install --quiet setuptools wheel
 Push-Location $ScriptDir
-Remove-Item -Recurse -Force dist, build -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force dist | Out-Null
+Remove-Item -Force dist\baresdk-*-win_amd64.whl -ErrorAction SilentlyContinue
 python setup.py bdist_wheel --quiet
 
 Write-Host "==> Retagging wheel to win_amd64..."
 python -m wheel tags --platform-tag win_amd64 dist\baresdk-*.whl --remove
 Pop-Location
 
-$Whl = Get-ChildItem "$ScriptDir\dist\baresdk-*-win_amd64.whl" | Select-Object -First 1
+$Whl = Get-ChildItem "$ScriptDir\dist\baresdk-*-win_amd64.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $Whl) {
+    Write-Error "Wheel build failed -- no .whl found in $ScriptDir\dist"
+    exit 1
+}
 
 Write-Host ""
 Write-Host "Done. Wheel ready at:"

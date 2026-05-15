@@ -50,23 +50,67 @@ cfg.agc                   = true;   // automatic gain control (normalise to −2
 
 AEC mode options:
 
-| Value | Description |
-|---|---|
-| `BARESDK_AEC_OFF` | No echo cancellation |
-| `BARESDK_AEC_SUPPRESSOR` | Built-in half-duplex gate (default) |
-| `BARESDK_AEC_WEBRTC` | WebRTC AEC (desktop only; requires `libwebrtc-audio-processing-1`) |
+| Value | `aec_mode` int (Python) | Description |
+|---|---|---|
+| `BARESDK_AEC_OFF` | `0` | No echo cancellation |
+| `BARESDK_AEC_SUPPRESSOR` | `1` | Built-in half-duplex gate (default) |
+| `BARESDK_AEC_WEBRTC` | `2` | WebRTC AEC (desktop only; requires `libwebrtc-audio-processing-1`) |
 
 Toggle at runtime without re-dialling:
 
 ```c
-baresdk_set_aec_mode(BARESDK_AEC_OFF);      // disable AEC
+baresdk_set_aec_mode(BARESDK_AEC_OFF);        // disable AEC
 baresdk_set_aec_mode(BARESDK_AEC_SUPPRESSOR); // re-enable
-baresdk_set_aec_suppression_level(0.5f);    // softer suppression
+baresdk_set_aec_suppression_level(0.5f);      // softer suppression
 baresdk_set_ns(false);
 baresdk_set_agc(true);
 ```
 
-> **WebRTC AEC** is enabled automatically on desktop builds when `libwebrtc-audio-processing-1-dev` is installed at cmake time. Use `-DBARESDK_WITH_WEBRTC_AEC=OFF` to opt out.
+**Python**
+
+```python
+import baresdk as sdk
+
+# ── Configure before the first create_account() ──────────────────────────────
+sdk.configure(
+    aec_mode              = 1,    # 1 = suppressor (default); 2 = WebRTC full-duplex
+    aec_suppression_level = 1.0,  # 0.0 = no suppression, 1.0 = maximum (default)
+    ns                    = True, # noise suppression
+    agc                   = True, # automatic gain control
+)
+
+# ── Toggle at runtime (any time, from any thread) ────────────────────────────
+sdk.set_aec(True)                      # enable (uses mode set at configure())
+sdk.set_aec(False)                     # disable
+
+sdk.set_aec_mode(0)                    # 0 = off
+sdk.set_aec_mode(1)                    # 1 = suppressor (restore default)
+sdk.set_aec_mode(2)                    # 2 = WebRTC full-duplex (desktop only, opt-in build)
+
+sdk.set_aec_suppression_level(0.6)     # tune aggressiveness (suppressor only)
+                                        # 0.0 = TX passes through freely
+                                        # 1.0 = maximum ducking (default)
+
+sdk.set_ns(True)                       # noise suppression on/off
+sdk.set_agc(True)                      # auto gain control on/off
+
+sdk.set_mic_gain(6.0)                  # TX gain dB [-20, +20]; 0 = unity (bypass)
+sdk.set_speaker_gain(-3.0)             # RX gain dB [-20, +20]; 0 = unity (bypass)
+```
+
+**AEC mode comparison**
+
+| | Suppressor (mode=1, default) | WebRTC (mode=2, opt-in) |
+|--|--|--|
+| Duplex | Half — ducks mic when far-end is loud | Full — both sides speak simultaneously |
+| Double-talk | One side goes quiet | Both parties heard |
+| CPU | Negligible | Moderate |
+| Platform | All | Desktop only |
+| Build | None | `cmake -DBARESDK_WITH_WEBRTC_AEC=ON` + `libwebrtc-audio-processing-1-dev` |
+
+> **WebRTC AEC** must be selected at init time via `sdk.configure(aec_mode=2)`. Only `off ↔ init_mode` transitions are valid at runtime — switching between SUPPRESSOR and WEBRTC returns an error.
+>
+> **Mobile (Android / iOS):** full-duplex AEC is handled automatically by the OS audio driver. No SDK flag needed.
 
 ---
 

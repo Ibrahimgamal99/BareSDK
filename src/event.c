@@ -207,9 +207,9 @@ static void bevent_handler(enum bevent_ev bev,
 		mtx_init(&new_lc->tap_lock, mtx_plain);
 		mtx_init(&new_lc->rec_lock, mtx_plain);
 		list_init(&new_lc->custom_hdrs);
-		uint32_t _nan_bits; float _nan = NAN; memcpy(&_nan_bits, &_nan, 4);
-		re_atomic_rlx_set(&new_lc->rx_level_bits, _nan_bits);
-		re_atomic_rlx_set(&new_lc->tx_level_bits, _nan_bits);
+		uint32_t _sil_bits; float _sil = -127.0f; memcpy(&_sil_bits, &_sil, 4);
+		re_atomic_rlx_set(&new_lc->rx_level_bits, _sil_bits);
+		re_atomic_rlx_set(&new_lc->tx_level_bits, _sil_bits);
 
 		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 		if (!qev) {

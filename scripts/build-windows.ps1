@@ -17,12 +17,25 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Allow running this script without changing system execution policy
+if ($PSVersionTable.PSVersion.Major -ge 5) {
+    $currentExecutionPolicy = Get-ExecutionPolicy -Scope Process -ErrorAction SilentlyContinue
+    if ($currentExecutionPolicy -eq "Restricted") {
+        Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+    }
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Split-Path -Parent $ScriptDir
 $BuildDir = Join-Path $Root "build\windows-x64"
 
 if (-not $VcpkgRoot) {
-    Write-Error "VCPKG_ROOT is not set. Install vcpkg and set the environment variable."
+    $VcpkgRoot = @("C:\vcpkg","D:\vcpkg","$env:USERPROFILE\vcpkg") |
+        Where-Object { Test-Path "$_\scripts\buildsystems\vcpkg.cmake" } |
+        Select-Object -First 1
+}
+if (-not $VcpkgRoot) {
+    Write-Error "vcpkg not found. Set VCPKG_ROOT or install vcpkg to C:\vcpkg."
     exit 1
 }
 
@@ -43,9 +56,11 @@ cmake -S $Root -B $BuildDir `
 
 Write-Host "=== Building ==="
 cmake --build $BuildDir --config $BuildType --target baresdk
+if ($LASTEXITCODE -ne 0) { Write-Error "cmake --build failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
 
 Write-Host "=== Installing ==="
 cmake --install $BuildDir --config $BuildType
+if ($LASTEXITCODE -ne 0) { Write-Error "cmake --install failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
 
 $StaticLib = Join-Path $Root "dist\windows\x64\bare.lib"
 if (Test-Path $StaticLib) {
@@ -53,7 +68,8 @@ if (Test-Path $StaticLib) {
     Write-Host ""
     Write-Host "Static lib: $StaticLib ($([math]::Round($size,1)) MB)"
 } else {
-    Write-Host "Build complete. Check dist\windows\x64\ for output."
+    Write-Error "Install step succeeded but $StaticLib not found"
+    exit 1
 }
 
 # ── Link shared library (DLL, no extra runtime deps beyond MSVC CRT) ─────────
@@ -63,18 +79,78 @@ if (Test-Path $StaticLib) {
 $VcpkgLibs  = Join-Path $VcpkgRoot "installed\x64-windows-static-md\lib"
 $SslLib     = Join-Path $VcpkgLibs "libssl.lib"
 $CryptoLib  = Join-Path $VcpkgLibs "libcrypto.lib"
-$ZlibLib    = Join-Path $VcpkgLibs "zlib.lib"
+
+# Check for zlib - vcpkg names it differently for static builds
+$ZlibLib = Join-Path $VcpkgLibs "zlib.lib"
+if (-not (Test-Path $ZlibLib)) {
+    # Try the static naming convention (zs.lib for static)
+    $ZlibLib = Join-Path $VcpkgLibs "zs.lib"
+}
+
+# Check if vcpkg libraries exist
+if (-not (Test-Path $SslLib)) {
+    Write-Error "OpenSSL library not found at $SslLib. Please install: vcpkg install openssl:x64-windows-static-md"
+    exit 1
+}
+if (-not (Test-Path $CryptoLib)) {
+    Write-Error "Crypto library not found at $CryptoLib. Please install: vcpkg install openssl:x64-windows-static-md"
+    exit 1
+}
+if (-not (Test-Path $ZlibLib)) {
+    Write-Error "Zlib library not found at $ZlibLib. Please install: vcpkg install zlib:x64-windows-static-md"
+    exit 1
+}
 
 $DllPath = Join-Path $Root "dist\windows\x64\baresdk.dll"
+$DefPath = Join-Path $Root "dist\windows\x64\baresdk.def"
+$HeaderPath = Join-Path $Root "include\baresdk.h"
+
+Write-Host ""
+Write-Host "=== Generating DEF file ==="
+$exports = @()
+foreach ($line in Get-Content $HeaderPath) {
+    if ($line -match '^\s*BARESDK_EXPORT\s+.*?[*\s](\w+)\s*\(') {
+        $exports += $Matches[1]
+    }
+}
+"EXPORTS`n" + (($exports | Sort-Object -Unique | ForEach-Object { "    $_" }) -join "`n") + "`n" |
+    Out-File -FilePath $DefPath -Encoding ASCII
+Write-Host "Generated $DefPath with $($exports.Count) exports"
+
 Write-Host ""
 Write-Host "=== Linking $DllPath ==="
-link.exe /DLL /NOLOGO `
-    /OUT:$DllPath `
-    /WHOLEARCHIVE:$StaticLib `
-    $SslLib $CryptoLib $ZlibLib `
-    ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib `
-    ole32.lib oleaut32.lib avrt.lib
+
+# Find link.exe and set up VS environment
+$VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $VsWhere) {
+    $VsPath = & $VsWhere -latest -property installationPath
+    $LinkExe = Join-Path $VsPath "VC\Tools\MSVC\*\bin\Hostx64\x64\link.exe"
+    $LinkExe = (Get-Item $LinkExe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+    
+    # Find vcvarsall.bat to set up environment
+    $VcvarsAll = Join-Path $VsPath "VC\Auxiliary\Build\vcvarsall.bat"
+}
+
+if (-not $LinkExe -or -not (Test-Path $LinkExe)) {
+    Write-Error "Could not find link.exe. Please run from Visual Studio Developer Command Prompt."
+    exit 1
+}
+
+# Run link.exe through cmd with vcvarsall environment
+$LinkArgs = "/DLL /NOLOGO /DEF:`"$DefPath`" /OUT:`"$DllPath`" /WHOLEARCHIVE:`"$StaticLib`" `"$SslLib`" `"$CryptoLib`" `"$ZlibLib`" ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib ole32.lib oleaut32.lib avrt.lib advapi32.lib user32.lib shell32.lib qwave.lib"
+
+if (Test-Path $VcvarsAll) {
+    # Use call operator with properly escaped arguments
+    $BatContent = "@echo off`ncall `"$VcvarsAll`" x64 >nul 2>&1`n`"$LinkExe`" $LinkArgs`n"
+    $TempBat = Join-Path $env:TEMP "link_baresdk.bat"
+    $BatContent | Out-File -FilePath $TempBat -Encoding ASCII
+    & cmd /c $TempBat
+    Remove-Item $TempBat -ErrorAction SilentlyContinue
+} else {
+    # Fallback: try running link.exe directly (may fail if SDK paths not set)
+    & $LinkExe /DLL /NOLOGO "/DEF:$DefPath" "/OUT:$DllPath" "/WHOLEARCHIVE:$StaticLib" $SslLib $CryptoLib $ZlibLib ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib ole32.lib oleaut32.lib avrt.lib advapi32.lib user32.lib shell32.lib qwave.lib
+}
 
 Write-Host ""
 Write-Host "Done. Output:"
-Get-Item $StaticLib, $DllPath | Select-Object Name, @{N="MB";E={[math]::Round($_.Length/1MB,1)}}
+Get-Item $StaticLib, $DllPath -ErrorAction SilentlyContinue | Select-Object Name, @{N="MB";E={[math]::Round($_.Length/1MB,1)}}

@@ -124,31 +124,30 @@ case BARESDK_EV_MEDIA_STATS: {
 
 ### Python
 
-The Python binding provides a `CallStats` class that holds all stats fields and updates in-place. Use `account.stats_stream()` to receive a live stream, or `call.stats()` / `call.fetch_stats()` for one-shot polls.
+The Python binding provides three ways to access call stats:
 
-#### Stream — automatic interval
+#### Push (event-driven, automatic)
+
+Stats fire via `@sdk.on("media_stats")` whenever the SDK emits them (rate set by `stats_interval_ms` in `sdk.configure()`):
 
 ```python
-# Print stats every 2 seconds (independent of SDK stats_interval_ms)
-for stats in account.stats_stream(call=call, interval=2):
-    stats.print()
-    if stats.is_final:
-        break
+@sdk.on("media_stats")
+def _(ev):
+    print(f"MOS={ev.mos_lq:.2f}  RTT={ev.rtt_ms:.0f}ms  loss={ev.loss_pct:.1f}%")
+    # ev is a MediaStatsEvent with all stats fields
 ```
 
-#### Stream — on-demand trigger
+#### Custom polling rate — `call.poll_stats()`
 
 ```python
-import queue
+@sdk.on("established")
+def _(ev):
+    # Print stats every 2 s regardless of stats_interval_ms
+    ev.call.poll_stats(interval=2.0, on_update=lambda s: s.print())
+    # s is a CallStats object updated in-place each tick
 
-trigger = queue.Queue()
-
-# Background thread prints stats every 2 s
-for stats in account.stats_stream(call=call, interval=2, trigger=trigger):
-    stats.print()
-
-# From any other thread — force an immediate refresh:
-trigger.put(1)
+# Stop polling manually from any thread:
+call.stop_polling()
 ```
 
 #### One-shot snapshot
@@ -163,15 +162,6 @@ live = CallStats()
 call.fetch_stats(live)
 print(live)
 ```
-
-#### `account.stats_stream()` parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `call` | `Call` | `None` | Call to poll. Required when `interval` or `trigger` is given. |
-| `interval` | `float` | `None` | Polling interval in seconds. `None` = follow SDK `stats_interval_ms`. |
-| `trigger` | `queue.Queue` | `None` | Put anything into this queue from any thread to force an immediate refresh. |
-| `timeout` | `float` | `None` | Stop the stream if no update arrives within this many seconds. |
 
 #### `CallStats` fields
 
