@@ -1,6 +1,3 @@
-typedef unsigned long size_t;
-typedef int wchar_t;
- 
               const char *baresdk_version(void);
  const char *baresdk_strerror(int err);
 
