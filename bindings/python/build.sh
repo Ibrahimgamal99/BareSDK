@@ -41,24 +41,26 @@ echo "==> Copying shared library..."
 cp "${DIST_DIR}/baresdk.so" "${SCRIPT_DIR}/baresdk/baresdk.so"
 rm -f "${SCRIPT_DIR}/baresdk/baresdk.dll" "${SCRIPT_DIR}/baresdk/baresdk.dylib"
 
+echo "==> Uninstalling existing package..."
+pip uninstall -y baresdk 2>/dev/null || true
+
 echo "==> Installing Python package..."
 pip install -e "${SCRIPT_DIR}"
 
 echo "==> Building wheel..."
 pip install --quiet wheel
-cd "${SCRIPT_DIR}"
-rm -rf build
-mkdir -p dist
-rm -f dist/baresdk-*-manylinux*.whl dist/baresdk-*-linux*.whl
+rm -rf "${SCRIPT_DIR}/build"
+mkdir -p "${SCRIPT_DIR}/dist"
+rm -f "${SCRIPT_DIR}/dist"/baresdk-*-manylinux*.whl "${SCRIPT_DIR}/dist"/baresdk-*-linux*.whl
 
 # Default to manylinux_2_34_x86_64 for broad compatibility
 MANYLINUX_TAG="manylinux_2_34_x86_64"
 
-python setup.py bdist_wheel --quiet
+python "${SCRIPT_DIR}/setup.py" bdist_wheel --quiet --dist-dir "${SCRIPT_DIR}/dist" --bdist-dir "${SCRIPT_DIR}/build"
 
 echo "==> Retagging wheel to ${MANYLINUX_TAG}..."
 python -m wheel tags --platform-tag "${MANYLINUX_TAG}" \
-  dist/baresdk-*-linux_x86_64.whl --remove
+  "${SCRIPT_DIR}/dist"/baresdk-*-linux_x86_64.whl --remove
 
 WHL="$(ls "${SCRIPT_DIR}/dist"/baresdk-*-${MANYLINUX_TAG}.whl)"
 echo ""

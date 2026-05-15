@@ -27,7 +27,9 @@ Copy-Item $DllSrc $DllDst -Force
 Remove-Item -Force "$ScriptDir\baresdk\baresdk.so" -ErrorAction SilentlyContinue
 Remove-Item -Force "$ScriptDir\baresdk\baresdk.dylib" -ErrorAction SilentlyContinue
 
-# ── 3. Install the Python package ────────────────────────────────────────────
+# ── 3. Uninstall existing package, then install fresh ────────────────────────
+Write-Host "==> Uninstalling existing package..."
+pip uninstall -y baresdk 2>$null
 Write-Host "==> Installing Python package..."
 pip install -e $ScriptDir
 
