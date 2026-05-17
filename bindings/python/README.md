@@ -1,6 +1,8 @@
 # baresdk
 
-Python bindings for a thread-safe SIP/RTP library. Built on [baresip](https://github.com/baresip/baresip) + [libre](https://github.com/baresip/re).
+There was no production-ready VoIP SDK for Python — if you wanted SIP calling, you had to wrap C libraries yourself or glue together low-level tools. baresdk fixes that.
+
+Register an account, place and receive calls, handle encryption and NAT traversal, monitor call quality — all from Python. Python bindings for [baresdk](https://github.com/Ibrahimgamal99/BareSDK), built on [baresip](https://github.com/baresip/baresip) + [libre](https://github.com/baresip/re).
 
 ```bash
 pip install baresdk

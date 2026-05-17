@@ -1,8 +1,8 @@
 # baresdk
 
-A thread-safe C SDK for VoIP — SIP/RTP built on [baresip](https://github.com/baresip/baresip) and [libre](https://github.com/baresip/re), delivered as a self-contained shared library and static archive per platform.
+Building VoIP from scratch means wrestling with SIP parsing, RTP jitter buffers, NAT traversal, and SRTP key exchange. baresdk handles all of that — one shared library, one header, full thread safety. Register an account and start making calls without touching the underlying stack.
 
-`baresdk.h` is the only header you need. The baresip/libre internals are an implementation detail.
+Built on [baresip](https://github.com/baresip/baresip) and [libre](https://github.com/baresip/re). `baresdk.h` is the entire API surface; the SIP/RTP internals stay out of your way.
 
 ## Features
 
