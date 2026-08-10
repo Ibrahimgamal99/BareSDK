@@ -36,7 +36,10 @@ if(BARESDK_SRC_MODE)
   endif()
 
   file(GLOB CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
-  if(WIN32)
+  # glibc_symver.c pins glibc symbol versions for portable desktop-Linux
+  # binaries — it references strtoll@GLIBC_2.2.5 etc. and must not be
+  # compiled anywhere else (Android uses bionic, Windows/macOS no glibc).
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(FILTER CORE_SRCS EXCLUDE REGEX ".*glibc_symver\\.c$")
   endif()
 
@@ -60,9 +63,11 @@ if(BARESDK_SRC_MODE)
     target_compile_definitions(baresdk_core PRIVATE BARESDK_HAS_WEBRTC_AEC=1)
   endif()
 
-  # Platform audio define so modules_init.c picks the right audio module
+  # Platform audio define so modules_init.c picks the right audio module.
+  # Android uses OpenSLES: the aaudio module needs API >= 26 (libaaudio.so
+  # does not exist in the android-24 sysroot) while minSdk is 24.
   if(ANDROID_ABI)
-    target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_AAUDIO=1)
+    target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_OPENSLES=1)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_compile_definitions(baresdk_core PRIVATE BARESDK_AUDIO_AUDIOUNIT=1)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -123,6 +128,37 @@ set(BARESDK_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
     CACHE PATH "Path to libre source tree")
 set(BARESDK_BARESIP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/baresip"
     CACHE PATH "Path to baresip source tree")
+
+# ---------------------------------------------------------------------------
+# Guard: baresip internals used by src/netmon.c
+#
+# call_reset_transp() and call_laddr() are exported from libbaresip but live in
+# its private src/core.h, so baresdk hand-declares them in baresdk_internal.h.
+# An upstream signature change would still link and then misbehave at runtime,
+# so compare the prototypes at configure time and fail loudly instead.
+#
+# Whitespace is collapsed before matching so reformatting upstream does not
+# trip a false alarm — only a real signature change does.
+# ---------------------------------------------------------------------------
+set(_BARESIP_CORE_H "${BARESDK_BARESIP_SOURCE_DIR}/src/core.h")
+if(EXISTS "${_BARESIP_CORE_H}")
+  file(READ "${_BARESIP_CORE_H}" _CORE_H_TEXT)
+  string(REGEX REPLACE "[ \t\r\n]+" " " _CORE_H_FLAT "${_CORE_H_TEXT}")
+  foreach(_proto
+      "int call_reset_transp(struct call *call, const struct sa *laddr);"
+      "const struct sa *call_laddr(const struct call *call);")
+    string(FIND "${_CORE_H_FLAT}" "${_proto}" _pos)
+    if(_pos EQUAL -1)
+      message(FATAL_ERROR
+        "baresip's src/core.h no longer declares:\n"
+        "    ${_proto}\n"
+        "src/netmon.c hand-declares this in src/baresdk_internal.h for network "
+        "handover. Update that declaration to match before building, or the "
+        "mismatch will link silently and fail at runtime.")
+    endif()
+  endforeach()
+endif()
+
 set(BARESDK_MBEDTLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls"
     CACHE PATH "Path to mbedTLS source tree (required when BARESDK_TLS=mbedtls)")
 set(BARESDK_OPUS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus"
@@ -142,7 +178,7 @@ if(BARESDK_MODULES_PROFILE STREQUAL "mobile")
   set(BARESDK_MODULES "${BARESDK_MOBILE_MODULES_BASE}")
   # Append platform audio
   if(ANDROID_ABI)
-    set(BARESDK_MODULES "${BARESDK_MODULES};opensles;aaudio")
+    set(BARESDK_MODULES "${BARESDK_MODULES};opensles")
   elseif(CMAKE_SYSTEM_NAME MATCHES "iOS|Darwin")
     set(BARESDK_MODULES "${BARESDK_MODULES};audiounit;avcapture;coreaudio")
   endif()
@@ -331,6 +367,12 @@ set(RE_PLATFORM_ARGS "")
 if(ANDROID_ABI)
   list(APPEND RE_PLATFORM_ARGS "-DUSE_UNIXSOCK=OFF")
 endif()
+if(BARESDK_TLS STREQUAL "mbedtls" AND NOT MSVC)
+  # Upstream re only adds OPENSSL_INCLUDE_DIR/ZLIB to re-objs includes —
+  # never MBEDTLS_INCLUDE_DIR — so hand the header path to the compiler.
+  # (MSVC combines its own CMAKE_C_FLAGS below; mbedtls is not used there.)
+  list(APPEND RE_PLATFORM_ARGS "-DCMAKE_C_FLAGS=-isystem${SYSROOT}/include")
+endif()
 if(MSVC)
   # websock.c exposes __real_websock_connect instead of websock_connect so
   # ws_path.c can provide websock_connect as the wrapper without a duplicate
@@ -490,10 +532,22 @@ if(BARESDK_SHARED)
       VERBATIM
     )
   else()
-    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk.so")
+    set(_SHARED_LINK_EXTRA "")
     if(ANDROID_ABI)
-      set(_SHARED_PLATFORM_LIBS -llog -lOpenSLES -landroid)
+      # lib prefix: Android's APK packager and dlopen conventions expect
+      # lib<name>.so; the Dart loader opens "libbaresdk.so".
+      set(_SHARED_OUT "${CMAKE_BINARY_DIR}/libbaresdk.so")
+      set(_SHARED_PLATFORM_LIBS -llog -lOpenSLES -landroid -lm)
+      # The custom command invokes the bare clang driver, so the Android
+      # target triple + sysroot must be passed explicitly (the toolchain
+      # file only wires them into CMake-managed targets).
+      # -Wl,-z,max-page-size=16384: Google Play 16 KB page requirement.
+      set(_SHARED_LINK_EXTRA
+          --target=${CMAKE_C_COMPILER_TARGET}
+          --sysroot=${CMAKE_SYSROOT}
+          -Wl,-z,max-page-size=16384)
     else()
+      set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk.so")
       set(_SHARED_PLATFORM_LIBS -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv -lpulse)
     endif()
     # opus is already merged into baresdk.a via OPUS_EXTRA_LIBS — no -lopus needed
@@ -501,6 +555,7 @@ if(BARESDK_SHARED)
       OUTPUT  "${_SHARED_OUT}"
       COMMAND "${CMAKE_C_COMPILER}" -shared
               -Wl,--wrap=websock_connect
+              ${_SHARED_LINK_EXTRA}
               -Wl,--whole-archive "${_OUT}" -Wl,--no-whole-archive
               ${_SHARED_PLATFORM_LIBS}
               -o "${_SHARED_OUT}"

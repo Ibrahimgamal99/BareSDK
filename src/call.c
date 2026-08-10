@@ -147,6 +147,11 @@ static void invite_fn(void *arg)
 	lc->bc    = bc;
 	lc->acct  = ctx->acct;
 	lc->state = BARESDK_CALL_CALLING;
+	/* The SDP offer was created inside ua_connect(), before this wrapper
+	 * existed — the BEVENT_CALL_LOCAL_SDP that fired then could not be
+	 * matched by bsdk_sdp_handle_event().  Record it here so the
+	 * SDP_NEGOTIATION event fires when the remote answer arrives. */
+	lc->local_sdp_set = true;
 	uint32_t _sil_bits; float _sil = -127.0f; memcpy(&_sil_bits, &_sil, 4);
 	re_atomic_rlx_set(&lc->rx_level_bits, _sil_bits);
 	re_atomic_rlx_set(&lc->tx_level_bits, _sil_bits);
@@ -234,6 +239,8 @@ static void hold_fn(void *arg)
 	hold_ctx_t *ctx = arg;
 	if (!ctx->lc->bc) { ctx->result = ENOENT; return; }
 	ctx->result = call_hold(ctx->lc->bc, ctx->hold);
+	if (!ctx->result)
+		ctx->lc->local_hold = ctx->hold;
 }
 
 int baresdk_call_hold(baresdk_call_handle_t call)
@@ -258,7 +265,8 @@ bool baresdk_call_is_held(baresdk_call_handle_t call)
 {
 	if (!call) return false;
 	struct baresdk_call *lc = call;
-	return lc->state == BARESDK_CALL_HELD;
+	/* local_hold: our own call_hold(); state HELD: peer put us on hold. */
+	return lc->local_hold || lc->state == BARESDK_CALL_HELD;
 }
 
 /* ── baresdk_call_send_dtmf ──────────────────────────────────────────────── */

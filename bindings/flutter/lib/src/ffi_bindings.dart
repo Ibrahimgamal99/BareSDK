@@ -44,6 +44,24 @@ class BareSDKBindings {
   late final _baresdk_strerror =
       _baresdk_strerrorPtr.asFunction<ffi.Pointer<ffi.Char> Function(int)>();
 
+  /// Release an event delivered with cfg.deliver_owned_events = true.
+  /// Must be called exactly once per delivered event; may be called from any
+  /// thread, at any time after delivery.  No-op on NULL.  Passing an event
+  /// that was NOT delivered in owned mode is undefined behavior.
+  void baresdk_event_release(
+    ffi.Pointer<baresdk_event_t> ev,
+  ) {
+    return _baresdk_event_release(
+      ev,
+    );
+  }
+
+  late final _baresdk_event_releasePtr = _lookup<
+          ffi.NativeFunction<ffi.Void Function(ffi.Pointer<baresdk_event_t>)>>(
+      'baresdk_event_release');
+  late final _baresdk_event_release = _baresdk_event_releasePtr
+      .asFunction<void Function(ffi.Pointer<baresdk_event_t>)>();
+
   /// Zero-fill cfg and set version/struct_size correctly. Call before populating.
   void baresdk_config_init(
     ffi.Pointer<baresdk_config_t> cfg,
@@ -684,7 +702,7 @@ class BareSDKBindings {
   }
 
   late final _baresdk_set_aec_modePtr =
-      _lookup<ffi.NativeFunction<ffi.Int Function(ffi.Int32)>>(
+      _lookup<ffi.NativeFunction<ffi.Int Function(baresdk_aec_mode_t)>>(
           'baresdk_set_aec_mode');
   late final _baresdk_set_aec_mode =
       _baresdk_set_aec_modePtr.asFunction<int Function(int)>();
@@ -1154,12 +1172,6 @@ abstract class baresdk_codec_t {
 abstract class baresdk_mos_method_t {
   static const int BARESDK_MOS_EMODEL = 0;
   static const int BARESDK_MOS_SIMPLIFIED = 1;
-}
-
-abstract class baresdk_aec_mode_t {
-  static const int BARESDK_AEC_OFF = 0;
-  static const int BARESDK_AEC_SUPPRESSOR = 1;
-  static const int BARESDK_AEC_WEBRTC = 2;
 }
 
 abstract class baresdk_media_dir_t {
@@ -1917,7 +1929,7 @@ final class baresdk_config_t extends ffi.Struct {
   external bool enable_video;
 
   /// echo cancellation backend; default SUPPRESSOR
-  @ffi.Int32()
+  @baresdk_aec_mode_t()
   external int aec_mode;
 
   /// noise suppression
@@ -2088,7 +2100,24 @@ final class baresdk_config_t extends ffi.Struct {
   /// Maximum handover / re-INVITE attempts before giving up. Default 6.
   @ffi.Uint32()
   external int net_max_attempts;
+
+  /// ── Event delivery ownership ─────────────────────────────────
+  ///
+  /// false (default): event_cb receives a borrowed event, valid only
+  /// for the duration of the callback (the historical contract).
+  ///
+  /// true: event_cb receives a heap-owned clone of the event; the
+  /// consumer MUST call baresdk_event_release(ev) exactly once when
+  /// done — which may be after the callback has returned.  Required
+  /// for bindings that dispatch events asynchronously, e.g. Dart's
+  /// NativeCallable.listener, where the callback body runs on the
+  /// isolate's event loop after the C call has already returned.
+  @ffi.Bool()
+  external bool deliver_owned_events;
 }
+
+typedef baresdk_aec_mode_t = ffi.Uint8;
+typedef Dartbaresdk_aec_mode_t = int;
 
 /// Event callback — fired from baresdk's internal event thread.
 /// Must return within 10 ms. Do not call baresdk APIs synchronously
@@ -2278,5 +2307,11 @@ const int BARESDK_VERSION_MAJOR = 1;
 const int BARESDK_VERSION_MINOR = 0;
 
 const int BARESDK_VERSION_PATCH = 0;
+
+const int BARESDK_AEC_OFF = 0;
+
+const int BARESDK_AEC_SUPPRESSOR = 1;
+
+const int BARESDK_AEC_WEBRTC = 2;
 
 const int BARESDK_CONFIG_VERSION = 1;

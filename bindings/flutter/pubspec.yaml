@@ -1,5 +1,8 @@
 name: baresdk
-description: Flutter/Dart binding for baresdk — SIP, WebRTC, NAT, media SDK.
+description: >-
+  Flutter/Dart SIP softphone SDK (baresip-based): UDP/TCP/TLS/WS/WSS
+  registration, calls, codec control, reconnection & network handover,
+  media statistics and quality alerts.
 version: 1.0.0
 
 environment:
@@ -16,15 +19,18 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
-# Not a Flutter plugin: this package ships no platform scaffolding and builds
-# no native code. It is a pure-Dart FFI wrapper that opens a prebuilt baresdk
-# library at runtime (see loadLib() in lib/src/sdk.dart).
-#
-# The host app is responsible for shipping the native library:
-#   Android — put dist/android/<abi>/baresdk.so in src/main/jniLibs/<abi>/
-#   iOS     — link dist/ios/baresdk.xcframework (symbols resolve via
-#             DynamicLibrary.process())
-#   Linux   — bundle baresdk.so next to the executable, or pass
-#             BareSDK(libPath: '/abs/path/baresdk.so')
-#   macOS   — bundle baresdk.dylib in Frameworks/
-#   Windows — place baresdk.dll beside the .exe
+flutter:
+  plugin:
+    platforms:
+      # Android is a hybrid plugin:
+      #  - ffiPlugin ships the prebuilt libbaresdk.so from src/main/jniLibs
+      #  - BaresdkPlugin (Kotlin) provides cache dir, audio focus, speaker
+      #    routing and ConnectivityManager callbacks over MethodChannel.
+      android:
+        package: dev.baresdk.flutter
+        pluginClass: BaresdkPlugin
+        ffiPlugin: true
+      # Desktop: the app bundles the native library itself (or passes
+      # BareSDK(libPath: ...)); see lib/src/sdk.dart loadLib().
+      # iOS: planned — link dist/ios/baresdk.xcframework; symbols resolve
+      # via DynamicLibrary.process().

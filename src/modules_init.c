@@ -25,6 +25,7 @@
 static const char *COMMON_MODULES[] = {
 	"opus",
 	"g711",
+	"g722",
 	"srtp",
 	"dtls_srtp",
 	"stun",
@@ -52,7 +53,11 @@ static const char *WEBRTC_AEC_LIST[] = { "webrtc_aec", NULL };
 #endif
 
 /* Platform audio module selected at compile time */
-#if defined(BARESDK_AUDIO_AAUDIO)
+#if defined(BARESDK_AUDIO_OPENSLES)
+/* Android: OpenSLES works on every supported API level (minSdk 24).
+ * aaudio needs API >= 26 and is not compiled in — see CMakeLists.txt. */
+static const char *PLATFORM_AUDIO[] = { "opensles", NULL };
+#elif defined(BARESDK_AUDIO_AAUDIO)
 static const char *PLATFORM_AUDIO[] = { "aaudio", NULL };
 #elif defined(BARESDK_AUDIO_AUDIOUNIT)
 static const char *PLATFORM_AUDIO[] = { "audiounit", "avcapture", "coreaudio", NULL };

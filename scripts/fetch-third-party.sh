@@ -30,3 +30,18 @@ for dep in "${DEPS[@]}"; do
   git -C "${dir}" fetch -q --depth 1 origin "${rev}"
   git -C "${dir}" checkout -q FETCH_HEAD
 done
+
+# mbedTLS needs its `framework` submodule (scripts/config.py imports
+# mbedtls_framework from it). Fetch it shallowly at the pinned gitlink rev.
+MBEDTLS_DIR="${ROOT}/third_party/mbedtls"
+if [[ -f "${MBEDTLS_DIR}/.gitmodules" && ! -f "${MBEDTLS_DIR}/framework/CMakeLists.txt" ]]; then
+  fw_rev="$(git -C "${MBEDTLS_DIR}" ls-tree HEAD framework | awk '{print $3}')"
+  if [[ -n "${fw_rev}" ]]; then
+    echo "==> mbedtls/framework: cloning ${fw_rev:0:12}"
+    git init -q "${MBEDTLS_DIR}/framework"
+    git -C "${MBEDTLS_DIR}/framework" remote add origin \
+      "https://github.com/Mbed-TLS/mbedtls-framework.git" 2>/dev/null || true
+    git -C "${MBEDTLS_DIR}/framework" fetch -q --depth 1 origin "${fw_rev}"
+    git -C "${MBEDTLS_DIR}/framework" checkout -q FETCH_HEAD
+  fi
+fi

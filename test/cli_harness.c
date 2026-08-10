@@ -50,7 +50,7 @@ static void event_handler(const baresdk_event_t *ev, void *ud)
 				int err = baresdk_call_invite(g_acct,
 				                              g_call_target, &g_call);
 				if (err) {
-					fprintf(stderr, "[ERR] invite failed: %d\n", err);
+					printf("[ERR] invite failed: %d\n", err);
 					atomic_store(&g_failed, 1);
 				} else {
 					printf("[CALL] Inviting %s\n", g_call_target);
@@ -93,9 +93,8 @@ static void event_handler(const baresdk_event_t *ev, void *ud)
 		break;
 
 	case BARESDK_EV_LOG:
-		/* Uncomment for verbose logging:
-		 * printf("[LOG] %s", ev->u.log.message);
-		 */
+		if (getenv("HARNESS_VERBOSE"))
+			printf("[LOG] %s", ev->u.log.message);
 		break;
 
 	case BARESDK_EV_SDP_NEGOTIATION:
@@ -154,7 +153,7 @@ int main(int argc, char *argv[])
 	baresdk_config_init(&cfg);
 	cfg.event_cb   = event_handler;
 	cfg.server_url = server;
-	cfg.log_level  = 0; /* silent */
+	cfg.log_level  = getenv("HARNESS_VERBOSE") ? 3 : 0;
 
 	int err = baresdk_init(&cfg);
 	if (err) {
@@ -164,8 +163,8 @@ int main(int argc, char *argv[])
 
 	/* Create account */
 	baresdk_account_config_t acfg = {
-		.aor       = user,
-		.auth_pass = pass,
+		.uri      = user,
+		.password = pass,
 	};
 	err = baresdk_account_create(&acfg, &g_acct);
 	if (err) {

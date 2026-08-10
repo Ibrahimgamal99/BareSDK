@@ -16,6 +16,122 @@
 #include <math.h>
 #include "baresdk_internal.h"
 
+/* ── Owned-event cloning (cfg.deliver_owned_events) ──────────────────────── */
+
+/* Rebase a string pointer from the old event's inline buf into the clone's.
+ * Pointers outside buf (static strings, call-wrapper buffers, NULL) pass
+ * through unchanged. */
+static const char *rb(const char *p,
+                      const struct baresdk_queued_event *o,
+                      const struct baresdk_queued_event *n)
+{
+	if (p >= o->buf && p < o->buf + sizeof(o->buf))
+		return n->buf + (p - o->buf);
+	return p;
+}
+
+/* Deep-clone a queued event for handoff to an async consumer.
+ *
+ * The whole block (struct + inline buf) is memcpy'd, then every string
+ * pointer of the active union member is rebased into the clone's buf.
+ * Keep the switch in sync with the baresdk_event_t union in baresdk.h
+ * and with the event construction sites (log.c, trace.c, sdp.c, stats.c,
+ * message.c, presence.c, transfer.c, netmon.c, this file).
+ *
+ * Ownership: `old`'s deref_after_deliver (the call wrapper kept alive for
+ * CALL_ENDED delivery) is transferred to the clone.  SDP events point
+ * local_sdp/remote_sdp into the call wrapper's stable buffers, so the
+ * clone takes an extra reference on the wrapper to keep them valid until
+ * baresdk_event_release(). */
+static struct baresdk_queued_event *
+qev_clone(struct baresdk_queued_event *old)
+{
+	struct baresdk_queued_event *n = mem_alloc(sizeof(*n), NULL);
+	if (!n)
+		return NULL;
+
+	memcpy(n, old, sizeof(*n));
+	memset(&n->le, 0, sizeof(n->le));
+	n->deref_after_deliver   = old->deref_after_deliver;
+	old->deref_after_deliver = NULL;
+
+	baresdk_event_t *ev = &n->ev;
+	switch (ev->type) {
+	case BARESDK_EV_LOG:
+		ev->u.log.message = rb(ev->u.log.message, old, n);
+		break;
+	case BARESDK_EV_REG_STATE:
+		ev->u.reg.error_str = rb(ev->u.reg.error_str, old, n);
+		break;
+	case BARESDK_EV_INCOMING_CALL:
+		ev->u.incoming.from_uri     = rb(ev->u.incoming.from_uri, old, n);
+		ev->u.incoming.display_name = rb(ev->u.incoming.display_name, old, n);
+		break;
+	case BARESDK_EV_CALL_STATE:
+		ev->u.call_state.reason = rb(ev->u.call_state.reason, old, n);
+		break;
+	case BARESDK_EV_SDP_NEGOTIATION:
+		ev->u.sdp.negotiated_codec  = rb(ev->u.sdp.negotiated_codec, old, n);
+		ev->u.sdp.negotiated_crypto = rb(ev->u.sdp.negotiated_crypto, old, n);
+		/* local_sdp/remote_sdp live in the call wrapper (sdp.c) —
+		 * hold a reference so they outlive call teardown.
+		 * rejected_codecs/warnings are never populated today; if that
+		 * changes they must be packed into buf and rebased here. */
+		if (ev->u.sdp.call && !n->deref_after_deliver)
+			n->deref_after_deliver = mem_ref(ev->u.sdp.call);
+		break;
+	case BARESDK_EV_SIP_TRACE:
+		ev->u.sip_trace.transport   = rb(ev->u.sip_trace.transport, old, n);
+		ev->u.sip_trace.remote_addr = rb(ev->u.sip_trace.remote_addr, old, n);
+		ev->u.sip_trace.raw_message = rb(ev->u.sip_trace.raw_message, old, n);
+		break;
+	case BARESDK_EV_MEDIA_STATS:
+		ev->u.stats.codec_name = rb(ev->u.stats.codec_name, old, n);
+		break;
+	case BARESDK_EV_REGISTRAR_WARNING:
+		ev->u.reg_warn.message = rb(ev->u.reg_warn.message, old, n);
+		break;
+	case BARESDK_EV_TRANSFER_REQUEST:
+		ev->u.transfer_req.refer_to_uri =
+			rb(ev->u.transfer_req.refer_to_uri, old, n);
+		break;
+	case BARESDK_EV_MWI:
+		ev->u.mwi.raw_body = rb(ev->u.mwi.raw_body, old, n);
+		break;
+	case BARESDK_EV_MESSAGE:
+		ev->u.msg.from_uri     = rb(ev->u.msg.from_uri, old, n);
+		ev->u.msg.body         = rb(ev->u.msg.body, old, n);
+		ev->u.msg.content_type = rb(ev->u.msg.content_type, old, n);
+		break;
+	case BARESDK_EV_PRESENCE_STATE:
+		ev->u.presence.target_uri = rb(ev->u.presence.target_uri, old, n);
+		break;
+	case BARESDK_EV_QUALITY_ALERT:
+	case BARESDK_EV_CALL_DTMF:
+		/* no string fields */
+		break;
+	case BARESDK_EV_NETWORK:
+		ev->u.network.local_addr = rb(ev->u.network.local_addr, old, n);
+		break;
+	}
+
+	return n;
+}
+
+void baresdk_event_release(const baresdk_event_t *ev)
+{
+	if (!ev)
+		return;
+
+	struct baresdk_queued_event *qev = (struct baresdk_queued_event *)
+		((char *)(uintptr_t)ev -
+		 offsetof(struct baresdk_queued_event, ev));
+
+	if (qev->deref_after_deliver)
+		mem_deref(qev->deref_after_deliver);
+	mem_deref(qev);
+}
+
 /* ── Event thread ────────────────────────────────────────────────────────── */
 
 static int event_thread_fn(void *arg)
@@ -37,11 +153,26 @@ static int event_thread_fn(void *arg)
 			g_bsdk.ev_queue_len--;
 			mtx_unlock(&g_bsdk.ev_lock);
 
-			if (g_bsdk.cfg.event_cb)
-				g_bsdk.cfg.event_cb(&qev->ev,
-				                    g_bsdk.cfg.event_userdata);
+			if (g_bsdk.cfg.event_cb) {
+				if (g_bsdk.cfg.deliver_owned_events) {
+					/* Hand the consumer an owned clone; it
+					 * frees it via baresdk_event_release().
+					 * OOM → event dropped. */
+					struct baresdk_queued_event *own =
+						qev_clone(qev);
+					if (own)
+						g_bsdk.cfg.event_cb(&own->ev,
+						    g_bsdk.cfg.event_userdata);
+				}
+				else {
+					g_bsdk.cfg.event_cb(&qev->ev,
+					    g_bsdk.cfg.event_userdata);
+				}
+			}
 			/* Deref the call wrapper only after the app callback has
-			 * returned so the handle remains valid during delivery. */
+			 * returned so the handle remains valid during delivery.
+			 * (In owned mode qev_clone took over this reference and
+			 * deref_after_deliver is already NULL.) */
 			if (qev->deref_after_deliver)
 				mem_deref(qev->deref_after_deliver);
 			mem_deref(qev);

@@ -89,7 +89,10 @@ typedef enum {
  *   libwebrtc-audio-processing-1.  Returns ENOTSUP on mobile builds and
  *   when the option is off.
  */
-#if defined(_MSC_VER)
+/* BARESDK_NO_PACKED_ENUM: for binding generators (e.g. ffigen) that ignore
+ * __attribute__((packed)) and would widen the field to 4 bytes, silently
+ * shifting every later struct member. The uint8_t typedef keeps the ABI. */
+#if defined(_MSC_VER) || defined(BARESDK_NO_PACKED_ENUM)
 typedef uint8_t baresdk_aec_mode_t;
 #  define BARESDK_AEC_OFF        ((baresdk_aec_mode_t)0)
 #  define BARESDK_AEC_SUPPRESSOR ((baresdk_aec_mode_t)1)
@@ -479,6 +482,14 @@ typedef struct {
 typedef void (*baresdk_event_cb_t)(const baresdk_event_t *ev, void *userdata);
 
 /**
+ * Release an event delivered with cfg.deliver_owned_events = true.
+ * Must be called exactly once per delivered event; may be called from any
+ * thread, at any time after delivery.  No-op on NULL.  Passing an event
+ * that was NOT delivered in owned mode is undefined behavior.
+ */
+BARESDK_EXPORT void baresdk_event_release(const baresdk_event_t *ev);
+
+/**
  * Media tap callback — fired from the audio thread on each audio frame.
  * Must be non-blocking. Copy PCM data if you need it beyond the callback.
  */
@@ -664,6 +675,19 @@ typedef struct {
 
 	/** Maximum handover / re-INVITE attempts before giving up. Default 6. */
 	uint32_t  net_max_attempts;
+
+	/* ── Event delivery ownership ─────────────────────────────────
+	 *
+	 * false (default): event_cb receives a borrowed event, valid only
+	 * for the duration of the callback (the historical contract).
+	 *
+	 * true: event_cb receives a heap-owned clone of the event; the
+	 * consumer MUST call baresdk_event_release(ev) exactly once when
+	 * done — which may be after the callback has returned.  Required
+	 * for bindings that dispatch events asynchronously, e.g. Dart's
+	 * NativeCallable.listener, where the callback body runs on the
+	 * isolate's event loop after the C call has already returned. */
+	bool      deliver_owned_events;
 
 } baresdk_config_t;
 

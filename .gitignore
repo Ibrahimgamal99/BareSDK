@@ -17,6 +17,8 @@ _deps/
 # Compiled binaries / libraries
 *.a
 *.so
+# ...except the prebuilt Android libs shipped inside the Flutter plugin
+!bindings/flutter/android/src/main/jniLibs/**/*.so
 *.dylib
 *.dll
 *.lib

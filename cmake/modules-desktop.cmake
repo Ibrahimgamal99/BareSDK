@@ -10,6 +10,7 @@ set(BARESDK_DESKTOP_MODULES
   # Audio codecs
   "opus"
   "g711"
+  "g722"
   "l16"
   # Audio processing
   "aubridge"

@@ -102,10 +102,6 @@ static int tap_encupd(struct aufilt_enc_st **stp, void **ctx,
 	if (!st) return ENOMEM;
 	st->au = au;
 	st->lc = tap_find_call(au);
-	fprintf(stderr, "[tap_encupd] au=%p prm.fmt=%d prm.srate=%u lc=%p\n",
-	        (void *)au, prm ? prm->fmt : -1, prm ? prm->srate : 0,
-	        (void *)st->lc);
-	fflush(stderr);
 	*stp = (struct aufilt_enc_st *)st;
 	return 0;
 }
@@ -143,26 +139,12 @@ static struct baresdk_call *tap_find_call(const struct audio *au)
 static int tap_encode(struct aufilt_enc_st *st, struct auframe *af)
 {
 	struct tap_enc_st *ts = (struct tap_enc_st *)st;
-	static int dbg = 0;
-	if (dbg < 5) {
-		fprintf(stderr, "[tap_encode] call=%d fmt=%d sampc=%zu au=%p ts->lc=%p\n",
-		        dbg, af->fmt, af->sampc, (void *)ts->au, (void *)ts->lc);
-		fflush(stderr);
-		dbg++;
-	}
 
 	if (!ts->lc)
 		ts->lc = tap_find_call(ts->au);
 	struct baresdk_call *lc = ts->lc;
-	if (!lc) {
-		static int nlc = 0;
-		if (nlc < 3) {
-			fprintf(stderr, "[tap_encode] no lc found for au=%p\n", (void *)ts->au);
-			fflush(stderr);
-			nlc++;
-		}
+	if (!lc)
 		return 0;
-	}
 
 	float dbov = tap_compute_dbov(af->sampv, af->sampc, af->fmt);
 	uint32_t bits; memcpy(&bits, &dbov, 4);

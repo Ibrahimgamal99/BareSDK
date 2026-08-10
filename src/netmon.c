@@ -68,7 +68,8 @@ struct bsdk_netmon {
 	bool     down;          /* no usable local address                     */
 
 	uint32_t gen;           /* handover generation; stamps per-call state  */
-	uint32_t attempt;       /* consecutive failed handover attempts        */
+	uint32_t attempt;       /* consecutive failed transport resets         */
+	uint32_t wait_ticks;    /* consecutive no-address polls (backoff only)  */
 	uint64_t handover_start;/* tmr_jiffies() when this round was detected  */
 
 	uint32_t poll_s;
@@ -397,7 +398,8 @@ static bool migration_pending(void)
 	for (size_t i = 0; i < n; i++) {
 		if (snap[i]->net_mig_gen != g_nm.gen)
 			continue;
-		if (snap[i]->net_mig_state == BSDK_MIG_DEFERRED ||
+		if (snap[i]->net_mig_state == BSDK_MIG_WAIT_ADDR ||
+		    snap[i]->net_mig_state == BSDK_MIG_DEFERRED ||
 		    snap[i]->net_mig_state == BSDK_MIG_SENT)
 			return true;
 	}
@@ -458,6 +460,24 @@ static void send_migration(struct baresdk_call *lc)
 	}
 }
 
+/**
+ * Park a call whose new source address cannot be determined yet.
+ *
+ * The routing table can lag the address change by a beat — very likely during
+ * Wi-Fi→cellular, which is exactly when this runs.  The call MUST already be
+ * stamped with the current generation, otherwise verify_handler() skips it and
+ * the call is stranded on its old SDP address with nothing to notice.
+ */
+static void wait_for_addr(struct baresdk_call *lc)
+{
+	if (lc->net_mig_state == BSDK_MIG_WAIT_ADDR)
+		return;
+
+	lc->net_mig_state = BSDK_MIG_WAIT_ADDR;
+	netmon_emit(BARESDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
+	            (uint32_t)lc->net_mig_tries + 1u);
+}
+
 static void start_migration(struct baresdk_call *lc)
 {
 	struct stream   *strm;
@@ -469,23 +489,44 @@ static void start_migration(struct baresdk_call *lc)
 		return;
 	}
 
+	/* Claim the call for this handover generation BEFORE any bail-out below.
+	 * apply_handover() has already cleared reset_pending and force by the
+	 * time we run, so netmon_trigger() will not re-enter on its own; an
+	 * unstamped call is invisible to verify_handler() and would be dropped
+	 * silently.  Guarded so a retry from verify_handler() does not reset the
+	 * attempt counter and loop forever. */
+	if (lc->net_mig_gen != g_nm.gen) {
+		lc->net_mig_gen   = g_nm.gen;
+		lc->net_mig_tries = 0;
+		/* Clock the audio outage from the moment the network changed, not
+		 * from the re-INVITE — the gap the user hears starts earlier. */
+		lc->net_mig_start = g_nm.handover_start ? g_nm.handover_start
+		                                        : tmr_jiffies();
+		sa_init(&lc->net_mig_laddr, AF_UNSPEC);
+	}
+
 	strm = call_audio(lc->bc) ? audio_strm(call_audio(lc->bc)) : NULL;
-	if (!strm)
+	if (!strm) {
+		wait_for_addr(lc);
 		return;
+	}
 
 	/* Prefer the address RTP is actually being sent to (learned from the
 	 * peer) over the one in the SDP. */
 	raddr = stream_raddr(strm);
 	if (!raddr || !sa_isset(raddr, SA_ADDR))
 		raddr = sdp_media_raddr(stream_sdpmedia(strm));
-	if (!raddr || !sa_isset(raddr, SA_ADDR))
-		return;   /* no peer media address yet — nothing to re-point */
+	if (!raddr || !sa_isset(raddr, SA_ADDR)) {
+		wait_for_addr(lc);   /* no peer media address yet */
+		return;
+	}
 
 	/* Ask the routing table which source address now reaches the peer. */
-	if (net_dst_source_addr_get(raddr, &laddr))
-		return;   /* no route yet; the next settle tick will retry */
-	if (!sa_isset(&laddr, SA_ADDR))
+	if (net_dst_source_addr_get(raddr, &laddr) ||
+	    !sa_isset(&laddr, SA_ADDR)) {
+		wait_for_addr(lc);   /* route not installed yet */
 		return;
+	}
 
 	old = call_laddr(lc->bc);
 	if (old && sa_cmp(&laddr, old, SA_ADDR)) {
@@ -494,13 +535,6 @@ static void start_migration(struct baresdk_call *lc)
 	}
 
 	sa_cpy(&lc->net_mig_laddr, &laddr);
-	lc->net_mig_gen   = g_nm.gen;
-	lc->net_mig_tries = 0;
-	/* Clock the audio outage from the moment the network changed, not from
-	 * the re-INVITE — the gap the user hears starts earlier. */
-	lc->net_mig_start = g_nm.handover_start ? g_nm.handover_start
-	                                        : tmr_jiffies();
-
 	send_migration(lc);
 }
 
@@ -544,6 +578,15 @@ static void verify_handler(void *arg)
 		}
 
 		switch (lc->net_mig_state) {
+
+		case BSDK_MIG_WAIT_ADDR:
+			/* Re-run discovery, not send_migration(): net_mig_laddr was
+			 * never resolved, so there is nothing valid to offer yet. */
+			if (++lc->net_mig_tries >= g_nm.max_attempts)
+				fail_migration(lc, EHOSTUNREACH);
+			else
+				start_migration(lc);
+			break;
 
 		case BSDK_MIG_DEFERRED:
 			if (call_refresh_allowed(lc->bc))
@@ -649,10 +692,17 @@ static void apply_handover(void)
 			g_nm.cur_laddr[0] = '\0';
 			netmon_emit(BARESDK_NET_DOWN, NULL, NULL, 0, 0);
 		}
-		tmr_start(&g_nm.tmr_settle, backoff_ms(g_nm.attempt++),
+		/* Backoff for the no-address wait uses its OWN counter.  Sharing
+		 * g_nm.attempt would let a long outage exhaust the reset-failure
+		 * budget, so the first uag_reset_transp() failure afterwards would
+		 * fail the attempt < max_attempts guard below and schedule no retry
+		 * at all — leaving reset_pending true with no timer running. */
+		tmr_start(&g_nm.tmr_settle, backoff_ms(g_nm.wait_ticks++),
 		          settle_handler, NULL);
 		return;
 	}
+
+	g_nm.wait_ticks = 0;
 
 	/* Link-local only: enough to re-bind (some LANs really do run SIP that
 	 * way) but not enough to call the network up. */
@@ -685,9 +735,18 @@ static void apply_handover(void)
 		g_nm.attempt++;
 		netmon_emit(BARESDK_NET_HANDOVER_FAILED, NULL, NULL, err,
 		            g_nm.attempt);
-		if (g_nm.attempt < g_nm.max_attempts)
+		if (g_nm.attempt < g_nm.max_attempts) {
 			tmr_start(&g_nm.tmr_settle, backoff_ms(g_nm.attempt),
 			          settle_handler, NULL);
+		}
+		else {
+			/* Out of attempts.  reset_pending stays true so the next real
+			 * address change or baresdk_network_changed() picks it up, but
+			 * reset the counter — otherwise that next round would inherit an
+			 * exhausted budget and give up immediately.  The app sees
+			 * attempt == max_attempts on the final HANDOVER_FAILED. */
+			g_nm.attempt = 0;
+		}
 		return;
 	}
 

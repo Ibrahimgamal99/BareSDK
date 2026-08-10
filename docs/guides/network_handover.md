@@ -130,7 +130,7 @@ def _(ev):
 | `CALL_MIGRATING` | re-INVITE sent with the new address in the SDP |
 | `CALL_MIGRATE_ACCEPTED` | The peer answered the offer. Audio is not confirmed yet |
 | `CALL_MIGRATED` | RTP observed on the new path. `elapsed_ms` is the audio gap |
-| `CALL_DEFERRED` | The dialog could not take a re-INVITE yet; it will be retried |
+| `CALL_DEFERRED` | Migration is parked and will be retried — either the dialog cannot take a re-INVITE yet, or the new source address is not yet resolvable (route still being installed) |
 | `CALL_MIGRATION_FAILED` | Gave up after `max_attempts` |
 | `HANDOVER_FAILED` | The transport rebind itself failed; retrying with backoff |
 
@@ -195,6 +195,8 @@ bool up = baresdk_network_is_up();            /* false = no routable address */
 | Account in retry backoff | Backoff cancelled and the attempt counter reset — a new network deserves an immediate try, not the tail of a 5-minute backoff |
 | Account created but never registered | Left alone |
 | Call in an early dialog (`CALLING`/`RINGING`) | Deferred and migrated once the dialog is established, rather than hung up |
+| New default route not installed yet | Common during Wi-Fi→cellular: the address is up before the route is. The call is parked as `CALL_DEFERRED` and address discovery re-runs on each verify tick, up to `net_max_attempts`, then reports `CALL_MIGRATION_FAILED` |
+| Peer media address not yet known | Same treatment — parked and retried rather than skipped |
 | re-INVITE glare (`491`) | Retried by the SIP layer (3 s / 1 s per RFC 3261) |
 | `401`/`407` on the re-INVITE | Re-authenticated and retried automatically |
 | `408`/`481` on the re-INVITE | Dialog terminated — the call is genuinely gone |

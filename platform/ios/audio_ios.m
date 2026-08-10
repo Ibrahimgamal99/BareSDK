@@ -12,13 +12,16 @@
  *            MixWithOthers is intentionally omitted so our session takes
  *            exclusive control of the hardware AEC path.
  *
- * Called once from bare_platform_audio_init() during libbare_init().
+ * TODO(ios): not yet wired up — bsdk_platform_audio_init() has no call site
+ * in core init, the top-level CMakeLists declares LANGUAGES C only (no OBJC),
+ * and -framework AVFoundation is not linked. Complete when iOS builds land.
  */
 
 #import <AVFoundation/AVFoundation.h>
-#include "../../src/libbare_internal.h"
+#include <errno.h>
+#include "../../src/baresdk_internal.h"
 
-int bare_platform_audio_init(void)
+int bsdk_platform_audio_init(void)
 {
 	AVAudioSession *session = [AVAudioSession sharedInstance];
 	NSError *error = nil;
@@ -31,7 +34,7 @@ int bare_platform_audio_init(void)
 	         withOptions:opts
 	               error:&error];
 	if (error) {
-		warning("libbare/ios: AVAudioSession setCategory: %s\n",
+		warning("baresdk/ios: AVAudioSession setCategory: %s\n",
 		        [[error localizedDescription] UTF8String]);
 		return EINVAL;
 	}
@@ -40,14 +43,14 @@ int bare_platform_audio_init(void)
 	 * mic gain appropriate for telephone-quality voice calls. */
 	[session setMode:AVAudioSessionModeVoiceChat error:&error];
 	if (error) {
-		warning("libbare/ios: AVAudioSession setMode: %s\n",
+		warning("baresdk/ios: AVAudioSession setMode: %s\n",
 		        [[error localizedDescription] UTF8String]);
 		return EINVAL;
 	}
 
 	[session setActive:YES error:&error];
 	if (error) {
-		warning("libbare/ios: AVAudioSession setActive: %s\n",
+		warning("baresdk/ios: AVAudioSession setActive: %s\n",
 		        [[error localizedDescription] UTF8String]);
 		return EINVAL;
 	}

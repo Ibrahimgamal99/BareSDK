@@ -12,6 +12,10 @@ headers:
 
 compiler-opts:
   - '-I../../include'
+  # ffigen ignores __attribute__((packed)) on enums and would widen
+  # baresdk_aec_mode_t to 4 bytes, shifting every later config field.
+  - '-DBARESDK_NO_PACKED_ENUM=1'
+  # Adjust to the local clang resource dir (ls /usr/lib/clang/).
   - '-isystem/usr/lib/clang/21/include'
 
 # Symbol filtering

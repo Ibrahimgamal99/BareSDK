@@ -155,6 +155,9 @@ struct baresdk_call {
 	char                       remote_sdp[4096];
 	bool                       local_sdp_set;
 	bool                       remote_sdp_set;
+	/* Local hold state — baresip emits no bevent for our own call_hold(),
+	 * so baresdk_call_is_held() reads this flag instead of `state`. */
+	bool                       local_hold;
 	/* Media tap */
 	baresdk_media_tap_cb_t     tap_cb;
 	void                      *tap_userdata;
@@ -198,6 +201,7 @@ struct baresdk_call {
 /* Per-call migration state machine (struct baresdk_call.net_mig_state). */
 enum bsdk_mig_state {
 	BSDK_MIG_IDLE = 0,   /* nothing to do                                  */
+	BSDK_MIG_WAIT_ADDR,  /* new source address not discoverable yet        */
 	BSDK_MIG_DEFERRED,   /* re-INVITE not allowed yet (early/pending xact) */
 	BSDK_MIG_SENT,       /* re-INVITE sent, waiting for RTP on new path    */
 	BSDK_MIG_DONE,       /* RTP confirmed on the new path                  */

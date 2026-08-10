@@ -8,18 +8,18 @@
 #   ffmpeg, sdl, sdl2, x11, gst, gstVideo, gstRtp, pulse, alsa, pipewire,
 #   mosquitto, v4l2, jack, evdev, mqtt, spandsp, aptx, avformat, avcodec
 
+# account/contact/menu are NOT compiled: modules_init.c never loads them
+# (they read ~/.baresip/* from disk / drive a CLI — see its header comment).
 set(BARESDK_MOBILE_MODULES_BASE
   "opus"
   "g711"
   "g722"
   "srtp"
   "dtls_srtp"
+  "stun"
   "turn"
   "ice"
   "uuid"
-  "account"
-  "contact"
-  "menu"
   "mwi"
   "presence"
 )
