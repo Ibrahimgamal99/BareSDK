@@ -56,7 +56,10 @@ rm -f "${SCRIPT_DIR}/dist"/baresdk-*-manylinux*.whl "${SCRIPT_DIR}/dist"/baresdk
 # Default to manylinux_2_34_x86_64 for broad compatibility
 MANYLINUX_TAG="manylinux_2_34_x86_64"
 
-python "${SCRIPT_DIR}/setup.py" bdist_wheel --quiet --dist-dir "${SCRIPT_DIR}/dist" --bdist-dir "${SCRIPT_DIR}/build"
+# Run from the package dir: setuptools reads name/version from the pyproject.toml
+# in the *current* directory, so invoking setup.py by path from elsewhere silently
+# produces an empty unknown-0.0.0 wheel.
+( cd "${SCRIPT_DIR}" && python setup.py bdist_wheel --quiet --dist-dir "${SCRIPT_DIR}/dist" --bdist-dir "${SCRIPT_DIR}/build" )
 
 echo "==> Retagging wheel to ${MANYLINUX_TAG}..."
 python -m wheel tags --platform-tag "${MANYLINUX_TAG}" \

@@ -11,6 +11,8 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${ROOT}/build/linux-x86_64"
 
+bash "${SCRIPT_DIR}/fetch-third-party.sh"
+
 cmake -S "${ROOT}" -B "${BUILD_DIR}" -GNinja \
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
   -DBARESDK_TLS=openssl \

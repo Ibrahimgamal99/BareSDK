@@ -45,6 +45,10 @@ if (-not (Test-Path $Toolchain)) {
     exit 1
 }
 
+Write-Host "=== Fetching third_party ==="
+& (Join-Path $ScriptDir "fetch-third-party.ps1")
+if ($LASTEXITCODE -ne 0) { Write-Error "third_party fetch failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
+
 Write-Host "=== Configuring Windows x64 ==="
 cmake -S $Root -B $BuildDir `
     -G "Visual Studio 17 2022" -A x64 `

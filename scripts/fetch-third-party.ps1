@@ -1,0 +1,48 @@
+# Clone the third_party sources the build needs, at the revisions below.
+# third_party\ is gitignored, so this is how a fresh checkout gets them.
+# Keep the pins in sync with scripts/fetch-third-party.sh.
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = Split-Path -Parent $ScriptDir
+
+$Deps = @(
+    @{ Name = "re";      Url = "https://github.com/baresip/re.git";      Rev = "2049ea9c5dea689f93485c26bbc244d16d5e7809" }
+    @{ Name = "baresip"; Url = "https://github.com/baresip/baresip.git"; Rev = "a9b3749608d129f0017ce940b24b777fa1f2d38b" }
+    @{ Name = "opus";    Url = "https://github.com/xiph/opus.git";       Rev = "f8f99516092f4311a9b0784f190ff982df8eb2e6" }
+)
+if ($env:BARESDK_TLS -eq "mbedtls") {
+    $Deps += @{ Name = "mbedtls"; Url = "https://github.com/Mbed-TLS/mbedtls.git"; Rev = "2f2b202f8e72ef01aa0b743ef9df2abb0a3527d9" }
+}
+
+foreach ($dep in $Deps) {
+    $dir = Join-Path $Root "third_party\$($dep.Name)"
+
+    # CMake gates on CMakeLists.txt, so that marks an already-usable tree.
+    if (Test-Path (Join-Path $dir "CMakeLists.txt")) {
+        Write-Host "==> $($dep.Name): present"
+        continue
+    }
+
+    Write-Host "==> $($dep.Name): cloning $($dep.Rev.Substring(0,12)) from $($dep.Url)"
+    git init -q $dir
+    if ($LASTEXITCODE -ne 0) { Write-Error "git init failed for $($dep.Name)"; exit 1 }
+
+    # A half-finished earlier run can leave origin already set.
+    if ((git -C $dir remote) -notcontains "origin") {
+        git -C $dir remote add origin $dep.Url
+        if ($LASTEXITCODE -ne 0) { Write-Error "git remote add failed for $($dep.Name)"; exit 1 }
+    }
+
+    git -C $dir fetch -q --depth 1 origin $dep.Rev
+    if ($LASTEXITCODE -ne 0) { Write-Error "git fetch failed for $($dep.Name) ($($dep.Rev))"; exit 1 }
+
+    git -C $dir checkout -q FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { Write-Error "git checkout failed for $($dep.Name)"; exit 1 }
+}
+
+# Always set an exit code: when every dep is already present no native command
+# runs, and the caller's Set-StrictMode would fault on an unset $LASTEXITCODE.
+exit 0

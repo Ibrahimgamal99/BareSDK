@@ -1,5 +1,6 @@
-# Third party dependencies
+# Third party dependencies — fetched by the build, never committed.
 third_party/
+.gitmodules
 
 # Build output
 build/
