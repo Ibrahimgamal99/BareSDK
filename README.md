@@ -11,6 +11,7 @@ Built on [baresip](https://github.com/baresip/baresip) and [libre](https://githu
 | **Transport** | UDP · TCP · TLS · WS · WSS |
 | **Crypto** | SRTP-SDES · DTLS-SRTP |
 | **NAT** | ICE · STUN · TURN |
+| **Mobility** | Network handover (Wi-Fi ↔ 4G/5G) — transport rebind · re-REGISTER · call re-INVITE with media verification |
 | **Calls** | Invite · Answer · Hangup · Hold/Resume · DTMF |
 | **Transfer** | Blind (REFER) · Attended (REFER w/ Replaces) |
 | **Messaging** | SIP MESSAGE send/receive |
@@ -126,5 +127,6 @@ Full docs live in [`docs/`](docs/index.md):
 - [Quick start — Python](docs/quickstart/python.md)
 - [Quick start — Flutter](docs/quickstart/flutter.md)
 - [Complete SDK usage guide](docs/guides/complete_example.md)
+- [Network handover (Wi-Fi ↔ 4G/5G)](docs/guides/network_handover.md)
 - [API reference](docs/api/overview.md)
 - [Changelog](docs/CHANGELOG.md)

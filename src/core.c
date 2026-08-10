@@ -172,6 +172,16 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->aec_suppression_level = 1.0f;
 	cfg->opus.complexity       = -1;
 	/* mic_gain_db and speaker_gain_db default to 0.0f (unity) from memset */
+
+	/* Network handover — poll as a safety net on platforms with no OS
+	 * connectivity callback; mobile apps should set this to 0 and drive
+	 * baresdk_network_changed() from ConnectivityManager / NWPathMonitor. */
+	cfg->net_monitor_interval_s = 10;
+	cfg->net_settle_ms          = 1500;
+	cfg->net_reinvite_calls     = true;
+	cfg->net_verify_ms          = 4000;
+	cfg->net_max_attempts       = 6;
+	/* net_hangup_on_migration_failure defaults to false from memset */
 }
 
 /* ── Platform temp-dir helper ────────────────────────────────────────────── */
@@ -405,12 +415,17 @@ int baresdk_init(const baresdk_config_t *cfg)
 			goto fail;
 	}
 
-	BSDK_TRACE("[bsdk] step 13: re_loop_start\n");
+	BSDK_TRACE("[bsdk] step 13: netmon_init\n");
+	err = bsdk_netmon_init();
+	if (err)
+		goto fail;
+
+	BSDK_TRACE("[bsdk] step 14: re_loop_start\n");
 	err = bsdk_re_loop_start();
 	if (err)
 		goto fail;
 
-	BSDK_TRACE("[bsdk] step 14: done\n");
+	BSDK_TRACE("[bsdk] step 15: done\n");
 	g_bsdk.initialized = true;
 	mtx_unlock(&g_bsdk.lock);
 	return BARESDK_OK;
@@ -419,6 +434,7 @@ fail:
 	BSDK_TRACE("[bsdk] fail: cleanup start\n");
 	warning("baresdk: init failed: %m\n", err);
 	bsdk_re_loop_stop();
+	bsdk_netmon_close();
 	bsdk_stats_close();
 	bsdk_trace_close();
 	bsdk_event_close();
@@ -460,6 +476,10 @@ void baresdk_shutdown(void)
 		return;
 	}
 
+	/* Stop the handover state machine before anything it touches (UAs,
+	 * calls) is torn down.  Timers are cancelled after the re loop stops. */
+	bsdk_netmon_stop();
+
 	BSDK_TRACE("[bsdk] shutdown: event_close\n");
 	bsdk_event_close();
 
@@ -489,6 +509,10 @@ void baresdk_shutdown(void)
 
 	BSDK_TRACE("[bsdk] shutdown: re_loop_stop\n");
 	bsdk_re_loop_stop();
+
+	/* After the loop has stopped so no handover timer can fire mid-teardown. */
+	BSDK_TRACE("[bsdk] shutdown: netmon_close\n");
+	bsdk_netmon_close();
 
 	BSDK_TRACE("[bsdk] shutdown: ua_close\n");
 	ua_close();

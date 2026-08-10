@@ -209,7 +209,61 @@ typedef enum {
 	BARESDK_EV_MESSAGE,
 	BARESDK_EV_PRESENCE_STATE,
 	BARESDK_EV_QUALITY_ALERT,
+	BARESDK_EV_NETWORK,
 } baresdk_event_type_t;
+
+/* ── Network handover ─────────────────────────────────────────────────────── */
+
+/**
+ * Stages of a network handover (Wi-Fi ↔ 4G/5G, VPN up/down, dock/undock).
+ *
+ * A typical Wi-Fi → cellular handover emits, in order:
+ *   CHANGE_DETECTED → TRANSPORT_RESET → REREGISTERING
+ *                   → CALL_MIGRATING → CALL_MIGRATED
+ *
+ * When the device is briefly off-network the sequence starts with DOWN and
+ * resumes at UP once a usable address appears.
+ */
+typedef enum {
+	BARESDK_NET_CHANGE_DETECTED = 0,   /* local address set changed          */
+	BARESDK_NET_DOWN,                  /* no usable local address            */
+	BARESDK_NET_UP,                    /* usable local address again         */
+	BARESDK_NET_TRANSPORT_RESET,       /* SIP transports flushed + re-bound  */
+	BARESDK_NET_REREGISTERING,         /* REGISTER re-sent on the new path   */
+	BARESDK_NET_CALL_MIGRATING,        /* re-INVITE sent to move the media   */
+	BARESDK_NET_CALL_MIGRATE_ACCEPTED, /* peer answered; awaiting audio      */
+	BARESDK_NET_CALL_MIGRATED,         /* RTP confirmed on the new path      */
+	BARESDK_NET_CALL_MIGRATION_FAILED, /* gave up; see `error`               */
+	BARESDK_NET_CALL_DEFERRED,         /* not refreshable yet; will retry    */
+	BARESDK_NET_HANDOVER_FAILED,       /* transport reset failed; retrying   */
+} baresdk_net_event_t;
+
+/**
+ * Network handover progress.
+ *
+ * `attempt` / `max_attempts` render a progress counter:
+ *     "link settled — rebuilding the media path %u/%u"
+ * `elapsed_ms` on CALL_MIGRATED is how long audio was interrupted:
+ *     "media recovered after %.1f s"
+ */
+typedef struct {
+	baresdk_net_event_t      event;
+	baresdk_call_handle_t    call;     /* CALL_* events only; else NULL    */
+	baresdk_account_handle_t account;  /* REREGISTERING only; else NULL    */
+	const char              *local_addr; /* new local IP, "" when unknown  */
+	uint32_t                 attempt;  /* 1-based retry counter            */
+	uint32_t                 max_attempts; /* ceiling for `attempt`        */
+	uint32_t                 elapsed_ms;   /* ms since this migration began */
+	/**
+	 * True when the call negotiated ICE.  Media recovery is best-effort
+	 * for these: the re-INVITE re-runs ICE against the existing local
+	 * candidates but does NOT perform an RFC 8445 §9 ICE restart, because
+	 * baresip fixes the local ufrag/pwd when the media session is created
+	 * and exposes no way to regenerate them mid-call.
+	 */
+	bool                     ice;
+	baresdk_error_t          error;    /* BARESDK_OK unless *_FAILED       */
+} baresdk_ev_network_t;
 
 /* ── Event payload structs ────────────────────────────────────────────────── */
 typedef struct {
@@ -410,6 +464,7 @@ typedef struct {
 		baresdk_ev_message_t           msg;
 		baresdk_ev_presence_state_t    presence;
 		baresdk_ev_quality_alert_t     quality_alert;
+		baresdk_ev_network_t           network;
 	} u;
 } baresdk_event_t;
 
@@ -576,6 +631,39 @@ typedef struct {
 	int                 log_level;      /* 0=err, 1=warn, 2=info, 3=debug */
 	baresdk_event_cb_t  event_cb;       /* required */
 	void               *event_userdata;
+
+	/* ── Network handover (Wi-Fi ↔ 4G/5G roaming) ────────────────
+	 *
+	 * On a network change the SDK re-binds its SIP transports,
+	 * re-REGISTERs, and re-INVITEs every active call onto the new local
+	 * address.  On mobile, drive this from the OS connectivity callback
+	 * by calling baresdk_network_changed(); the built-in poller below is
+	 * a safety net for platforms with no such callback.
+	 */
+
+	/** Interface poll interval in seconds; 0 disables polling.
+	 *  Default 10.  Set 0 on mobile and call baresdk_network_changed(). */
+	uint32_t  net_monitor_interval_s;
+
+	/** Debounce window: how long the address set must stay stable before
+	 *  the handover is applied.  Default 1500 ms.  Prevents thrashing
+	 *  while an interface is still coming up. */
+	uint32_t  net_settle_ms;
+
+	/** Re-INVITE active calls onto the new local address. Default true. */
+	bool      net_reinvite_calls;
+
+	/** Hang up a call whose media could not be migrated instead of
+	 *  leaving it up with (probably) dead audio.  Default false. */
+	bool      net_hangup_on_migration_failure;
+
+	/** How long to wait for RTP on the new path before declaring the
+	 *  migration failed and retrying.  Default 4000 ms; 0 disables the
+	 *  media check (the re-INVITE is then assumed to have worked). */
+	uint32_t  net_verify_ms;
+
+	/** Maximum handover / re-INVITE attempts before giving up. Default 6. */
+	uint32_t  net_max_attempts;
 
 } baresdk_config_t;
 
@@ -1060,6 +1148,58 @@ BARESDK_EXPORT int baresdk_call_record_stop(baresdk_call_handle_t call);
  */
 BARESDK_EXPORT int baresdk_call_get_stats(baresdk_call_handle_t     call,
                             baresdk_ev_media_stats_t *out);
+
+/* ── Network handover ─────────────────────────────────────────────────────── */
+
+/**
+ * Tell the SDK that the underlying network may have changed.
+ *
+ * Call this from the platform's connectivity callback:
+ *   Android — ConnectivityManager.NetworkCallback onAvailable / onLost /
+ *             onCapabilitiesChanged
+ *   iOS     — NWPathMonitor pathUpdateHandler
+ *   Desktop — NetworkManager / SCNetworkReachability / NotifyAddrChange, or
+ *             leave it to the built-in poller (cfg.net_monitor_interval_s).
+ *
+ * Safe to call from any thread and as often as the OS fires.  Calls are
+ * coalesced: the handover runs once the address set has been stable for
+ * cfg.net_settle_ms.  Returns immediately — progress is reported through
+ * BARESDK_EV_NETWORK events.
+ *
+ * The handover performs, in order:
+ *   1. re-scan local addresses and refresh the DNS resolver list
+ *   2. flush and re-bind all SIP transports (drops dead TCP/TLS/WS sockets)
+ *   3. re-REGISTER every account the app asked to be registered
+ *   4. re-INVITE every active call with the new local address in the SDP
+ *   5. verify RTP resumes on the new path, retrying the re-INVITE if not
+ *
+ * @return BARESDK_OK, or BARESDK_ERR_STATE if the SDK is not initialized.
+ */
+BARESDK_EXPORT int baresdk_network_changed(void);
+
+/**
+ * Change the built-in interface poll interval at runtime.
+ * @param seconds  Poll period; 0 disables polling entirely.
+ */
+BARESDK_EXPORT int baresdk_network_set_monitor_interval(uint32_t seconds);
+
+/**
+ * Adjust handover behaviour at runtime (overrides the cfg.net_* fields).
+ * @param reinvite_calls    Re-INVITE active calls onto the new address.
+ * @param hangup_on_failure Hang up calls whose media could not be migrated.
+ */
+BARESDK_EXPORT int baresdk_network_set_handover_policy(bool reinvite_calls,
+                                                        bool hangup_on_failure);
+
+/**
+ * Copy the local IP the SDK is currently using into buf.
+ * Writes an empty string when no usable address exists.
+ * @return BARESDK_OK, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+ */
+BARESDK_EXPORT int baresdk_network_local_addr(char *buf, size_t sz);
+
+/** False while the device has no usable (non-loopback) local address. */
+BARESDK_EXPORT bool baresdk_network_is_up(void);
 
 /* ── pcap ─────────────────────────────────────────────────────────────────── */
 

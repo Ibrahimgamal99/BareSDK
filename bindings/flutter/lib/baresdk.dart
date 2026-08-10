@@ -21,7 +21,6 @@ library baresdk;
 
 import 'dart:async';
 import 'dart:ffi';
-import 'dart:isolate';
 import 'package:ffi/ffi.dart';
 
 import 'src/ffi_bindings.dart';
@@ -171,6 +170,47 @@ class PresenceStateEvent extends BareSDKEvent {
   PresenceStateEvent(this.targetUri, this.status);
 }
 
+/// Progress of a network handover (Wi-Fi <-> 4G/5G, VPN, dock/undock).
+///
+/// Delivered on [BareSDK.events]. Most stages are not account-scoped, so they
+/// do NOT appear on [Account.events].
+///
+///     sdk.events.listen((ev) {
+///       if (ev is! NetworkEvent) return;
+///       switch (ev.stage) {
+///         case baresdk_net_event_t.BARESDK_NET_CALL_MIGRATING:
+///           log('link settled - rebuilding media path '
+///               '${ev.attempt}/${ev.maxAttempts}');
+///         case baresdk_net_event_t.BARESDK_NET_CALL_MIGRATED:
+///           log('media recovered after '
+///               '${(ev.elapsedMs / 1000).toStringAsFixed(1)}s');
+///       }
+///     });
+class NetworkEvent extends BareSDKEvent {
+  /// One of the `baresdk_net_event_t.BARESDK_NET_*` constants.
+  final int stage;
+  final Call? call;
+  final String localAddr;
+  final int attempt;
+  final int maxAttempts;
+  final int elapsedMs;
+
+  /// True when the call uses ICE — media recovery is best-effort there.
+  final bool ice;
+  final int error;
+
+  NetworkEvent({
+    required this.stage,
+    required this.call,
+    required this.localAddr,
+    required this.attempt,
+    required this.maxAttempts,
+    required this.elapsedMs,
+    required this.ice,
+    required this.error,
+  });
+}
+
 class SipTraceEvent extends BareSDKEvent {
   final int direction;
   final String transport;
@@ -191,8 +231,8 @@ class Call {
   void hangup()             => internal.nativeBindings.baresdk_call_hangup(_handle);
   void hold()               => internal.nativeBindings.baresdk_call_hold(_handle);
   void resume()             => internal.nativeBindings.baresdk_call_resume(_handle);
-  void mute({bool on = true})   => internal.nativeBindings.baresdk_audio_mute(_handle, on ? 1 : 0);
-  void muteRx({bool on = true}) => internal.nativeBindings.baresdk_audio_mute_rx(_handle, on ? 1 : 0);
+  void mute({bool on = true})   => internal.nativeBindings.baresdk_audio_mute(_handle, on);
+  void muteRx({bool on = true}) => internal.nativeBindings.baresdk_audio_mute_rx(_handle, on);
 
   void sendDtmf(String digit) {
     internal.nativeBindings.baresdk_call_send_dtmf(_handle, digit.codeUnitAt(0));
@@ -274,12 +314,24 @@ void _cEventCb(Pointer<baresdk_event_t> ev, Pointer<Void> ud) {
 
 class BareSDK {
   final Map<int, Account> _accounts = {};
+  final StreamController<BareSDKEvent> _ctrl =
+      StreamController<BareSDKEvent>.broadcast();
+
+  /// Every event from the stack, including the ones that belong to no
+  /// account (network handover, log). Account-scoped events also continue
+  /// to arrive on [Account.events].
+  Stream<BareSDKEvent> get events => _ctrl.stream;
   late final NativeCallable<Void Function(Pointer<baresdk_event_t>, Pointer<Void>)> _nativeCb;
 
   BareSDK({
     int logLevel        = 1,
     int statsIntervalMs = 0,
     bool traceSip       = false,
+    bool preferIpv6     = false,
+    bool verifyServer   = true,
+    /// Interface poll period for network handover, in seconds.
+    /// Pass 0 on mobile and drive [networkChanged] from the OS callback.
+    int netMonitorIntervalSeconds = 10,
     String? libPath,
   }) {
     if (libPath != null) internal.setLibPath(libPath);
@@ -294,9 +346,11 @@ class BareSDK {
     internal.nativeBindings.baresdk_config_init(cfg);
     cfg.ref.log_level         = logLevel;
     cfg.ref.stats_interval_ms = statsIntervalMs;
-    cfg.ref.trace_sip         = traceSip ? 1 : 0;
-    cfg.ref.event_cb          = _nativeCb.nativeFunction
-        .cast<NativeFunction<baresdk_event_cb_t>>();
+    cfg.ref.trace_sip         = traceSip;
+    cfg.ref.prefer_ipv6       = preferIpv6;
+    cfg.ref.verify_server     = verifyServer;
+    cfg.ref.net_monitor_interval_s = netMonitorIntervalSeconds;
+    cfg.ref.event_cb          = _nativeCb.nativeFunction;
     cfg.ref.event_userdata    = nullptr;
     internal.nativeBindings.baresdk_init(cfg);
     calloc.free(cfg);
@@ -307,6 +361,9 @@ class BareSDK {
 
   Account createAccount(String uri, String password, {
     int transport = baresdk_transport_t.BARESDK_TRANSPORT_UDP,
+    int mediaEnc = baresdk_media_enc_t.BARESDK_MEDIA_ENC_NONE,
+    bool iceEnabled = false,
+    bool verifyTls = true,
     int pushProvider = baresdk_push_provider_t.BARESDK_PUSH_PROVIDER_NONE,
     String? pushToken,
     String? pushParam,
@@ -325,6 +382,9 @@ class BareSDK {
     cfg.ref.uri           = uriPtr;
     cfg.ref.password      = passPtr;
     cfg.ref.transport     = transport;
+    cfg.ref.media_enc     = mediaEnc;
+    cfg.ref.ice_enabled   = iceEnabled;
+    cfg.ref.verify_tls    = verifyTls;
     cfg.ref.push_provider = pushProvider;
     cfg.ref.push_token    = tokenPtr;
     cfg.ref.push_param    = paramPtr;
@@ -386,9 +446,51 @@ class BareSDK {
     internal.nativeBindings.baresdk_set_jitter_buffer(minMs, maxMs);
   }
 
+  // ── Network handover (Wi-Fi <-> 4G/5G) ───────────────────────────────────
+  //
+  // Call networkChanged() from the platform connectivity callback
+  // (connectivity_plus onConnectivityChanged, or native ConnectivityManager /
+  // NWPathMonitor). The SDK re-binds its SIP transports, re-REGISTERs, and
+  // re-INVITEs active calls onto the new local address.
+  //
+  // Progress is reported as BARESDK_EV_NETWORK, which the high-level event
+  // stream does not decode yet — read it through the raw FFI bindings if you
+  // need the per-stage detail.
+
+  /// Tell the SDK the network may have changed. Safe to call from any thread.
+  int networkChanged() => internal.nativeBindings.baresdk_network_changed();
+
+  /// Interface poll period in seconds; 0 disables polling.
+  /// Set 0 on mobile and drive [networkChanged] from the OS callback instead.
+  int networkSetMonitorInterval(int seconds) =>
+      internal.nativeBindings.baresdk_network_set_monitor_interval(seconds);
+
+  /// Re-INVITE active calls on handover; optionally hang up on failure.
+  int networkSetHandoverPolicy(bool reinviteCalls, bool hangupOnFailure) =>
+      internal.nativeBindings
+          .baresdk_network_set_handover_policy(reinviteCalls, hangupOnFailure);
+
+  /// Local IP currently in use, or '' when the device has no address.
+  String networkLocalAddr() {
+    final buf = calloc<Uint8>(64);
+    try {
+      if (internal.nativeBindings
+              .baresdk_network_local_addr(buf.cast<Char>(), 64) != 0) {
+        return '';
+      }
+      return buf.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  /// False while the device has no usable (non-loopback) local address.
+  bool networkIsUp() => internal.nativeBindings.baresdk_network_is_up();
+
   void shutdown() {
     internal.nativeBindings.baresdk_shutdown();
     _nativeCb.close();
+    _ctrl.close();
   }
 
   // ── event dispatcher ─────────────────────────────────────────────────────
@@ -402,6 +504,7 @@ class BareSDK {
     switch (type) {
       case baresdk_event_type_t.BARESDK_EV_LOG:
         decoded = LogEvent(ev.ref.u.log.message.cast<Utf8>().toDartString());
+        _ctrl.add(decoded);
         for (final a in _accounts.values) a._add(decoded);
         return;
 
@@ -478,6 +581,7 @@ class BareSDK {
           ssrcRx:             s.ssrc_rx,
           remoteAddr:         addrStr,
         );
+        _ctrl.add(decoded);
         for (final a in _accounts.values) a._add(decoded);
         return;
 
@@ -491,10 +595,55 @@ class BareSDK {
         target = _accounts[m.account.address];
         break;
 
+      case baresdk_event_type_t.BARESDK_EV_CALL_DTMF:
+        final d = ev.ref.u.dtmf;
+        decoded = CallDtmfEvent(Call(d.call), String.fromCharCode(d.digit));
+        break;
+
+      case baresdk_event_type_t.BARESDK_EV_PRESENCE_STATE:
+        final p = ev.ref.u.presence;
+        decoded = PresenceStateEvent(
+          p.target_uri.cast<Utf8>().toDartString(),
+          p.status,
+        );
+        target = _accounts[p.account.address];
+        break;
+
+      case baresdk_event_type_t.BARESDK_EV_SIP_TRACE:
+        final t = ev.ref.u.sip_trace;
+        decoded = SipTraceEvent(
+          t.dir,
+          t.transport.cast<Utf8>().toDartString(),
+          t.remote_addr.cast<Utf8>().toDartString(),
+          t.raw_message.cast<Utf8>().toDartString(),
+          t.timestamp_us,
+        );
+        break;
+
+      case baresdk_event_type_t.BARESDK_EV_NETWORK:
+        final n = ev.ref.u.network;
+        decoded = NetworkEvent(
+          stage:       n.event,
+          call:        n.call == nullptr ? null : Call(n.call),
+          localAddr:   n.local_addr == nullptr
+              ? '' : n.local_addr.cast<Utf8>().toDartString(),
+          attempt:     n.attempt,
+          maxAttempts: n.max_attempts,
+          elapsedMs:   n.elapsed_ms,
+          ice:         n.ice,
+          error:       n.error,
+        );
+        // Most handover stages carry no account; REREGISTERING does.
+        if (n.account != nullptr) target = _accounts[n.account.address];
+        break;
+
       default:
         return;
     }
 
+    // Everything reaches the SDK-wide stream; account-scoped events also go
+    // to their own account so existing listeners keep working.
+    _ctrl.add(decoded);
     if (target != null) {
       target._add(decoded);
     }

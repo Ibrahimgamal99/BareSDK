@@ -24,7 +24,7 @@ class Call {
   int resume() => internal.nativeBindings.baresdk_call_resume(_handle);
 
   int mute({bool on = true}) =>
-      internal.nativeBindings.baresdk_audio_mute(_handle, on ? 1 : 0);
+      internal.nativeBindings.baresdk_audio_mute(_handle, on);
 
   int sendDtmf(String digit) =>
       internal.nativeBindings.baresdk_call_send_dtmf(_handle, digit.codeUnitAt(0));

@@ -16,16 +16,15 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
-flutter:
-  plugin:
-    platforms:
-      android:
-        ffiPlugin: true
-      ios:
-        ffiPlugin: false
-      linux:
-        ffiPlugin: true
-      macos:
-        ffiPlugin: false
-      windows:
-        ffiPlugin: true
+# Not a Flutter plugin: this package ships no platform scaffolding and builds
+# no native code. It is a pure-Dart FFI wrapper that opens a prebuilt baresdk
+# library at runtime (see loadLib() in lib/src/sdk.dart).
+#
+# The host app is responsible for shipping the native library:
+#   Android — put dist/android/<abi>/baresdk.so in src/main/jniLibs/<abi>/
+#   iOS     — link dist/ios/baresdk.xcframework (symbols resolve via
+#             DynamicLibrary.process())
+#   Linux   — bundle baresdk.so next to the executable, or pass
+#             BareSDK(libPath: '/abs/path/baresdk.so')
+#   macOS   — bundle baresdk.dylib in Frameworks/
+#   Windows — place baresdk.dll beside the .exe

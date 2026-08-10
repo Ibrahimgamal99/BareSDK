@@ -33,16 +33,29 @@ _deps/
 *.slo
 
 # Python bindings
+# Depth-independent so they also catch bindings/python/baresdk/... — the
+# previous anchored forms missed the inner package directory.
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
 bindings/python/build/
 bindings/python/dist/
-bindings/python/*.egg-info/
-bindings/python/__pycache__/
-bindings/python/*.pyc
-bindings/python/baresdk.so
-bindings/python/baresdk.pyd
+# Copied here by bindings/python/build.sh from dist/<platform>/
+bindings/python/baresdk/baresdk.so
+bindings/python/baresdk/baresdk.pyd
+bindings/python/baresdk/baresdk.dylib
 
 # C++ bindings build artifacts
 bindings/cpp/build/
+
+# Flutter / Dart bindings
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+bindings/flutter/example/build/
 
 # Editor / IDE
 .vscode/

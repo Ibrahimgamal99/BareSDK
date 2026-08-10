@@ -35,7 +35,7 @@ from .events import (
     RegStateEvent, IncomingCallEvent, CallStateEvent, CallDtmfEvent,
     SdpNegotiationEvent, SipTraceEvent, MediaStatsEvent, LogEvent,
     RegistrarWarningEvent, TransferRequestEvent, MwiEvent,
-    MessageEvent, PresenceStateEvent, QualityAlertEvent,
+    MessageEvent, PresenceStateEvent, QualityAlertEvent, NetworkEvent,
     CallStats,
 )
 
@@ -58,7 +58,7 @@ _VALID_NAMES = frozenset({
     # direct events
     "incoming_call", "dtmf", "sdp_negotiation", "sip_trace", "media_stats",
     "log", "registrar_warning", "transfer_request", "mwi", "message",
-    "presence_state", "quality_alert",
+    "presence_state", "quality_alert", "network",
     # wildcard
     "*",
 })
@@ -213,6 +213,11 @@ def _global_event_cb(ev_ptr, _userdata):
                         "ended", "cancelled", "failed")
         _PRESENCE    = ("unknown", "open", "closed", "busy")
         _QUALITY     = ("mos", "loss", "jitter", "rtt")
+        _NET_STAGE   = ("change_detected", "down", "up", "transport_reset",
+                        "reregistering", "call_migrating",
+                        "call_migrate_accepted", "call_migrated",
+                        "call_migration_failed", "call_deferred",
+                        "handover_failed")
 
         acct_handle = ffi.NULL
         call_handle = ffi.NULL
@@ -327,6 +332,21 @@ def _global_event_cb(ev_ptr, _userdata):
                 recovering = bool(q.recovering),
             )
 
+        elif typ == 14: # NETWORK
+            n = ev.u.network
+            call_handle = n.call
+            acct_handle = n.account
+            obj = NetworkEvent(
+                stage        = _NET_STAGE[n.event],
+                call         = None,
+                local_addr   = _s(n.local_addr) or "",
+                attempt      = n.attempt,
+                max_attempts = n.max_attempts,
+                elapsed_ms   = n.elapsed_ms,
+                ice          = bool(n.ice),
+                error        = n.error,
+            )
+
         else:
             return
 
@@ -395,6 +415,14 @@ def configure(**kwargs):
       stats_interval_ms — how often media_stats events fire (default 5000)
       verify_server     — bool, validate TLS certificates (default True)
       transport         — "udp" | "tcp" | "tls" | "ws" | "wss"
+
+    Network handover (Wi-Fi <-> 4G/5G) — see network_changed():
+      net_monitor_interval_s — interface poll period, 0 = off (default 10)
+      net_settle_ms          — debounce before acting (default 1500)
+      net_reinvite_calls     — re-INVITE active calls (default True)
+      net_verify_ms          — wait for RTP before retrying (default 4000)
+      net_max_attempts       — retry ceiling (default 6)
+      net_hangup_on_migration_failure — default False
     """
     global _config_locked
     if _config_locked:
@@ -411,7 +439,7 @@ def on(name: str):
       calling, ringing, established, held, ended, cancelled, call_failed
       incoming_call, dtmf, sdp_negotiation, sip_trace, media_stats,
       log, registrar_warning, transfer_request, mwi, message,
-      presence_state, quality_alert
+      presence_state, quality_alert, network
       * (wildcard — every event)
 
     Each handler receives a single event object whose fields depend on the
@@ -695,6 +723,46 @@ def set_speaker_gain(db: float):
     lib.baresdk_set_speaker_gain_db(float(db))
 
 
+def network_changed():
+    """Tell the SDK the network may have changed (Wi-Fi <-> 4G/5G, VPN, dock).
+
+    Call this from the platform's connectivity callback. The SDK re-binds its
+    SIP transports, re-REGISTERs, and re-INVITEs active calls onto the new
+    local address, reporting progress as "network" events.
+    """
+    _ensure_init()
+    return lib.baresdk_network_changed()
+
+
+def network_set_monitor_interval(seconds: int):
+    """Interface poll period in seconds; 0 disables polling entirely."""
+    _ensure_init()
+    return lib.baresdk_network_set_monitor_interval(int(seconds))
+
+
+def network_set_handover_policy(reinvite_calls: bool = True,
+                                 hangup_on_failure: bool = False):
+    """Re-INVITE active calls on handover; optionally hang up on failure."""
+    _ensure_init()
+    return lib.baresdk_network_set_handover_policy(int(reinvite_calls),
+                                                   int(hangup_on_failure))
+
+
+def network_local_addr() -> str:
+    """Local IP the SDK is currently using, or "" when there is none."""
+    _ensure_init()
+    buf = ffi.new("char[64]")
+    if lib.baresdk_network_local_addr(buf, 64) != 0:
+        return ""
+    return ffi.string(buf).decode()
+
+
+def network_is_up() -> bool:
+    """False while the device has no usable (non-loopback) local address."""
+    _ensure_init()
+    return bool(lib.baresdk_network_is_up())
+
+
 def set_jitter_buffer(min_ms: int, max_ms: int):
     lib.baresdk_set_jitter_buffer(min_ms, max_ms)
 
@@ -911,13 +979,16 @@ __all__ = [
     "set_aec", "set_aec_mode", "set_aec_suppression_level",
     "set_ns", "set_agc", "set_mic_gain", "set_speaker_gain",
     "set_jitter_buffer", "pcap_start", "pcap_stop",
+    # Network handover
+    "network_changed", "network_set_monitor_interval",
+    "network_set_handover_policy", "network_local_addr", "network_is_up",
     # Classes
     "Account", "Call", "CallStats",
     # Event dataclasses
     "RegStateEvent", "IncomingCallEvent", "CallStateEvent", "CallDtmfEvent",
     "SdpNegotiationEvent", "SipTraceEvent", "MediaStatsEvent", "LogEvent",
     "RegistrarWarningEvent", "TransferRequestEvent", "MwiEvent",
-    "MessageEvent", "PresenceStateEvent", "QualityAlertEvent",
+    "MessageEvent", "PresenceStateEvent", "QualityAlertEvent", "NetworkEvent",
     # Push provider constants (no string form in the C API)
     "PUSH_PROVIDER_NONE", "PUSH_PROVIDER_APNS",
     "PUSH_PROVIDER_APNS_SANDBOX", "PUSH_PROVIDER_FCM",

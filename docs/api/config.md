@@ -150,6 +150,19 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `trace_sdp_diff` | `bool` | false | Emit `BARESDK_EV_SDP_NEGOTIATION` |
 | `pcap_path` | `const char *` | NULL | Path for live pcap capture |
 
+### Network handover (Wi-Fi ↔ 4G/5G)
+
+Full guide: [Network handover](../guides/network_handover.md).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `net_monitor_interval_s` | `uint32_t` | 10 | Interface poll period in seconds; 0 = off. Set 0 on mobile and call `baresdk_network_changed()` from the OS callback |
+| `net_settle_ms` | `uint32_t` | 1500 | Debounce — how long the address set must stay stable before acting |
+| `net_reinvite_calls` | `bool` | true | Re-INVITE active calls onto the new local address |
+| `net_verify_ms` | `uint32_t` | 4000 | Wait for RTP on the new path before retrying; 0 disables the media check |
+| `net_max_attempts` | `uint32_t` | 6 | Retry ceiling for the rebind and for each call migration |
+| `net_hangup_on_migration_failure` | `bool` | false | End calls whose media could not be migrated |
+
 ### Logging
 
 | Field | Type | Default | Description |

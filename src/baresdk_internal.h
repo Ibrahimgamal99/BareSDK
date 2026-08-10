@@ -28,6 +28,11 @@ extern const struct sa   *stream_raddr(const struct stream *strm);
 extern int                stream_pt_enc(const struct stream *strm);
 extern int                stream_ssrc_rx(const struct stream *strm,
                                          uint32_t *ssrc);
+/* Declared in baresip's src/core.h — exported from libbaresip but omitted
+ * from the installed baresip.h.  Used by netmon.c for call migration. */
+extern int                call_reset_transp(struct call *call,
+                                            const struct sa *laddr);
+extern const struct sa   *call_laddr(const struct call *call);
 
 /* ── Global singleton ──────────────────────────────────────────────────── */
 
@@ -131,6 +136,10 @@ struct baresdk_account {
 	float                     retry_backoff;
 	uint32_t                  retry_max_attempts;
 	bool                      destroyed;
+	/* True between baresdk_account_register() and _unregister(): the app
+	 * wants this account registered.  netmon.c re-REGISTERs only these, so
+	 * a created-but-never-registered account is left alone on handover. */
+	bool                      reg_wanted;
 	struct list               custom_hdrs;
 };
 
@@ -177,6 +186,22 @@ struct baresdk_call {
 	 * return a usable value rather than NaN. */
 	RE_ATOMIC uint32_t         rx_level_bits;
 	RE_ATOMIC uint32_t         tx_level_bits;
+	/* ── Network handover state (netmon.c; re_main thread only) ─────── */
+	uint8_t                    net_mig_state;  /* enum bsdk_mig_state */
+	uint8_t                    net_mig_tries;  /* attempts this handover */
+	uint32_t                   net_mig_gen;    /* handover generation */
+	uint32_t                   net_rx_at_mig;  /* rx packets when re-INVITE sent */
+	uint64_t                   net_mig_start;  /* tmr_jiffies() when migration began */
+	struct sa                  net_mig_laddr;  /* target local address */
+};
+
+/* Per-call migration state machine (struct baresdk_call.net_mig_state). */
+enum bsdk_mig_state {
+	BSDK_MIG_IDLE = 0,   /* nothing to do                                  */
+	BSDK_MIG_DEFERRED,   /* re-INVITE not allowed yet (early/pending xact) */
+	BSDK_MIG_SENT,       /* re-INVITE sent, waiting for RTP on new path    */
+	BSDK_MIG_DONE,       /* RTP confirmed on the new path                  */
+	BSDK_MIG_FAILED,     /* gave up                                        */
 };
 
 /* ── Event queue entry ─────────────────────────────────────────────────── */
@@ -295,6 +320,19 @@ void bsdk_aec_floor_store(float floor);
 int  bsdk_stats_init(void);
 void bsdk_stats_close(void);
 void bsdk_stats_collect_final(struct baresdk_call *lc);
+
+/* ── netmon.c ──────────────────────────────────────────────────────────── */
+
+int  bsdk_netmon_init(void);
+void bsdk_netmon_stop(void);   /* app thread: stop acting, before teardown */
+void bsdk_netmon_close(void);  /* re loop stopped: cancel timers */
+/* Called from event.c when a call reaches a state where a re-INVITE becomes
+ * legal again, so a deferred migration can proceed without waiting for the
+ * next retry tick. */
+void bsdk_netmon_call_refreshable(struct baresdk_call *lc);
+/* Called from event.c when the peer answers our SDP offer, so a migration
+ * in flight can report "accepted — waiting for audio". */
+void bsdk_netmon_call_sdp_answer(struct baresdk_call *lc);
 
 /* ── dns.c ─────────────────────────────────────────────────────────────── */
 

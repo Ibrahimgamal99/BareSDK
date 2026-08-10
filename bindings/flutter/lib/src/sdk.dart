@@ -1,10 +1,7 @@
-import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
-import 'package:ffi/ffi.dart';
 
 import 'ffi_bindings.dart';
-import '../baresdk.dart';
 
 /// Loads the native library for the current platform.
 /// Pass [libPath] to override the default search-path lookup with an
@@ -28,5 +25,3 @@ late final BareSDKBindings _bindings = BareSDKBindings(loadLib(libPath: _libPath
 
 BareSDKBindings get nativeBindings => _bindings;
 
-/// Internal: allocate a C string and free it after use.
-Pointer<Char> _cstr(String s) => s.toNativeUtf8().cast<Char>();

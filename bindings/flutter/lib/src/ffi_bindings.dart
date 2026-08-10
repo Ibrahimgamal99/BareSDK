@@ -441,8 +441,8 @@ class BareSDKBindings {
   late final _baresdk_call_is_heldPtr =
       _lookup<ffi.NativeFunction<ffi.Bool Function(baresdk_call_handle_t)>>(
           'baresdk_call_is_held');
-  late final _baresdk_call_is_held =
-      _baresdk_call_is_heldPtr.asFunction<bool Function(baresdk_call_handle_t)>();
+  late final _baresdk_call_is_held = _baresdk_call_is_heldPtr
+      .asFunction<bool Function(baresdk_call_handle_t)>();
 
   /// Send DTMF digit via RFC 4733 RTP events. digit: '0'-'9', '*', '#', 'A'-'D'.
   int baresdk_call_send_dtmf(
@@ -525,6 +525,24 @@ class BareSDKBindings {
   late final _baresdk_call_attended_transfer =
       _baresdk_call_attended_transferPtr.asFunction<
           int Function(baresdk_call_handle_t, baresdk_call_handle_t)>();
+
+  /// Iterate all active calls. Safe to call from any thread.
+  void baresdk_call_foreach(
+    baresdk_call_iter_fn fn,
+    ffi.Pointer<ffi.Void> arg,
+  ) {
+    return _baresdk_call_foreach(
+      fn,
+      arg,
+    );
+  }
+
+  late final _baresdk_call_foreachPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Void Function(baresdk_call_iter_fn,
+              ffi.Pointer<ffi.Void>)>>('baresdk_call_foreach');
+  late final _baresdk_call_foreach = _baresdk_call_foreachPtr
+      .asFunction<void Function(baresdk_call_iter_fn, ffi.Pointer<ffi.Void>)>();
 
   /// Send a SIP MESSAGE (instant message) out of dialog.
   /// content_type defaults to "text/plain" if NULL.
@@ -634,7 +652,10 @@ class BareSDKBindings {
       _baresdk_audio_list_output_devicesPtr
           .asFunction<int Function(ffi.Pointer<baresdk_audio_device_t>, int)>();
 
-  /// Enable/disable acoustic echo suppression globally (takes effect next frame).
+  /// Enable or disable echo cancellation (takes effect on next audio frame).
+  /// Re-enables the aec_mode that was configured at baresdk_init().
+  /// set_aec(false) → AEC_OFF; set_aec(true) → restores init mode.
+  /// Back-compat: behavior is identical to the former bool aec API.
   void baresdk_set_aec(
     bool enable,
   ) {
@@ -648,6 +669,43 @@ class BareSDKBindings {
           'baresdk_set_aec');
   late final _baresdk_set_aec =
       _baresdk_set_aecPtr.asFunction<void Function(bool)>();
+
+  /// Switch the AEC backend.  Only AEC_OFF ↔ init_mode transitions are valid
+  /// at runtime — module_load is one-way.  Switching between SUPPRESSOR and
+  /// WEBRTC at runtime returns EINVAL.  WEBRTC returns ENOTSUP on mobile builds
+  /// and when BARESDK_WITH_WEBRTC_AEC was not set at build time.
+  /// Requires bsdk_dispatch_sync — NOT safe to call from the audio thread.
+  int baresdk_set_aec_mode(
+    int mode,
+  ) {
+    return _baresdk_set_aec_mode(
+      mode,
+    );
+  }
+
+  late final _baresdk_set_aec_modePtr =
+      _lookup<ffi.NativeFunction<ffi.Int Function(ffi.Int32)>>(
+          'baresdk_set_aec_mode');
+  late final _baresdk_set_aec_mode =
+      _baresdk_set_aec_modePtr.asFunction<int Function(int)>();
+
+  /// Tune the built-in TX echo suppressor aggressiveness.  SUPPRESSOR mode only.
+  /// 0.0 = no TX suppression (passes through even when far end is loud).
+  /// 1.0 = maximum suppression (default — −16.5 dB floor on TX when RX active).
+  /// Takes effect on the next audio frame via atomic store; safe from any thread.
+  void baresdk_set_aec_suppression_level(
+    double level,
+  ) {
+    return _baresdk_set_aec_suppression_level(
+      level,
+    );
+  }
+
+  late final _baresdk_set_aec_suppression_levelPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Float)>>(
+          'baresdk_set_aec_suppression_level');
+  late final _baresdk_set_aec_suppression_level =
+      _baresdk_set_aec_suppression_levelPtr.asFunction<void Function(double)>();
 
   /// Enable/disable noise suppression globally (takes effect next frame).
   void baresdk_set_ns(
@@ -678,6 +736,42 @@ class BareSDKBindings {
           'baresdk_set_agc');
   late final _baresdk_set_agc =
       _baresdk_set_agcPtr.asFunction<void Function(bool)>();
+
+  /// Set manual microphone (TX) gain in dB.  Clamped to [-20, +20].
+  /// 0.0 = unity — fast-path bypass, no per-sample work.
+  /// Applied before NS/AGC/AEC in the encode chain (raw pre-boost).
+  /// Takes effect on the next audio frame via atomic store; safe from any thread.
+  void baresdk_set_mic_gain_db(
+    double db,
+  ) {
+    return _baresdk_set_mic_gain_db(
+      db,
+    );
+  }
+
+  late final _baresdk_set_mic_gain_dbPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Float)>>(
+          'baresdk_set_mic_gain_db');
+  late final _baresdk_set_mic_gain_db =
+      _baresdk_set_mic_gain_dbPtr.asFunction<void Function(double)>();
+
+  /// Set manual speaker (RX) gain in dB.  Clamped to [-20, +20].
+  /// 0.0 = unity — fast-path bypass.
+  /// Applied after the jitter buffer, before playback.
+  /// Takes effect on the next audio frame via atomic store; safe from any thread.
+  void baresdk_set_speaker_gain_db(
+    double db,
+  ) {
+    return _baresdk_set_speaker_gain_db(
+      db,
+    );
+  }
+
+  late final _baresdk_set_speaker_gain_dbPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Float)>>(
+          'baresdk_set_speaker_gain_db');
+  late final _baresdk_set_speaker_gain_db =
+      _baresdk_set_speaker_gain_dbPtr.asFunction<void Function(double)>();
 
   /// Change DSCP/TOS on the RTP socket of an active call.
   /// Common values: 46 (EF — voice), 34 (AF41 — video), 0 (best-effort).
@@ -718,6 +812,21 @@ class BareSDKBindings {
   late final _baresdk_set_jitter_buffer =
       _baresdk_set_jitter_bufferPtr.asFunction<void Function(int, int)>();
 
+  /// Set jitter buffer type (adaptive or fixed). Takes effect on new calls.
+  void baresdk_set_jitter_buffer_type(
+    int type,
+  ) {
+    return _baresdk_set_jitter_buffer_type(
+      type,
+    );
+  }
+
+  late final _baresdk_set_jitter_buffer_typePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32)>>(
+          'baresdk_set_jitter_buffer_type');
+  late final _baresdk_set_jitter_buffer_type =
+      _baresdk_set_jitter_buffer_typePtr.asFunction<void Function(int)>();
+
   /// Mute/unmute the microphone (TX path) for a call.
   int baresdk_audio_mute(
     baresdk_call_handle_t call,
@@ -748,8 +857,8 @@ class BareSDKBindings {
   late final _baresdk_audio_is_mutedPtr =
       _lookup<ffi.NativeFunction<ffi.Bool Function(baresdk_call_handle_t)>>(
           'baresdk_audio_is_muted');
-  late final _baresdk_audio_is_muted =
-      _baresdk_audio_is_mutedPtr.asFunction<bool Function(baresdk_call_handle_t)>();
+  late final _baresdk_audio_is_muted = _baresdk_audio_is_mutedPtr
+      .asFunction<bool Function(baresdk_call_handle_t)>();
 
   /// Mute/unmute the speaker (RX path) for a call — silences incoming audio.
   int baresdk_audio_mute_rx(
@@ -884,6 +993,104 @@ class BareSDKBindings {
       int Function(
           baresdk_call_handle_t, ffi.Pointer<baresdk_ev_media_stats_t>)>();
 
+  /// Tell the SDK that the underlying network may have changed.
+  ///
+  /// Call this from the platform's connectivity callback:
+  /// Android — ConnectivityManager.NetworkCallback onAvailable / onLost /
+  /// onCapabilitiesChanged
+  /// iOS     — NWPathMonitor pathUpdateHandler
+  /// Desktop — NetworkManager / SCNetworkReachability / NotifyAddrChange, or
+  /// leave it to the built-in poller (cfg.net_monitor_interval_s).
+  ///
+  /// Safe to call from any thread and as often as the OS fires.  Calls are
+  /// coalesced: the handover runs once the address set has been stable for
+  /// cfg.net_settle_ms.  Returns immediately — progress is reported through
+  /// BARESDK_EV_NETWORK events.
+  ///
+  /// The handover performs, in order:
+  /// 1. re-scan local addresses and refresh the DNS resolver list
+  /// 2. flush and re-bind all SIP transports (drops dead TCP/TLS/WS sockets)
+  /// 3. re-REGISTER every account the app asked to be registered
+  /// 4. re-INVITE every active call with the new local address in the SDP
+  /// 5. verify RTP resumes on the new path, retrying the re-INVITE if not
+  ///
+  /// @return BARESDK_OK, or BARESDK_ERR_STATE if the SDK is not initialized.
+  int baresdk_network_changed() {
+    return _baresdk_network_changed();
+  }
+
+  late final _baresdk_network_changedPtr =
+      _lookup<ffi.NativeFunction<ffi.Int Function()>>(
+          'baresdk_network_changed');
+  late final _baresdk_network_changed =
+      _baresdk_network_changedPtr.asFunction<int Function()>();
+
+  /// Change the built-in interface poll interval at runtime.
+  /// @param seconds  Poll period; 0 disables polling entirely.
+  int baresdk_network_set_monitor_interval(
+    int seconds,
+  ) {
+    return _baresdk_network_set_monitor_interval(
+      seconds,
+    );
+  }
+
+  late final _baresdk_network_set_monitor_intervalPtr =
+      _lookup<ffi.NativeFunction<ffi.Int Function(ffi.Uint32)>>(
+          'baresdk_network_set_monitor_interval');
+  late final _baresdk_network_set_monitor_interval =
+      _baresdk_network_set_monitor_intervalPtr.asFunction<int Function(int)>();
+
+  /// Adjust handover behaviour at runtime (overrides the cfg.net_* fields).
+  /// @param reinvite_calls    Re-INVITE active calls onto the new address.
+  /// @param hangup_on_failure Hang up calls whose media could not be migrated.
+  int baresdk_network_set_handover_policy(
+    bool reinvite_calls,
+    bool hangup_on_failure,
+  ) {
+    return _baresdk_network_set_handover_policy(
+      reinvite_calls,
+      hangup_on_failure,
+    );
+  }
+
+  late final _baresdk_network_set_handover_policyPtr =
+      _lookup<ffi.NativeFunction<ffi.Int Function(ffi.Bool, ffi.Bool)>>(
+          'baresdk_network_set_handover_policy');
+  late final _baresdk_network_set_handover_policy =
+      _baresdk_network_set_handover_policyPtr
+          .asFunction<int Function(bool, bool)>();
+
+  /// Copy the local IP the SDK is currently using into buf.
+  /// Writes an empty string when no usable address exists.
+  /// @return BARESDK_OK, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+  int baresdk_network_local_addr(
+    ffi.Pointer<ffi.Char> buf,
+    int sz,
+  ) {
+    return _baresdk_network_local_addr(
+      buf,
+      sz,
+    );
+  }
+
+  late final _baresdk_network_local_addrPtr = _lookup<
+          ffi
+          .NativeFunction<ffi.Int Function(ffi.Pointer<ffi.Char>, ffi.Size)>>(
+      'baresdk_network_local_addr');
+  late final _baresdk_network_local_addr = _baresdk_network_local_addrPtr
+      .asFunction<int Function(ffi.Pointer<ffi.Char>, int)>();
+
+  /// False while the device has no usable (non-loopback) local address.
+  bool baresdk_network_is_up() {
+    return _baresdk_network_is_up();
+  }
+
+  late final _baresdk_network_is_upPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function()>>('baresdk_network_is_up');
+  late final _baresdk_network_is_up =
+      _baresdk_network_is_upPtr.asFunction<bool Function()>();
+
   /// Start capturing SIP + RTP to a Wireshark-compatible pcap file.
   /// Writes synthetic Ethernet/IP/UDP headers around each SIP message.
   int baresdk_pcap_start(
@@ -939,6 +1146,9 @@ abstract class baresdk_codec_t {
   /// G.711 A-law
   static const int BARESDK_CODEC_PCMA = 2;
   static const int BARESDK_CODEC_G722 = 3;
+
+  /// G.726 32 kbit/s, 8 kHz
+  static const int BARESDK_CODEC_G726_32 = 4;
 }
 
 abstract class baresdk_mos_method_t {
@@ -946,9 +1156,60 @@ abstract class baresdk_mos_method_t {
   static const int BARESDK_MOS_SIMPLIFIED = 1;
 }
 
+abstract class baresdk_aec_mode_t {
+  static const int BARESDK_AEC_OFF = 0;
+  static const int BARESDK_AEC_SUPPRESSOR = 1;
+  static const int BARESDK_AEC_WEBRTC = 2;
+}
+
 abstract class baresdk_media_dir_t {
   static const int BARESDK_MEDIA_DIR_RX = 0;
   static const int BARESDK_MEDIA_DIR_TX = 1;
+}
+
+abstract class baresdk_dtmf_mode_t {
+  /// RFC 4733 RTP telephony-event (default)
+  static const int BARESDK_DTMF_RFC4733 = 0;
+
+  /// SIP INFO application/dtmf-relay
+  static const int BARESDK_DTMF_SIP_INFO = 1;
+
+  /// prefer RFC 4733, fall back to SIP INFO
+  static const int BARESDK_DTMF_AUTO = 2;
+}
+
+abstract class baresdk_jbuf_type_t {
+  /// adaptive jitter buffer (default)
+  static const int BARESDK_JBUF_ADAPTIVE = 0;
+
+  /// fixed-depth jitter buffer
+  static const int BARESDK_JBUF_FIXED = 1;
+}
+
+final class baresdk_opus_config_t extends ffi.Struct {
+  /// 0 = auto/VBR; otherwise bps, e.g. 32000
+  @ffi.Int()
+  external int bitrate;
+
+  /// 0-10 CPU trade-off; -1 = opus default (9)
+  @ffi.Int()
+  external int complexity;
+
+  /// constant bitrate; false = VBR (default)
+  @ffi.Bool()
+  external bool cbr;
+
+  /// discontinuous transmission (silence suppression)
+  @ffi.Bool()
+  external bool dtx;
+
+  /// in-band forward error correction
+  @ffi.Bool()
+  external bool fec;
+
+  /// stereo output; false = mono (default)
+  @ffi.Bool()
+  external bool stereo;
 }
 
 /// ── Error codes ────────────────────────────────────────────────────────────
@@ -1046,7 +1307,100 @@ abstract class baresdk_event_type_t {
   static const int BARESDK_EV_MESSAGE = 11;
   static const int BARESDK_EV_PRESENCE_STATE = 12;
   static const int BARESDK_EV_QUALITY_ALERT = 13;
+  static const int BARESDK_EV_NETWORK = 14;
 }
+
+/// Stages of a network handover (Wi-Fi ↔ 4G/5G, VPN up/down, dock/undock).
+///
+/// A typical Wi-Fi → cellular handover emits, in order:
+/// CHANGE_DETECTED → TRANSPORT_RESET → REREGISTERING
+/// → CALL_MIGRATING → CALL_MIGRATED
+///
+/// When the device is briefly off-network the sequence starts with DOWN and
+/// resumes at UP once a usable address appears.
+abstract class baresdk_net_event_t {
+  /// local address set changed
+  static const int BARESDK_NET_CHANGE_DETECTED = 0;
+
+  /// no usable local address
+  static const int BARESDK_NET_DOWN = 1;
+
+  /// usable local address again
+  static const int BARESDK_NET_UP = 2;
+
+  /// SIP transports flushed + re-bound
+  static const int BARESDK_NET_TRANSPORT_RESET = 3;
+
+  /// REGISTER re-sent on the new path
+  static const int BARESDK_NET_REREGISTERING = 4;
+
+  /// re-INVITE sent to move the media
+  static const int BARESDK_NET_CALL_MIGRATING = 5;
+
+  /// peer answered; awaiting audio
+  static const int BARESDK_NET_CALL_MIGRATE_ACCEPTED = 6;
+
+  /// RTP confirmed on the new path
+  static const int BARESDK_NET_CALL_MIGRATED = 7;
+
+  /// gave up; see `error`
+  static const int BARESDK_NET_CALL_MIGRATION_FAILED = 8;
+
+  /// not refreshable yet; will retry
+  static const int BARESDK_NET_CALL_DEFERRED = 9;
+
+  /// transport reset failed; retrying
+  static const int BARESDK_NET_HANDOVER_FAILED = 10;
+}
+
+/// Network handover progress.
+///
+/// `attempt` / `max_attempts` render a progress counter:
+/// "link settled — rebuilding the media path %u/%u"
+/// `elapsed_ms` on CALL_MIGRATED is how long audio was interrupted:
+/// "media recovered after %.1f s"
+final class baresdk_ev_network_t extends ffi.Struct {
+  @ffi.Int32()
+  external int event;
+
+  /// CALL_* events only; else NULL
+  external baresdk_call_handle_t call;
+
+  /// REREGISTERING only; else NULL
+  external baresdk_account_handle_t account;
+
+  /// new local IP, "" when unknown
+  external ffi.Pointer<ffi.Char> local_addr;
+
+  /// 1-based retry counter
+  @ffi.Uint32()
+  external int attempt;
+
+  /// ceiling for `attempt`
+  @ffi.Uint32()
+  external int max_attempts;
+
+  /// ms since this migration began
+  @ffi.Uint32()
+  external int elapsed_ms;
+
+  /// True when the call negotiated ICE.  Media recovery is best-effort
+  /// for these: the re-INVITE re-runs ICE against the existing local
+  /// candidates but does NOT perform an RFC 8445 §9 ICE restart, because
+  /// baresip fixes the local ufrag/pwd when the media session is created
+  /// and exposes no way to regenerate them mid-call.
+  @ffi.Bool()
+  external bool ice;
+
+  /// BARESDK_OK unless *_FAILED
+  @ffi.Int32()
+  external int error;
+}
+
+typedef baresdk_call_handle_t = ffi.Pointer<baresdk_call>;
+
+/// ── Opaque handles ─────────────────────────────────────────────────────────
+typedef baresdk_account_handle_t = ffi.Pointer<baresdk_account>;
 
 /// ── Event payload structs ──────────────────────────────────────────────────
 final class baresdk_ev_reg_state_t extends ffi.Struct {
@@ -1069,9 +1423,6 @@ final class baresdk_ev_reg_state_t extends ffi.Struct {
   external ffi.Pointer<ffi.Char> error_str;
 }
 
-/// ── Opaque handles ─────────────────────────────────────────────────────────
-typedef baresdk_account_handle_t = ffi.Pointer<baresdk_account>;
-
 final class baresdk_ev_incoming_call_t extends ffi.Struct {
   external baresdk_account_handle_t account;
 
@@ -1081,8 +1432,6 @@ final class baresdk_ev_incoming_call_t extends ffi.Struct {
 
   external ffi.Pointer<ffi.Char> display_name;
 }
-
-typedef baresdk_call_handle_t = ffi.Pointer<baresdk_call>;
 
 final class baresdk_ev_call_state_t extends ffi.Struct {
   external baresdk_account_handle_t account;
@@ -1280,10 +1629,15 @@ final class baresdk_ev_media_stats_t extends ffi.Struct {
   @ffi.Int()
   external int payload_type;
 
-  /// received audio level dBov (0=max, -127=silent);
+  /// speaker (RX) level dBov (0=max, -127=silent);
   /// NaN when unavailable
   @ffi.Float()
   external double audio_level_dbov;
+
+  /// microphone (TX) level dBov (0=max, -127=silent);
+  /// NaN when unavailable
+  @ffi.Float()
+  external double mic_level_dbov;
 
   /// our SSRC
   @ffi.Uint32()
@@ -1448,6 +1802,8 @@ final class UnnamedUnion1 extends ffi.Union {
   external baresdk_ev_presence_state_t presence;
 
   external baresdk_ev_quality_alert_t quality_alert;
+
+  external baresdk_ev_network_t network;
 }
 
 final class baresdk_config_t extends ffi.Struct {
@@ -1517,6 +1873,10 @@ final class baresdk_config_t extends ffi.Struct {
   /// NULL-terminated "Header: value" strings
   external ffi.Pointer<ffi.Pointer<ffi.Char>> ws_extra_headers;
 
+  /// WS ping interval; 0 = libre default (15s); recommended 20000-30000
+  @ffi.Uint32()
+  external int ws_keepalive_ms;
+
   /// ── NAT ────────────────────────────────────────────────────────
   external ffi.Pointer<ffi.Char> stun_server;
 
@@ -1529,6 +1889,7 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Bool()
   external bool ice_enabled;
 
+  /// multiplex RTCP on RTP port (RFC 5761); default true
   @ffi.Bool()
   external bool rtcp_mux;
 
@@ -1555,9 +1916,9 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Bool()
   external bool enable_video;
 
-  /// acoustic echo cancellation
-  @ffi.Bool()
-  external bool aec;
+  /// echo cancellation backend; default SUPPRESSOR
+  @ffi.Int32()
+  external int aec_mode;
 
   /// noise suppression
   @ffi.Bool()
@@ -1567,11 +1928,30 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Bool()
   external bool agc;
 
-  /// minimum adaptive buffer depth; 0 = baresip default
+  /// 0=no suppression .. 1=maximum; default 1.0; SUPPRESSOR only
+  @ffi.Float()
+  external double aec_suppression_level;
+
+  /// TX manual gain dB, clamped [-20,+20]; 0=unity
+  @ffi.Float()
+  external double mic_gain_db;
+
+  /// RX manual gain dB, clamped [-20,+20]; 0=unity
+  @ffi.Float()
+  external double speaker_gain_db;
+
+  /// all fields zero/false = use opus defaults
+  external baresdk_opus_config_t opus;
+
+  /// adaptive (default) or fixed
+  @ffi.Int32()
+  external int jbuf_type;
+
+  /// JB min depth (default: 40 ms)
   @ffi.Uint32()
   external int jitter_buffer_min_ms;
 
-  /// maximum adaptive buffer depth; 0 = baresip default
+  /// JB max depth (default: 400 ms)
   @ffi.Uint32()
   external int jitter_buffer_max_ms;
 
@@ -1650,6 +2030,15 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Float()
   external double jitter_alert_threshold;
 
+  /// ── Platform ────────────────────────────────────────────────── */
+  /// /**
+  /// Writable temporary directory for internal SDK state (e.g. uuid cache).
+  /// NULL = auto-detect: $TMPDIR on POSIX/iOS, GetTempPath() on Windows,
+  /// /tmp on Linux.  Android callers MUST set this to the app cache dir
+  /// (e.g. context.getCacheDir().getAbsolutePath()) because /tmp does not
+  /// exist on Android and $TMPDIR is not reliably set from native code.
+  external ffi.Pointer<ffi.Char> tmp_dir;
+
   /// emit BARESDK_EV_SIP_TRACE per message
   @ffi.Bool()
   external bool trace_sip;
@@ -1669,6 +2058,36 @@ final class baresdk_config_t extends ffi.Struct {
   external baresdk_event_cb_t event_cb;
 
   external ffi.Pointer<ffi.Void> event_userdata;
+
+  /// Interface poll interval in seconds; 0 disables polling.
+  /// Default 10.  Set 0 on mobile and call baresdk_network_changed().
+  @ffi.Uint32()
+  external int net_monitor_interval_s;
+
+  /// Debounce window: how long the address set must stay stable before
+  /// the handover is applied.  Default 1500 ms.  Prevents thrashing
+  /// while an interface is still coming up.
+  @ffi.Uint32()
+  external int net_settle_ms;
+
+  /// Re-INVITE active calls onto the new local address. Default true.
+  @ffi.Bool()
+  external bool net_reinvite_calls;
+
+  /// Hang up a call whose media could not be migrated instead of
+  /// leaving it up with (probably) dead audio.  Default false.
+  @ffi.Bool()
+  external bool net_hangup_on_migration_failure;
+
+  /// How long to wait for RTP on the new path before declaring the
+  /// migration failed and retrying.  Default 4000 ms; 0 disables the
+  /// media check (the re-INVITE is then assumed to have worked).
+  @ffi.Uint32()
+  external int net_verify_ms;
+
+  /// Maximum handover / re-INVITE attempts before giving up. Default 6.
+  @ffi.Uint32()
+  external int net_max_attempts;
 }
 
 /// Event callback — fired from baresdk's internal event thread.
@@ -1727,6 +2146,14 @@ final class baresdk_account_config_t extends ffi.Struct {
   @ffi.Bool()
   external bool ice_enabled;
 
+  /// used when rtcp_mux_set is true
+  @ffi.Bool()
+  external bool rtcp_mux;
+
+  /// false = inherit global; true = use rtcp_mux above
+  @ffi.Bool()
+  external bool rtcp_mux_set;
+
   /// NULL = no STUN, e.g. "stun:stun.l.google.com:19302"
   external ffi.Pointer<ffi.Char> stun_server;
 
@@ -1739,6 +2166,9 @@ final class baresdk_account_config_t extends ffi.Struct {
 
   /// NULL = auto-derived from server
   external ffi.Pointer<ffi.Char> outbound;
+
+  /// alias for outbound; NULL = auto
+  external ffi.Pointer<ffi.Char> outbound_proxy;
 
   /// false = skip TLS cert verification
   @ffi.Bool()
@@ -1770,19 +2200,40 @@ final class baresdk_account_config_t extends ffi.Struct {
   external ffi.Pointer<ffi.Char> push_param;
 
   /// Per-account audio codec preference list (ordered, highest priority first).
-  /// 0 count = use global cfg codecs.
+  /// When audio_codec_count > 0, this list overrides the global cfg.audio_codecs.
+  /// When audio_codec_count == 0 (default), the global list is used.
+  ///
+  /// Example — prefer PCMU, fall back to Opus:
+  /// cfg.audio_codecs[0]   = BARESDK_CODEC_PCMU;
+  /// cfg.audio_codecs[1]   = BARESDK_CODEC_OPUS;
+  /// cfg.audio_codec_count = 2;
   @ffi.Array.multi([8])
   external ffi.Array<ffi.Int32> audio_codecs;
 
-  @ffi.Int32()
+  /// 0 = use global cfg codecs
+  @ffi.Int()
   external int audio_codec_count;
 
+  /// codec name strings, each ≤ 31 chars
   @ffi.Array.multi([8, 32])
   external ffi.Array<ffi.Array<ffi.Char>> audio_codec_names;
 
-  @ffi.Int32()
+  /// 0 = fall back to audio_codecs[] / global
+  @ffi.Int()
   external int audio_codec_name_count;
+
+  /// default BARESDK_DTMF_RFC4733 (0)
+  @ffi.Int32()
+  external int dtmf_mode;
 }
+
+/// Called once per active call by baresdk_call_foreach().
+typedef baresdk_call_iter_fn
+    = ffi.Pointer<ffi.NativeFunction<baresdk_call_iter_fnFunction>>;
+typedef baresdk_call_iter_fnFunction = ffi.Void Function(
+    baresdk_call_handle_t call, ffi.Pointer<ffi.Void> arg);
+typedef Dartbaresdk_call_iter_fnFunction = void Function(
+    baresdk_call_handle_t call, ffi.Pointer<ffi.Void> arg);
 
 /// ── Audio device enumeration ───────────────────────────────────────────────
 final class baresdk_audio_device_t extends ffi.Struct {

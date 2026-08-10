@@ -329,3 +329,24 @@ Buddy presence changed (received via SUBSCRIBE/NOTIFY).
 | `account` | handle |
 | `target_uri` | `const char *` |
 | `status` | `baresdk_presence_status_t`: `UNKNOWN`, `OPEN`, `CLOSED`, `BUSY` |
+
+## BARESDK_EV_NETWORK
+**`ev->u.network`** — `baresdk_ev_network_t`
+
+Progress of a network handover (Wi-Fi ↔ 4G/5G, VPN up/down, dock/undock).
+See [Network handover](../guides/network_handover.md) for the full sequence.
+
+| Field | Type |
+|---|---|
+| `event` | `baresdk_net_event_t` — see stage table below |
+| `call` | handle — `CALL_*` stages only, else NULL |
+| `account` | handle — `REREGISTERING` only, else NULL |
+| `local_addr` | `const char *` — new local IP, `""` when unknown |
+| `attempt` / `max_attempts` | `uint32_t` — retry counter, e.g. "3/6" |
+| `elapsed_ms` | `uint32_t` — on `CALL_MIGRATED`, how long audio was interrupted |
+| `ice` | `bool` — call uses ICE; media recovery is best-effort |
+| `error` | `baresdk_error_t` — `BARESDK_OK` unless a `*_FAILED` stage |
+
+Stages: `CHANGE_DETECTED`, `DOWN`, `UP`, `TRANSPORT_RESET`, `REREGISTERING`,
+`CALL_MIGRATING`, `CALL_MIGRATE_ACCEPTED`, `CALL_MIGRATED`,
+`CALL_MIGRATION_FAILED`, `CALL_DEFERRED`, `HANDOVER_FAILED`.

@@ -28,8 +28,8 @@ class _PhonePageState extends State<PhonePage> {
   final _passCtrl = TextEditingController();
   final _calleeCtrl = TextEditingController();
 
-  baresdk_transport_t _transport = baresdk_transport_t.BARESDK_TRANSPORT_WSS;
-  baresdk_media_enc_t _mediaEnc = baresdk_media_enc_t.BARESDK_MEDIA_ENC_DTLS_SRTP;
+  int _transport = baresdk_transport_t.BARESDK_TRANSPORT_WSS;
+  int _mediaEnc = baresdk_media_enc_t.BARESDK_MEDIA_ENC_DTLS_SRTP;
 
   final List<String> _selectedCodecs = ['opus'];
   final List<String> _availableCodecs = ['opus', 'ulaw', 'alaw', 'g722'];
@@ -219,7 +219,7 @@ class _PhonePageState extends State<PhonePage> {
             onSubmitted: (_) => _register(),
           ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<baresdk_transport_t>(
+          DropdownButtonFormField<int>(
             value: _transport,
             decoration: const InputDecoration(
               labelText: 'Transport',
@@ -250,7 +250,7 @@ class _PhonePageState extends State<PhonePage> {
             onChanged: (v) => setState(() => _transport = v!),
           ),
           const SizedBox(height: 12),
-          DropdownButtonFormField<baresdk_media_enc_t>(
+          DropdownButtonFormField<int>(
             value: _mediaEnc,
             decoration: const InputDecoration(
               labelText: 'Media Encryption',

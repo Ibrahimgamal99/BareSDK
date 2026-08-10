@@ -253,6 +253,9 @@ static void bevent_handler(enum bevent_ev bev,
 		if (lc) {
 			lc->state            = BARESDK_CALL_ESTABLISHED;
 			lc->stats_call_start = tmr_jiffies();
+			/* A migration deferred while the dialog was early can now
+			 * proceed — the SDP negotiation is complete. */
+			bsdk_netmon_call_refreshable(lc);
 		}
 		break;
 
@@ -320,7 +323,10 @@ static void bevent_handler(enum bevent_ev bev,
 		ev.u.call_state.call    = lc;
 		ev.u.call_state.account = acct;
 		ev.u.call_state.state   = BARESDK_CALL_ESTABLISHED;
-		if (lc) lc->state = BARESDK_CALL_ESTABLISHED;
+		if (lc) {
+			lc->state = BARESDK_CALL_ESTABLISHED;
+			bsdk_netmon_call_refreshable(lc);
+		}
 		break;
 
 	case BEVENT_CALL_DTMF_START:
@@ -334,10 +340,17 @@ static void bevent_handler(enum bevent_ev bev,
 	}
 
 	case BEVENT_CALL_LOCAL_SDP:
-	case BEVENT_CALL_REMOTE_SDP:
+	case BEVENT_CALL_REMOTE_SDP: {
+		const char *param = bevent_get_text(event);
 		bsdk_sdp_handle_event(bev, event);
+		/* The answer to a migration re-INVITE — report that the peer
+		 * accepted the new address, before audio is confirmed. */
+		if (lc && bev == BEVENT_CALL_REMOTE_SDP &&
+		    param && !str_casecmp(param, "answer"))
+			bsdk_netmon_call_sdp_answer(lc);
 		post = false;
 		break;
+	}
 
 	/* ── Transfer / MWI ──────────────────────────────────────────────────── */
 

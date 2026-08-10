@@ -186,6 +186,35 @@ class QualityAlertEvent:
     recovering: bool
 
 
+@dataclass
+class NetworkEvent:
+    """Progress of a network handover (Wi-Fi <-> 4G/5G, VPN, dock/undock).
+
+    stage is one of:
+      change_detected, down, up, transport_reset, reregistering,
+      call_migrating, call_migrate_accepted, call_migrated,
+      call_migration_failed, call_deferred, handover_failed
+
+    Typical logging:
+        if ev.stage == "call_migrating":
+            log(f"link settled - rebuilding media path "
+                f"{ev.attempt}/{ev.max_attempts}")
+        elif ev.stage == "call_migrate_accepted":
+            log("peer accepted the new path - waiting for audio to resume")
+        elif ev.stage == "call_migrated":
+            log(f"media recovered after {ev.elapsed_ms / 1000:.1f}s")
+    """
+    type: str = field(init=False, default="network")
+    stage: str
+    call: object
+    local_addr: str
+    attempt: int
+    max_attempts: int
+    elapsed_ms: int
+    ice: bool            # True when the call uses ICE (recovery is best-effort)
+    error: int
+
+
 class CallStats:
     """
     Live call statistics that update in-place as media_stats events arrive.

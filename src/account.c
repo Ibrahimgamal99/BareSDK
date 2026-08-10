@@ -613,8 +613,10 @@ void baresdk_account_destroy(baresdk_account_handle_t acct)
 static void register_fn(void *arg)
 {
 	struct baresdk_account *acct = arg;
-	if (acct->ua)
+	if (acct->ua) {
+		acct->reg_wanted = true;   /* netmon.c re-REGISTERs on handover */
 		ua_register(acct->ua);
+	}
 }
 
 int baresdk_account_register(baresdk_account_handle_t acct)
@@ -627,6 +629,7 @@ static void unregister_fn(void *arg)
 {
 	struct baresdk_account *acct = arg;
 	if (acct->ua) {
+		acct->reg_wanted = false;
 		acct->reg_state = BARESDK_REG_UNREGISTERING;
 		ua_unregister(acct->ua);
 	}
@@ -686,8 +689,10 @@ static void retry_now_fn(void *arg)
 	struct baresdk_account *acct = arg;
 	tmr_cancel(&acct->retry_tmr);
 	acct->retry_attempt = 0;
-	if (!acct->destroyed && acct->ua)
+	if (!acct->destroyed && acct->ua) {
+		acct->reg_wanted = true;
 		ua_register(acct->ua);
+	}
 }
 
 int baresdk_account_retry_now(baresdk_account_handle_t acct)

@@ -127,7 +127,33 @@ typedef enum {
  BARESDK_EV_MESSAGE,
  BARESDK_EV_PRESENCE_STATE,
  BARESDK_EV_QUALITY_ALERT,
+ BARESDK_EV_NETWORK,
 } baresdk_event_type_t;
+typedef enum {
+ BARESDK_NET_CHANGE_DETECTED = 0,
+ BARESDK_NET_DOWN,
+ BARESDK_NET_UP,
+ BARESDK_NET_TRANSPORT_RESET,
+ BARESDK_NET_REREGISTERING,
+ BARESDK_NET_CALL_MIGRATING,
+ BARESDK_NET_CALL_MIGRATE_ACCEPTED,
+ BARESDK_NET_CALL_MIGRATED,
+ BARESDK_NET_CALL_MIGRATION_FAILED,
+ BARESDK_NET_CALL_DEFERRED,
+ BARESDK_NET_HANDOVER_FAILED,
+} baresdk_net_event_t;
+typedef struct {
+ baresdk_net_event_t event;
+ baresdk_call_handle_t call;
+ baresdk_account_handle_t account;
+ const char *local_addr;
+ uint32_t attempt;
+ uint32_t max_attempts;
+ uint32_t elapsed_ms;
+
+ bool ice;
+ baresdk_error_t error;
+} baresdk_ev_network_t;
 typedef struct {
  baresdk_account_handle_t account;
  baresdk_reg_state_t state;
@@ -292,6 +318,7 @@ typedef struct {
   baresdk_ev_message_t msg;
   baresdk_ev_presence_state_t presence;
   baresdk_ev_quality_alert_t quality_alert;
+  baresdk_ev_network_t network;
  } u;
 } baresdk_event_t;
 typedef void (*baresdk_event_cb_t)(const baresdk_event_t *ev, void *userdata);
@@ -380,6 +407,13 @@ typedef struct {
  int log_level;
  baresdk_event_cb_t event_cb;
  void *event_userdata;
+ uint32_t net_monitor_interval_s;
+ uint32_t net_settle_ms;
+ bool net_reinvite_calls;
+
+ bool net_hangup_on_migration_failure;
+ uint32_t net_verify_ms;
+ uint32_t net_max_attempts;
 
 } baresdk_config_t;
 
@@ -518,6 +552,13 @@ typedef struct {
  int baresdk_call_record_stop(baresdk_call_handle_t call);
  int baresdk_call_get_stats(baresdk_call_handle_t call,
                             baresdk_ev_media_stats_t *out);
+ int baresdk_network_changed(void);
+
+ int baresdk_network_set_monitor_interval(uint32_t seconds);
+ int baresdk_network_set_handover_policy(bool reinvite_calls,
+                                                        bool hangup_on_failure);
+ int baresdk_network_local_addr(char *buf, size_t sz);
+ bool baresdk_network_is_up(void);
 
  int baresdk_pcap_start(const char *path);
  int baresdk_pcap_stop(void);
