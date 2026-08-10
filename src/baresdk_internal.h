@@ -333,6 +333,13 @@ const char *bsdk_mediaenc_str(baresdk_media_enc_t enc);
 /* ── WebSocket path (ws_path.c) ────────────────────────────────────────── */
 
 extern char g_bsdk_ws_path[256];
+extern char g_bsdk_ws_server[288];
+
+/* Record the WebSocket server to pin outbound connections to.  Call once per
+ * WS/WSS account; a second account naming a different server disables pinning
+ * process-wide. */
+void bsdk_ws_set_server(baresdk_transport_t tp, const char *host,
+                         uint16_t port);
 
 /* ── Utility macros ────────────────────────────────────────────────────── */
 

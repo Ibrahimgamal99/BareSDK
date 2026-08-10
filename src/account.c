@@ -492,6 +492,8 @@ static void create_fn(void *arg)
 	/* Determine transport: server_url → account transport → global default */
 	baresdk_transport_t tp = acct->cfg.transport;
 	char ws_path[256] = ""; /* set only if server_url contains an explicit path */
+	char ws_host[256] = ""; /* WS server authority — pinned in ws_path.c */
+	uint16_t ws_port = 0;
 
 	if (acct->cfg.server_url) {
 		char sv_host[256];
@@ -502,6 +504,10 @@ static void create_fn(void *arg)
 		if (!acct->parsed_host[0])
 			str_ncpy(acct->parsed_host, sv_host, sizeof(acct->parsed_host));
 		acct->parsed_port = sv_port;
+		/* The WS server is the server_url host, which may legitimately
+		 * differ from the AOR domain (edge proxy vs SIP domain). */
+		str_ncpy(ws_host, sv_host, sizeof(ws_host));
+		ws_port = sv_port;
 	} else {
 		/* Auto-generate server_url for all transports */
 		uint16_t port = acct->parsed_port;
@@ -527,13 +533,18 @@ static void create_fn(void *arg)
 
 		re_snprintf(acct->auto_server_url, sizeof(acct->auto_server_url),
 		            "%s://%s:%u%s", scheme, acct->parsed_host, port, ws_path);
+
+		str_ncpy(ws_host, acct->parsed_host, sizeof(ws_host));
+		ws_port = port;
 	}
 	acct->parsed_transport = tp;
 
 	/* Store the explicit path for __wrap_websock_connect (ws_path.c).
 	 * Empty means no substitution — libre's "/" is passed through as-is. */
-	if (tp == BARESDK_TRANSPORT_WS || tp == BARESDK_TRANSPORT_WSS)
+	if (tp == BARESDK_TRANSPORT_WS || tp == BARESDK_TRANSPORT_WSS) {
 		str_ncpy(g_bsdk_ws_path, ws_path, sizeof(g_bsdk_ws_path));
+		bsdk_ws_set_server(tp, ws_host, ws_port);
+	}
 
 	/* Build AOR: sip:user@host[:port];transport=proto
 	 * IPv6 literals must be wrapped in brackets per RFC 3261. */

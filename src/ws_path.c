@@ -28,6 +28,40 @@
  * Empty means no substitution — libre's trailing "/" is passed through as-is. */
 char g_bsdk_ws_path[256] = "";
 
+/* Configured WebSocket server origin, e.g. "wss://pbx.example.com:443".
+ * Empty disables pinning — see the RFC 7118 note in the wrapper below. */
+char g_bsdk_ws_server[288] = "";
+
+/* Set once a second account names a different server; pinning stays off for
+ * the rest of the process even if that account is later destroyed. */
+static bool ws_pin_conflict = false;
+
+void bsdk_ws_set_server(baresdk_transport_t tp, const char *host, uint16_t port)
+{
+	char origin[288];
+	bool ipv6;
+
+	if (ws_pin_conflict || !host || !host[0] || !port)
+		return;
+
+	ipv6 = strchr(host, ':') != NULL;
+	re_snprintf(origin, sizeof(origin), ipv6 ? "%s://[%s]:%u" : "%s://%s:%u",
+	            tp == BARESDK_TRANSPORT_WSS ? "wss" : "ws", host, port);
+
+	/* The wrapper sees only a URI — it cannot tell which account a connect
+	 * belongs to.  With two accounts on different servers, pinning would
+	 * silently route one account's signalling to the other's server, which
+	 * is worse than the libre routing bug this works around.  Bail out and
+	 * leave both accounts on stock behaviour. */
+	if (g_bsdk_ws_server[0] && strcmp(g_bsdk_ws_server, origin) != 0) {
+		g_bsdk_ws_server[0] = '\0';
+		ws_pin_conflict = true;
+		return;
+	}
+
+	str_ncpy(g_bsdk_ws_server, origin, sizeof(g_bsdk_ws_server));
+}
+
 #ifdef _WIN32
 #  define BSDK_WS_WRAP_NAME websock_connect
 #else
@@ -51,10 +85,34 @@ int BSDK_WS_WRAP_NAME(struct websock_conn **connp, struct websock *sock,
 	char patched[512];
 	const char *use_uri = uri;
 
-	/* libre always passes "scheme://host:port/" — replace the trailing "/"
-	 * with the configured path.  %b is libre's bounded-string specifier:
-	 * re_snprintf does not support the standard %.*s precision syntax. */
-	if (g_bsdk_ws_path[0] != '\0') {
+	if (g_bsdk_ws_server[0] != '\0') {
+		/* Pin every outbound WebSocket to the configured server.
+		 *
+		 * RFC 7118 §B.2: a SIP WebSocket Client reaches its peers only
+		 * through its WebSocket Server, so in-dialog requests must go back
+		 * out over that flow.  libre instead resolves the Record-Route of
+		 * the dialog and dials whatever address it holds.  Behind a reverse
+		 * proxy the server Record-Routes its own internal address — an
+		 * Asterisk behind nginx advertises "127.0.0.1:8088" — so libre opens
+		 * a fresh connection to an unroutable address, the ACK for the 200
+		 * OK never lands, and the dialog dies on the server's ~32 s timeout
+		 * with media still flowing.  See baresip issues #807 and #859.
+		 *
+		 * Overriding the authority here also keeps the configured hostname
+		 * in the TLS handshake: libre derives its URI from an already
+		 * resolved sockaddr, so unpinned wss:// connects present an IP
+		 * literal for SNI and certificate validation. */
+		const char *path = g_bsdk_ws_path[0] ? g_bsdk_ws_path : "/";
+		int r = re_snprintf(patched, sizeof(patched), "%s%s",
+		                    g_bsdk_ws_server, path);
+		if (r > 0)
+			use_uri = patched;
+	}
+	else if (g_bsdk_ws_path[0] != '\0') {
+		/* Not pinned — keep libre's authority and swap the path only.
+		 * libre always passes "scheme://host:port/", so replace the trailing
+		 * "/".  %b is libre's bounded-string specifier: re_snprintf does not
+		 * support the standard %.*s precision syntax. */
 		size_t n = strlen(uri);
 		if (n > 0 && uri[n - 1] == '/') {
 			int r = re_snprintf(patched, sizeof(patched), "%b%s",
