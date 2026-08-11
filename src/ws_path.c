@@ -9,15 +9,15 @@
  * WebSocket headers (ws_origin / ws_extra_headers from baresdk_config_t),
  * and override the keepalive interval (ws_keepalive_ms).
  *
- * Linux/macOS: the shared-library link adds -Wl,--wrap=websock_connect, which
+ * Linux: the shared-library link adds -Wl,--wrap=websock_connect, which
  *   rewrites callers to __wrap_websock_connect (defined here) and exposes the
  *   original as __real_websock_connect.
  *
- * Windows/MSVC has no --wrap.  Equivalent shape achieved via build-system
- *   surgery: cmake/fix-msvc-re.cmake renames the function *definition* in
- *   libre's websock.c from websock_connect to __real_websock_connect.  Call
- *   sites (transp.c) still reference websock_connect; the linker resolves
- *   them to our wrapper below, which is named `websock_connect` on Windows.
+ * Windows/MSVC and Apple (ld64) have no --wrap.  There the re build is
+ *   passed -DRE_WEBSOCK_CONNECT_OVERRIDE=1, which makes libre's websock.c
+ *   define __real_websock_connect instead of websock_connect.  Call sites
+ *   (transp.c) still reference websock_connect; the linker resolves them to
+ *   our wrapper below, which takes the public name on those platforms.
  *   No special linker flag required at any link step.
  */
 
@@ -62,7 +62,11 @@ void bsdk_ws_set_server(baresdk_transport_t tp, const char *host, uint16_t port)
 	str_ncpy(g_bsdk_ws_server, origin, sizeof(g_bsdk_ws_server));
 }
 
-#ifdef _WIN32
+/* Windows and Apple have no --wrap: re's websock.c is compiled with
+ * RE_WEBSOCK_CONNECT_OVERRIDE (renaming the real function to
+ * __real_websock_connect), so our wrapper takes the public name.
+ * Linux keeps the linker wrap and our wrapper is __wrap_websock_connect. */
+#if defined(_WIN32) || defined(__APPLE__)
 #  define BSDK_WS_WRAP_NAME websock_connect
 #else
 #  define BSDK_WS_WRAP_NAME __wrap_websock_connect

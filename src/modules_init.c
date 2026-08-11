@@ -63,7 +63,9 @@ static const char *PLATFORM_AUDIO[] = { "opensles", NULL };
 #elif defined(BARESDK_AUDIO_AAUDIO)
 static const char *PLATFORM_AUDIO[] = { "aaudio", NULL };
 #elif defined(BARESDK_AUDIO_AUDIOUNIT)
-static const char *PLATFORM_AUDIO[] = { "audiounit", "avcapture", "coreaudio", NULL };
+/* iOS: audiounit covers capture + playback (VoiceProcessingIO = HW AEC).
+ * avcapture (video) is deliberately not compiled — see CMakeLists.txt. */
+static const char *PLATFORM_AUDIO[] = { "audiounit", NULL };
 #elif defined(BARESDK_AUDIO_COREAUDIO)
 static const char *PLATFORM_AUDIO[] = { "coreaudio", NULL };
 #elif defined(BARESDK_AUDIO_WASAPI)

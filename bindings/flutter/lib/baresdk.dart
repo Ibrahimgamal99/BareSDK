@@ -607,12 +607,14 @@ class BareSDK {
 
   /// Start the SDK — the recommended entry point.
   ///
-  /// On Android this additionally:
-  ///  - fills `tmp_dir` with the app cache dir (required there),
+  /// On Android and iOS this additionally:
+  ///  - fills `tmp_dir` with a writable app directory (required on Android),
   ///  - forces `netMonitorIntervalSeconds: 0` and instead drives handover
-  ///    from ConnectivityManager callbacks,
-  ///  - requests/abandons voice audio focus around calls
-  ///    (disable with [manageAudioSession] = false).
+  ///    from OS connectivity callbacks (ConnectivityManager / NWPathMonitor),
+  ///  - manages the voice audio session around calls (Android: audio focus +
+  ///    MODE_IN_COMMUNICATION; iOS: AVAudioSession activation) —
+  ///    disable with [manageAudioSession] = false when the app owns it
+  ///    (e.g. CallKit's `didActivate audioSession`).
   static Future<BareSDK> start({
     BareSDKConfig config = const BareSDKConfig(),
     bool manageAudioSession = true,

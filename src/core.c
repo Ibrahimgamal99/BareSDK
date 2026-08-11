@@ -359,6 +359,12 @@ int baresdk_init(const baresdk_config_t *cfg)
 		goto fail;
 	BSDK_TRACE("[bsdk] step 9 done\n");
 
+	/* Platform audio session setup (iOS AVAudioSession; no-op elsewhere).
+	 * Non-fatal: a session category the OS refuses right now (e.g. during
+	 * a CallKit-owned activation) still leaves the stack usable. */
+	if (bsdk_platform_audio_init())
+		warning("baresdk: platform audio init failed\n");
+
 	{
 		const baresdk_opus_config_t *op = &g_bsdk.cfg.opus;
 		char obuf[256];

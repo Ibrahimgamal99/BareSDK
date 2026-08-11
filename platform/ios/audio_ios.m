@@ -12,9 +12,10 @@
  *            MixWithOthers is intentionally omitted so our session takes
  *            exclusive control of the hardware AEC path.
  *
- * TODO(ios): not yet wired up — bsdk_platform_audio_init() has no call site
- * in core init, the top-level CMakeLists declares LANGUAGES C only (no OBJC),
- * and -framework AVFoundation is not linked. Complete when iOS builds land.
+ * Called from baresdk_init() (core.c) after modules_init.  Compiled as OBJC
+ * (enabled in the SRC_MODE branch of CMakeLists for iOS/Darwin); AVFoundation
+ * is linked by the shared-library step in scripts/build-ios.sh and declared
+ * in the Flutter plugin podspec.
  */
 
 #import <AVFoundation/AVFoundation.h>

@@ -20,10 +20,12 @@ if(BARESDK_SRC_MODE)
     file(GLOB PLAT_SRCS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/android/*.c")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    enable_language(OBJC)   # audio_ios.m (AVAudioSession setup)
     file(GLOB PLAT_SRCS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/ios/*.c"
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/ios/*.m")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    enable_language(OBJC)
     file(GLOB PLAT_SRCS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/macos/*.c"
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/macos/*.m")
@@ -179,8 +181,14 @@ if(BARESDK_MODULES_PROFILE STREQUAL "mobile")
   # Append platform audio
   if(ANDROID_ABI)
     set(BARESDK_MODULES "${BARESDK_MODULES};opensles")
-  elseif(CMAKE_SYSTEM_NAME MATCHES "iOS|Darwin")
-    set(BARESDK_MODULES "${BARESDK_MODULES};audiounit;avcapture;coreaudio")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # audiounit only: it provides both capture and playback on iOS via
+    # kAudioUnitSubType_VoiceProcessingIO (hardware AEC).  avcapture is
+    # VIDEO capture — linking it pulls AVCaptureDevice and makes App Store
+    # review demand a camera-usage string for an audio-only SDK.
+    set(BARESDK_MODULES "${BARESDK_MODULES};audiounit")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(BARESDK_MODULES "${BARESDK_MODULES};audiounit;coreaudio")
   endif()
 else()
   set(BARESDK_MODULES "${BARESDK_DESKTOP_MODULES}")
@@ -364,21 +372,26 @@ endif()
 # Phase 2: build libre (includes librem via USE_REM=ON)
 # ---------------------------------------------------------------------------
 set(RE_PLATFORM_ARGS "")
+set(_RE_CFLAGS "")
 if(ANDROID_ABI)
   list(APPEND RE_PLATFORM_ARGS "-DUSE_UNIXSOCK=OFF")
 endif()
 if(BARESDK_TLS STREQUAL "mbedtls" AND NOT MSVC)
   # Upstream re only adds OPENSSL_INCLUDE_DIR/ZLIB to re-objs includes —
   # never MBEDTLS_INCLUDE_DIR — so hand the header path to the compiler.
-  # (MSVC combines its own CMAKE_C_FLAGS below; mbedtls is not used there.)
-  list(APPEND RE_PLATFORM_ARGS "-DCMAKE_C_FLAGS=-isystem${SYSROOT}/include")
+  string(APPEND _RE_CFLAGS " -isystem${SYSROOT}/include")
 endif()
-if(MSVC)
+if(MSVC OR APPLE)
   # websock.c exposes __real_websock_connect instead of websock_connect so
   # ws_path.c can provide websock_connect as the wrapper without a duplicate
-  # symbol.  On Linux/macOS --wrap=websock_connect handles this at link time
-  # without touching the source.
-  list(APPEND RE_PLATFORM_ARGS "-DCMAKE_C_FLAGS=-DRE_WEBSOCK_CONNECT_OVERRIDE=1")
+  # symbol.  On Linux --wrap=websock_connect handles this at link time; MSVC
+  # and Apple's ld64 have no --wrap, so the compile-time rename is used
+  # (RE_WEBSOCK_CONNECT_OVERRIDE hook in re's websock.c; ws_path.c names its
+  # wrapper `websock_connect` on those platforms).
+  string(APPEND _RE_CFLAGS " -DRE_WEBSOCK_CONNECT_OVERRIDE=1")
+endif()
+if(NOT _RE_CFLAGS STREQUAL "")
+  list(APPEND RE_PLATFORM_ARGS "-DCMAKE_C_FLAGS=${_RE_CFLAGS}")
 endif()
 
 ExternalProject_Add(re_project

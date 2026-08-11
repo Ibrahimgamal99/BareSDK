@@ -7,10 +7,13 @@ The `baresdk` Flutter package (`bindings/flutter/`) is a hybrid plugin:
   `arm64-v8a`, `armeabi-v7a` and `x86_64` inside its `jniLibs`, plus a small
   Kotlin shim (`BaresdkPlugin`) that provides the app cache dir, voice-call
   audio focus, speakerphone routing, and network-change callbacks.
+- On **iOS** the plugin vendors a prebuilt dynamic `baresdk.xcframework`
+  (device arm64 + simulator arm64/x86_64) plus a Swift shim
+  (`BaresdkPlugin`) for audio-session activation, speakerphone routing, and
+  `NWPathMonitor` network-change callbacks. Capture uses Apple's
+  VoiceProcessingIO audio unit (hardware echo cancellation).
 - **Desktop** (Linux/Windows/macOS) works as a plain FFI binding — the app
   bundles the native library itself (or passes `BareSDK(libPath: ...)`).
-- **iOS** is planned: link `dist/ios/baresdk.xcframework`; symbols resolve
-  via `DynamicLibrary.process()`.
 
 ## 1 — Add the package
 
@@ -30,6 +33,24 @@ and manifest permissions (`INTERNET`, `RECORD_AUDIO`,
 `MODIFY_AUDIO_SETTINGS`, `ACCESS_NETWORK_STATE`). Your app must still
 *request* the microphone permission at runtime (e.g. with
 `permission_handler`) before the first call. `minSdkVersion` must be >= 24.
+
+iOS (>= 13.0) additionally needs, in your app's `Info.plist`:
+
+```xml
+<key>NSMicrophoneUsageDescription</key>
+<string>Microphone access is required for voice calls.</string>
+<key>UIBackgroundModes</key>
+<array><string>audio</string></array>
+```
+
+For production VoIP apps, add PushKit + CallKit in your app (Apple kills
+background sockets; the push→CallKit→re-register flow is the sanctioned
+model — pair it with `account.setPushToken()` / RFC 8599, or your own
+server-side push). The vendored xcframework must exist at
+`bindings/flutter/ios/Frameworks/baresdk.xcframework` — it is built by CI
+(`.github/workflows/build-mobile.yml`) or on any Mac with
+`scripts/build-ios.sh`; `pod install` fails with a clear error when it is
+missing.
 
 ## 2 — Start the SDK
 
@@ -169,6 +190,13 @@ stats, quality alerts, handover timeline, in-app log console).
 ANDROID_NDK=$HOME/Android/Sdk/ndk/<ver> \
 BARESDK_BUILD_ROOT=$HOME/.cache/baresdk-build \
   ./scripts/build-android.sh
+
+# iOS (macOS + Xcode only) — builds the dynamic xcframework (device +
+# simulator), verifies exports, refreshes the plugin's vendored copy:
+./scripts/build-ios.sh
+
+# Or let CI do both: .github/workflows/build-mobile.yml builds Android on
+# ubuntu and the iOS xcframework on macos, uploading both as artifacts.
 
 # Regenerate FFI bindings after changing include/baresdk.h:
 cd bindings/flutter && dart run ffigen --config ffigen.yaml

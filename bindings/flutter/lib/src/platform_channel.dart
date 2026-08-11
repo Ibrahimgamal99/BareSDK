@@ -1,14 +1,16 @@
-/// Android platform shim.
+/// Mobile platform shim.
 ///
-/// Talks to the plugin's Kotlin side (`BaresdkPlugin`) over the `baresdk`
-/// MethodChannel for the few things FFI cannot do:
-///  - app cache dir (baresdk's required tmp_dir on Android),
-///  - audio focus / MODE_IN_COMMUNICATION around calls,
+/// Talks to the plugin's native side (`BaresdkPlugin` — Kotlin on Android,
+/// Swift on iOS) over the `baresdk` MethodChannel for the few things FFI
+/// cannot do:
+///  - a writable temp dir (baresdk's required tmp_dir on Android),
+///  - audio focus / session activation around calls,
 ///  - speakerphone routing,
-///  - ConnectivityManager network-change callbacks (drives handover).
+///  - network-change callbacks (ConnectivityManager / NWPathMonitor) that
+///    drive handover via networkChanged().
 ///
-/// Every call is a no-op off Android so the package still works as a pure
-/// FFI binding on desktop.
+/// Every call is a no-op on desktop so the package still works as a pure
+/// FFI binding there.
 library;
 
 import 'dart:io' show Platform;
@@ -20,9 +22,9 @@ class BareSDKPlatform {
   static bool _handlerInstalled = false;
   static void Function()? onNetworkChanged;
 
-  static bool get _isAndroid {
+  static bool get _isMobile {
     try {
-      return Platform.isAndroid;
+      return Platform.isAndroid || Platform.isIOS;
     } catch (_) {
       return false;
     }
@@ -30,7 +32,7 @@ class BareSDKPlatform {
 
   /// Install the inbound handler (network-change pings from Kotlin).
   static void ensureHandler() {
-    if (_handlerInstalled || !_isAndroid) return;
+    if (_handlerInstalled || !_isMobile) return;
     _handlerInstalled = true;
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'onNetworkChanged') {
@@ -40,21 +42,22 @@ class BareSDKPlatform {
     });
   }
 
-  /// App cache directory — used as baresdk `tmp_dir`. Null off Android.
+  /// Writable temp directory — used as baresdk `tmp_dir`. Null on desktop.
   static Future<String?> getCacheDir() async {
-    if (!_isAndroid) return null;
+    if (!_isMobile) return null;
     return _channel.invokeMethod<String>('getCacheDir');
   }
 
-  /// Request/abandon voice-call audio focus and MODE_IN_COMMUNICATION.
+  /// Request/abandon the voice-call audio session (Android: audio focus +
+  /// MODE_IN_COMMUNICATION; iOS: AVAudioSession activation).
   static Future<void> configureAudioSession(bool active) async {
-    if (!_isAndroid) return;
+    if (!_isMobile) return;
     await _channel.invokeMethod('configureAudioSession', {'active': active});
   }
 
   /// Route audio to the loudspeaker (true) or earpiece/default (false).
   static Future<void> setSpeakerphone(bool on) async {
-    if (!_isAndroid) return;
+    if (!_isMobile) return;
     await _channel.invokeMethod('setSpeakerphone', {'on': on});
   }
 }

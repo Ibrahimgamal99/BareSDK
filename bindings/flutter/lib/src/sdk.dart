@@ -8,8 +8,16 @@ import 'ffi_bindings.dart';
 /// absolute path, e.g. '/opt/myapp/baresdk.so'.
 DynamicLibrary loadLib({String? libPath}) {
   if (libPath != null) return DynamicLibrary.open(libPath);
-  // iOS: the xcframework is statically linked into the app binary.
-  if (Platform.isIOS) return DynamicLibrary.process();
+  // iOS: the plugin vendors a dynamic baresdk.framework (embedded by
+  // CocoaPods). Open it by its @rpath bundle path; fall back to process()
+  // for apps that link the core statically themselves.
+  if (Platform.isIOS) {
+    try {
+      return DynamicLibrary.open('baresdk.framework/baresdk');
+    } catch (_) {
+      return DynamicLibrary.process();
+    }
+  }
   // Android: packaged in the plugin's jniLibs; the lib prefix is required
   // for reliable APK extraction and dlopen-by-soname.
   if (Platform.isAndroid) return DynamicLibrary.open('libbaresdk.so');

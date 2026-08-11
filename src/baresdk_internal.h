@@ -260,6 +260,14 @@ int  bsdk_sles_vc_init(void);
 void bsdk_sles_vc_close(void);
 #endif
 
+/* ── platform/<os>/audio_*.c ───────────────────────────────────────────── */
+
+/* One-time platform audio setup, called from baresdk_init() after the
+ * modules are loaded.  iOS: configures the AVAudioSession
+ * (PlayAndRecord + VoiceChat) — required before any VoIP audio works.
+ * Every other platform provides a no-op stub. */
+int bsdk_platform_audio_init(void);
+
 /* ── account.c ─────────────────────────────────────────────────────────── */
 
 struct baresdk_account *bsdk_account_find_by_ua(const struct ua *ua);

@@ -30,7 +30,10 @@ flutter:
         package: dev.baresdk.flutter
         pluginClass: BaresdkPlugin
         ffiPlugin: true
+      # iOS vendors the prebuilt dynamic baresdk.xcframework via the podspec
+      # (built by scripts/build-ios.sh on macOS/CI) plus a Swift shim for
+      # audio session / speaker routing / NWPathMonitor callbacks.
+      ios:
+        pluginClass: BaresdkPlugin
       # Desktop: the app bundles the native library itself (or passes
       # BareSDK(libPath: ...)); see lib/src/sdk.dart loadLib().
-      # iOS: planned — link dist/ios/baresdk.xcframework; symbols resolve
-      # via DynamicLibrary.process().

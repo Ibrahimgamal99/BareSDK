@@ -1,0 +1,81 @@
+name: Build mobile libraries
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'platform/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'scripts/**'
+      - 'bindings/flutter/**'
+      - '.github/workflows/build-mobile.yml'
+  workflow_dispatch:
+
+jobs:
+  # ── Android: 3 ABIs, symbol/alignment-verified, stripped jniLibs ────────
+  android:
+    runs-on: ubuntu-22.04
+    name: Android · arm64-v8a + armeabi-v7a + x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner exports ANDROID_NDK_LATEST_HOME; build-android.sh falls
+      # back to it when ANDROID_NDK is unset.
+      - name: Build all ABIs (fetches third_party, verifies, syncs jniLibs)
+        run: bash scripts/build-android.sh
+        env:
+          BARESDK_BUILD_ROOT: ${{ runner.temp }}/baresdk-build
+
+      - name: Upload jniLibs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-jniLibs
+          path: bindings/flutter/android/src/main/jniLibs/
+          if-no-files-found: error
+
+      - name: Upload dist (unstripped, with static archives)
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-dist
+          path: dist/android/
+          if-no-files-found: error
+
+  # ── iOS: dynamic xcframework (device arm64 + simulator arm64/x86_64) ────
+  ios:
+    runs-on: macos-14
+    name: iOS · baresdk.xcframework
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build xcframework (fetches third_party, verifies, syncs plugin)
+        run: bash scripts/build-ios.sh
+
+      - name: Upload xcframework
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcframework
+          path: dist/ios/baresdk.xcframework/
+          if-no-files-found: error
+
+  # ── Dart binding: analyzer + host-independent tests ──────────────────────
+  dart:
+    runs-on: ubuntu-22.04
+    name: Dart · analyze + tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Analyze
+        working-directory: bindings/flutter
+        run: |
+          flutter pub get
+          dart analyze lib
+
+      - name: Tests (integration tests self-skip without a SIP server)
+        working-directory: bindings/flutter
+        run: flutter test
