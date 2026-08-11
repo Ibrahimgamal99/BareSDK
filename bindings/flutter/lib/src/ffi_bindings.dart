@@ -2309,6 +2309,28 @@ final class baresdk_config_t extends ffi.Struct {
   /// 0 = fall back to audio_codecs[]
   @ffi.Int()
   external int audio_codec_name_count;
+
+  /// ── Platform audio session activation (iOS) ──────────────────
+  ///
+  /// Whether baresdk_init() activates the platform audio session it
+  /// configures.  Only iOS has one; every other platform ignores this.
+  ///
+  /// true (default): configure the AVAudioSession (PlayAndRecord +
+  /// VoiceChat) and activate it during baresdk_init().  Right for an
+  /// app that owns audio outright and has no CallKit.
+  ///
+  /// false: configure category, mode and options, but do NOT call
+  /// -setActive:.  Required for CallKit apps: CXProvider owns
+  /// activation and Apple requires the session be activated only from
+  /// -provider:didActivateAudioSession:.  Activating anywhere else
+  /// takes the exclusive PlayAndRecord route out from under CallKit —
+  /// and since starting the SDK at app launch (or on a PushKit wake,
+  /// while CallKit is still mid-report) is exactly "anywhere else",
+  /// such an app must set this to false.  Nothing else changes: the
+  /// category is still in place, so audio works as soon as CallKit
+  /// activates the session.
+  @ffi.Bool()
+  external bool platform_audio_activate;
 }
 
 typedef baresdk_aec_mode_t = ffi.Uint8;

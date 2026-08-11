@@ -420,6 +420,7 @@ typedef struct {
  bool deliver_owned_events;
  char audio_codec_names[8][32];
  int audio_codec_name_count;
+ bool platform_audio_activate;
 
 } baresdk_config_t;
 

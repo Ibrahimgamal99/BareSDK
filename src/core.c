@@ -170,6 +170,9 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->rtcp_mux              = true;
 	cfg->aec_mode              = BARESDK_AEC_SUPPRESSOR;
 	cfg->aec_suppression_level = 1.0f;
+	/* Activate the platform audio session at init (iOS only). CallKit apps
+	 * must set this to false — see the field docs. */
+	cfg->platform_audio_activate = true;
 	cfg->opus.complexity       = -1;
 	/* mic_gain_db and speaker_gain_db default to 0.0f (unity) from memset */
 
@@ -366,7 +369,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 	/* Platform audio session setup (iOS AVAudioSession; no-op elsewhere).
 	 * Non-fatal: a session category the OS refuses right now (e.g. during
 	 * a CallKit-owned activation) still leaves the stack usable. */
-	if (bsdk_platform_audio_init())
+	if (bsdk_platform_audio_init(g_bsdk.cfg.platform_audio_activate))
 		warning("baresdk: platform audio init failed\n");
 
 	{

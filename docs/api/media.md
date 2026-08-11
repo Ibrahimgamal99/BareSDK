@@ -139,6 +139,50 @@ sdk.set_speaker_gain(-3.0)             # RX gain dB [-20, +20]; 0 = unity (bypas
 
 ---
 
+## iOS audio session / CallKit
+
+On iOS the SDK configures the shared `AVAudioSession` during `baresdk_init()`:
+category `PlayAndRecord`, mode `VoiceChat` (hardware AEC + earpiece routing),
+options `AllowBluetooth | AllowBluetoothA2DP`. Whether it also *activates* that
+session is a config decision:
+
+| `platform_audio_activate` | Behavior | Use for |
+|---|---|---|
+| `true` (default) | Category + mode + `setActive:YES` at init | Apps that own audio outright, no CallKit |
+| `false` | Category + mode only; activation left to the app | **CallKit apps** |
+
+CallKit apps must set it to `false`. `CXProvider` owns the session, and Apple
+requires activation to happen only in
+`provider(_:didActivateAudioSession:)` — activating anywhere else takes the
+exclusive `PlayAndRecord` route out from under CallKit. "Anywhere else" includes
+starting the SDK at app launch, and a PushKit wake that starts the SDK while
+CallKit is still reporting the incoming call. Nothing else changes: the category
+is in place, so audio works the moment CallKit activates the session.
+
+```c
+cfg.platform_audio_activate = false;   /* CXProvider owns activation */
+```
+
+```dart
+// Flutter: pair it with manageAudioSession: false so the plugin does not
+// toggle activation around calls either.
+final sdk = await BareSDK.start(
+  config: const BareSDKConfig(platformAudioActivate: false),
+  manageAudioSession: false,
+);
+```
+
+Deactivation is symmetric — a CallKit app lets `didDeactivateAudioSession` do
+it. Every non-iOS platform ignores this field.
+
+Ordering follows from the same rule: the SDK opens its audio streams when the
+call reaches ESTABLISHED, so answer the SIP call from
+`provider(_:didActivateAudioSession:)` (or after it has fired) rather than
+directly in `CXAnswerCallAction` — otherwise the streams open against a session
+CallKit has not activated yet.
+
+---
+
 ## Jitter buffer
 
 Configure at init time:

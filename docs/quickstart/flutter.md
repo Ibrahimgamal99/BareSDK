@@ -46,7 +46,25 @@ iOS (>= 13.0) additionally needs, in your app's `Info.plist`:
 For production VoIP apps, add PushKit + CallKit in your app (Apple kills
 background sockets; the push→CallKit→re-register flow is the sanctioned
 model — pair it with `account.setPushToken()` / RFC 8599, or your own
-server-side push). The vendored xcframework must exist at
+server-side push).
+
+With CallKit, hand it the audio session:
+
+```dart
+final sdk = await BareSDK.start(
+  config: const BareSDKConfig(platformAudioActivate: false),
+  manageAudioSession: false,   // CXProvider owns activation
+);
+```
+
+`CXProvider` must be the only thing that activates the `AVAudioSession`
+(Apple requires it in `provider(_:didActivateAudioSession:)`). Left at the
+default, starting the SDK — at launch, or on a PushKit wake while CallKit is
+still reporting the call — seizes the exclusive PlayAndRecord route out from
+under CallKit. The category and mode are still configured, so audio works as
+soon as CallKit activates the session.
+
+The vendored xcframework must exist at
 `bindings/flutter/ios/Frameworks/baresdk.xcframework` — it is built by CI
 (`.github/workflows/build-mobile.yml`) or on any Mac with
 `scripts/build-ios.sh`; `pod install` fails with a clear error when it is

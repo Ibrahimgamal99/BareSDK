@@ -4,6 +4,16 @@ description: >-
   registration, calls, codec control, reconnection & network handover,
   media statistics and quality alerts.
 version: 1.0.0
+homepage: https://github.com/Ibrahimgamal99/BareSDK
+repository: https://github.com/Ibrahimgamal99/BareSDK
+issue_tracker: https://github.com/Ibrahimgamal99/BareSDK/issues
+documentation: https://github.com/Ibrahimgamal99/BareSDK/blob/main/docs/quickstart/flutter.md
+topics:
+  - sip
+  - voip
+  - softphone
+  - webrtc
+  - ffi
 
 environment:
   sdk: ">=3.1.0 <4.0.0"

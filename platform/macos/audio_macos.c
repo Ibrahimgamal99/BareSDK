@@ -10,8 +10,9 @@
 
 #include "../../src/baresdk_internal.h"
 
-int bsdk_platform_audio_init(void)
+int bsdk_platform_audio_init(bool activate)
 {
+	(void)activate;  /* no platform-managed session to activate */
 	/* baresip's coreaudio module (loaded by modules_init) handles macOS audio */
 	return 0;
 }

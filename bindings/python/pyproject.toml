@@ -7,12 +7,12 @@ name = "baresdk"
 version = "2.1.1"
 description = "Python binding for baresdk — SIP/WebRTC/NAT SDK"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "BSD-3-Clause" }
 requires-python = ">=3.9"
 dependencies = ["cffi>=1.15"]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: BSD License",
   "Operating System :: POSIX :: Linux",
   "Operating System :: Microsoft :: Windows",
   "Topic :: Communications :: Telephony",

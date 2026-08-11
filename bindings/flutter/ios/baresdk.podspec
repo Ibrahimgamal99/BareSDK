@@ -16,7 +16,7 @@ network handover, media statistics and quality alerts — native core driven
 over dart:ffi.
                        DESC
   s.homepage         = 'https://github.com/Ibrahimgamal99/BareSDK'
-  s.license          = { :type => 'BSD' }
+  s.license          = { :type => 'BSD-3-Clause', :file => '../LICENSE' }
   s.author           = { 'BareSDK' => 'noreply@example.com' }
   s.source           = { :path => '.' }
 

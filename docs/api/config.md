@@ -93,6 +93,7 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `agc` | `bool` | false | Automatic gain control |
 | `mic_gain_db` | `float` | 0.0 | Microphone gain in dB (−20 to +20) |
 | `speaker_gain_db` | `float` | 0.0 | Speaker gain in dB (−20 to +20) |
+| `platform_audio_activate` | `bool` | true | iOS: activate the AVAudioSession during init. **Set false in CallKit apps** — see [media.md](media.md#ios-audio-session--callkit) |
 
 ### Opus encoder
 

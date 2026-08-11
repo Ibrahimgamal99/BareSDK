@@ -12,6 +12,14 @@
  *            MixWithOthers is intentionally omitted so our session takes
  *            exclusive control of the hardware AEC path.
  *
+ * Activation:  owned by cfg.platform_audio_activate.  With CallKit, Apple
+ *            requires the session be activated only from
+ *            -provider:didActivateAudioSession:, so a CallKit app passes
+ *            false and this function stops after configuring — otherwise
+ *            baresdk_init() (at app launch, or on a PushKit wake while
+ *            CallKit is still reporting the call) would seize the exclusive
+ *            PlayAndRecord route out from under CXProvider.
+ *
  * Called from baresdk_init() (core.c) after modules_init.  Compiled as OBJC
  * (enabled in the SRC_MODE branch of CMakeLists for iOS/Darwin); AVFoundation
  * is linked by the shared-library step in scripts/build-ios.sh and declared
@@ -22,7 +30,7 @@
 #include <errno.h>
 #include "../../src/baresdk_internal.h"
 
-int bsdk_platform_audio_init(void)
+int bsdk_platform_audio_init(bool activate)
 {
 	AVAudioSession *session = [AVAudioSession sharedInstance];
 	NSError *error = nil;
@@ -47,6 +55,14 @@ int bsdk_platform_audio_init(void)
 		warning("baresdk/ios: AVAudioSession setMode: %s\n",
 		        [[error localizedDescription] UTF8String]);
 		return EINVAL;
+	}
+
+	if (!activate) {
+		/* Category and mode are set; CallKit will activate the session
+		 * from -provider:didActivateAudioSession: when the call starts. */
+		info("baresdk/ios: AVAudioSession configured, activation left to "
+		     "the app (platform_audio_activate = false)\n");
+		return 0;
 	}
 
 	[session setActive:YES error:&error];

@@ -116,6 +116,21 @@ class BareSDKConfig {
   final double speakerGainDb;
   final OpusConfig opus;
 
+  /// Whether the SDK activates the platform audio session while starting.
+  /// iOS only; ignored everywhere else.
+  ///
+  /// Set `false` in a CallKit app: `CXProvider` owns activation and Apple
+  /// requires the AVAudioSession be activated only from
+  /// `provider(_:didActivate:)`. Left `true`, simply starting the SDK — at
+  /// launch, or on a PushKit wake while CallKit is still reporting the call —
+  /// takes the exclusive PlayAndRecord route out from under CallKit. The
+  /// category and mode are still configured either way, so audio works as soon
+  /// as CallKit activates the session.
+  ///
+  /// Such apps normally also pass `manageAudioSession: false` to
+  /// [BareSDK.start], which stops the SDK toggling activation around calls.
+  final bool platformAudioActivate;
+
   // ── Jitter buffer ──────────────────────────────────────────────────────
   final JitterBufferType jitterBufferType;
 
@@ -215,6 +230,7 @@ class BareSDKConfig {
     this.micGainDb = 0,
     this.speakerGainDb = 0,
     this.opus = const OpusConfig(),
+    this.platformAudioActivate = true,
     this.jitterBufferType = JitterBufferType.adaptive,
     this.jitterBufferMinMs = 0,
     this.jitterBufferMaxMs = 0,
@@ -275,6 +291,7 @@ class BareSDKConfig {
       micGainDb: micGainDb,
       speakerGainDb: speakerGainDb,
       opus: opus,
+      platformAudioActivate: platformAudioActivate,
       jitterBufferType: jitterBufferType,
       jitterBufferMinMs: jitterBufferMinMs,
       jitterBufferMaxMs: jitterBufferMaxMs,
@@ -470,6 +487,7 @@ NativeScope fillNativeConfig(
   r.aec_suppression_level = conf.aecSuppressionLevel;
   r.mic_gain_db = conf.micGainDb;
   r.speaker_gain_db = conf.speakerGainDb;
+  r.platform_audio_activate = conf.platformAudioActivate;
 
   r.opus.bitrate = conf.opus.bitrate;
   r.opus.complexity = conf.opus.complexity;

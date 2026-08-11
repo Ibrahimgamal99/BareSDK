@@ -130,3 +130,14 @@ Full docs live in [`docs/`](docs/index.md):
 - [Network handover (Wi-Fi ↔ 4G/5G)](docs/guides/network_handover.md)
 - [API reference](docs/api/overview.md)
 - [Changelog](docs/CHANGELOG.md)
+
+---
+
+## License
+
+baresdk is released under the [BSD 3-Clause License](LICENSE).
+
+The shipped libraries statically link baresip, libre, Opus (all BSD-3-Clause)
+and — on Android/iOS — Mbed TLS (Apache-2.0). Each dependency's own licence text
+is in `third_party/<name>/` after
+[`scripts/fetch-third-party.sh`](scripts/fetch-third-party.sh) runs.

@@ -8,11 +8,14 @@ All notable changes to baresdk are documented here.
 
 ### Fixed
 
+- **iOS: init seized the audio session from CallKit** — `baresdk_init()` called `[AVAudioSession setActive:YES]` unconditionally, so merely starting the SDK (at app launch, or on a PushKit wake while CallKit was still reporting the call) took the exclusive PlayAndRecord route. Apple requires `CXProvider` to be the only activator, in `provider(_:didActivateAudioSession:)`. Activation is now controlled by `platform_audio_activate`; CallKit apps set it to `false` and get category + mode without activation.
+
 - **Global codec list was never marshalled from Flutter** — `BareSDKConfig.audioCodecs` existed in Dart and stopped there: nothing wrote it into the native config, so a global codec preference was silently ignored (per-account `AccountConfig.audioCodecs` did work). The global list is now a first-class native field and reaches baresip in order.
 - **Re-entry on a live stack was unusable** — a host that loses its own runtime while the process survives (Android headless Flutter engine destroying the Dart isolate between push wakeups) came back to a stack that was still up, and `baresdk_init()` could only answer `BARESDK_ERR_ALREADY`: the event sink still pointed at the dead runtime and the handles it held were gone. There is now a reattach path — see "Reattaching to a live stack" in `docs/api/overview.md`.
 
 ### Added
 
+- `platform_audio_activate` in `baresdk_config_t` (default `true`) — whether `baresdk_init()` activates the platform audio session it configures. iOS only; other platforms ignore it. Flutter: `BareSDKConfig.platformAudioActivate`, normally paired with `BareSDK.start(manageAudioSession: false)`.
 - `audio_codec_names[8][32]` + `audio_codec_name_count` in `baresdk_config_t` — the global counterpart to the per-account name list, so codecs with no `baresdk_codec_t` constant (`"g729"`) and any codec a loaded module registers can be selected globally. Precedence: account names → account enums → global names → global enums.
 - `baresdk_is_initialized()` — is the stack up in this process.
 - `baresdk_set_event_handler(cb, userdata, deliver_owned_events)` — re-point event delivery at a new consumer, or park it with `NULL`, without tearing the stack down.

@@ -52,6 +52,8 @@ bindings/python/baresdk/baresdk.dylib
 bindings/cpp/build/
 
 # Flutter / Dart bindings
+# Machine-local Android/Flutter SDK paths — generated per developer.
+local.properties
 .dart_tool/
 .packages
 .flutter-plugins

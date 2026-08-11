@@ -10,8 +10,9 @@
 
 #include "../../src/baresdk_internal.h"
 
-int bsdk_platform_audio_init(void)
+int bsdk_platform_audio_init(bool activate)
 {
+	(void)activate;  /* no platform-managed session to activate */
 	/* baresip's aaudio module (loaded by modules_init) handles Android audio.
 	 * OpenSL ES fallback is also loaded for devices below API 26. */
 	return 0;
