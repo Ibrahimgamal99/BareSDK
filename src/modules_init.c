@@ -55,6 +55,9 @@ static const char *WEBRTC_AEC_LIST[] = { "webrtc_aec", NULL };
 /* Platform audio module selected at compile time */
 #if defined(BARESDK_AUDIO_OPENSLES)
 /* Android: OpenSLES works on every supported API level (minSdk 24).
+ * The preferred driver is baresdk's own "sles_vc" (voice-communication
+ * preset → platform AEC/NS); modules_init() falls back to loading the
+ * stock "opensles" module when sles_vc fails to initialize.
  * aaudio needs API >= 26 and is not compiled in — see CMakeLists.txt. */
 static const char *PLATFORM_AUDIO[] = { "opensles", NULL };
 #elif defined(BARESDK_AUDIO_AAUDIO)
@@ -84,13 +87,24 @@ static void load_list(const char **list)
 
 int modules_init(void)
 {
+	const char *audio_mod = PLATFORM_AUDIO[0];
+
 	load_list(COMMON_MODULES);
 
 #if defined(BARESDK_PROFILE_DESKTOP)
 	load_list(DESKTOP_EXTRA);
 #endif
 
+#if defined(BARESDK_AUDIO_OPENSLES)
+	/* Prefer baresdk's voice-communication OpenSLES driver (platform
+	 * AEC/NS); fall back to the stock opensles module on failure. */
+	if (bsdk_sles_vc_init() == 0)
+		audio_mod = "sles_vc";
+	else
+		load_list(PLATFORM_AUDIO);
+#else
 	load_list(PLATFORM_AUDIO);
+#endif
 
 #if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
 	if (g_bsdk.cfg.aec_mode == BARESDK_AEC_WEBRTC)
@@ -102,11 +116,11 @@ int modules_init(void)
 	 * aubridge loads earlier (DESKTOP_EXTRA) and ausrc_register/auplay_register
 	 * set cfg->audio.{src,play}_mod to the first ausrc/auplay registered.
 	 * If we only filled when empty, the platform module would never win. */
-	if (PLATFORM_AUDIO[0]) {
+	if (audio_mod) {
 		struct config *cfg = conf_config();
-		str_ncpy(cfg->audio.src_mod, PLATFORM_AUDIO[0],
+		str_ncpy(cfg->audio.src_mod, audio_mod,
 		         sizeof(cfg->audio.src_mod));
-		str_ncpy(cfg->audio.play_mod, PLATFORM_AUDIO[0],
+		str_ncpy(cfg->audio.play_mod, audio_mod,
 		         sizeof(cfg->audio.play_mod));
 #if defined(BARESDK_AUDIO_WASAPI)
 		/* wasapi src/play accept either a real endpoint ID or the literal

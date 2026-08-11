@@ -417,6 +417,31 @@ class BareSDKBindings {
   late final _baresdk_call_hangup =
       _baresdk_call_hangupPtr.asFunction<int Function(baresdk_call_handle_t)>();
 
+  /// Terminate a call with an explicit SIP status code.
+  /// For an unanswered incoming call this sends the given final response
+  /// (486 "Busy Here", 603 "Decline", ...); for an established call the
+  /// dialog is ended as usual (the code applies where the SIP state allows).
+  /// @param scode   SIP status code, e.g. 486 or 603. 0 = default behavior.
+  /// @param reason  Reason phrase; NULL = derived from scode.
+  int baresdk_call_reject(
+    baresdk_call_handle_t call,
+    int scode,
+    ffi.Pointer<ffi.Char> reason,
+  ) {
+    return _baresdk_call_reject(
+      call,
+      scode,
+      reason,
+    );
+  }
+
+  late final _baresdk_call_rejectPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(baresdk_call_handle_t, ffi.Uint16,
+              ffi.Pointer<ffi.Char>)>>('baresdk_call_reject');
+  late final _baresdk_call_reject = _baresdk_call_rejectPtr.asFunction<
+      int Function(baresdk_call_handle_t, int, ffi.Pointer<ffi.Char>)>();
+
   /// Put call on hold (re-INVITE with sendonly).
   int baresdk_call_hold(
     baresdk_call_handle_t call,

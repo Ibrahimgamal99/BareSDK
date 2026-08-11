@@ -518,6 +518,11 @@ void baresdk_shutdown(void)
 	ua_close();
 	BSDK_TRACE("[bsdk] shutdown: module_app_unload\n");
 	module_app_unload();
+#ifdef __ANDROID__
+	/* After ua_close/module unload — all audio streams are gone, the
+	 * OpenSLES engine can be destroyed. */
+	bsdk_sles_vc_close();
+#endif
 	BSDK_TRACE("[bsdk] shutdown: dns_close\n");
 	bsdk_dns_close();
 	BSDK_TRACE("[bsdk] shutdown: baresip_close\n");

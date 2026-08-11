@@ -961,6 +961,17 @@ BARESDK_EXPORT int baresdk_call_answer(baresdk_call_handle_t call);
 /** Terminate a call with BYE. */
 BARESDK_EXPORT int baresdk_call_hangup(baresdk_call_handle_t call);
 
+/**
+ * Terminate a call with an explicit SIP status code.
+ * For an unanswered incoming call this sends the given final response
+ * (486 "Busy Here", 603 "Decline", ...); for an established call the
+ * dialog is ended as usual (the code applies where the SIP state allows).
+ * @param scode   SIP status code, e.g. 486 or 603. 0 = default behavior.
+ * @param reason  Reason phrase; NULL = derived from scode.
+ */
+BARESDK_EXPORT int baresdk_call_reject(baresdk_call_handle_t call,
+                                        uint16_t scode, const char *reason);
+
 /** Put call on hold (re-INVITE with sendonly). */
 BARESDK_EXPORT int baresdk_call_hold(baresdk_call_handle_t call);
 

@@ -252,6 +252,14 @@ void bsdk_re_loop_stop(void);
 
 int modules_init(void);
 
+#ifdef __ANDROID__
+/* platform/android/sles_vc.c — OpenSLES driver with the Android
+ * voice-communication recording preset (platform AEC/NS) and voice
+ * playback stream.  Registered as ausrc/auplay "sles_vc". */
+int  bsdk_sles_vc_init(void);
+void bsdk_sles_vc_close(void);
+#endif
+
 /* ── account.c ─────────────────────────────────────────────────────────── */
 
 struct baresdk_account *bsdk_account_find_by_ua(const struct ua *ua);

@@ -230,6 +230,44 @@ int baresdk_call_hangup(baresdk_call_handle_t call)
 	return bsdk_dispatch(hangup_fn, call);
 }
 
+/* ── baresdk_call_reject ─────────────────────────────────────────────────── */
+
+typedef struct {
+	struct baresdk_call *lc;
+	uint16_t             scode;
+	char                 reason[128];
+} reject_ctx_t;
+
+static void reject_fn(void *arg)
+{
+	reject_ctx_t *ctx = arg;
+	struct baresdk_call *lc = ctx->lc;
+	if (lc->bc)
+		ua_hangup(lc->acct->ua, lc->bc, ctx->scode,
+		          ctx->reason[0] ? ctx->reason : NULL);
+	lc->state = BARESDK_CALL_ENDED;
+	mem_deref(ctx);
+}
+
+int baresdk_call_reject(baresdk_call_handle_t call,
+                         uint16_t scode, const char *reason)
+{
+	if (!call) return BARESDK_ERR_INVAL;
+
+	reject_ctx_t *ctx = mem_alloc(sizeof(*ctx), NULL);
+	if (!ctx) return BARESDK_ERR_NOMEM;
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->lc    = call;
+	ctx->scode = scode;
+	if (reason)
+		str_ncpy(ctx->reason, reason, sizeof(ctx->reason));
+
+	int err = bsdk_dispatch(reject_fn, ctx);
+	if (err)
+		mem_deref(ctx);
+	return err;
+}
+
 /* ── baresdk_call_hold ───────────────────────────────────────────────────── */
 
 typedef struct { struct baresdk_call *lc; bool hold; int result; } hold_ctx_t;

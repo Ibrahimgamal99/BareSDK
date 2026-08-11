@@ -139,7 +139,6 @@ void main() {
         timeout: const Duration(seconds: 10));
     call.hangup();
     await ended;
-    alice.destroy();
 
     // ── WSS: register over wss://127.0.0.1:8089/ws ──────────────────────
     final bob = sdk.createAccount(
@@ -153,6 +152,23 @@ void main() {
     );
     expect(await register(bob), RegState.registered,
         reason: 'WSS registration failed');
+
+    // ── Reject with SIP status code: bob calls alice, alice sends 486 ───
+    // (the dialplan Dials PJSIP/alice when bob calls 'alice@host')
+    final incoming = firstEvent<IncomingCallEvent>(
+        alice.events, (e) => true,
+        timeout: const Duration(seconds: 10));
+    final bobCallEnded = firstEvent<CallStateEvent>(
+        bob.events, (e) => e.state.isTerminal,
+        timeout: const Duration(seconds: 15));
+    bob.call('alice@$host');
+    final inc = await incoming;
+    inc.call.reject(statusCode: 486, reason: 'Busy Here');
+    final rejected = await bobCallEnded;
+    // Asterisk maps the callee's 486 to a failed/ended outgoing call.
+    expect(rejected.state.isTerminal, isTrue);
+
+    alice.destroy();
     bob.destroy();
 
     sdk.shutdown();

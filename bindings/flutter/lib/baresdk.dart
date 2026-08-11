@@ -335,6 +335,18 @@ class Call {
 
   void answer() => internal.nativeBindings.baresdk_call_answer(_handle);
   void hangup() => internal.nativeBindings.baresdk_call_hangup(_handle);
+
+  /// Terminate with an explicit SIP status code — for an unanswered
+  /// incoming call this sends the final response (486 "Busy Here",
+  /// 603 "Decline", ...).
+  void reject({int statusCode = 486, String reason = 'Busy Here'}) {
+    final p = reason.toNativeUtf8().cast<Char>();
+    try {
+      internal.nativeBindings.baresdk_call_reject(_handle, statusCode, p);
+    } finally {
+      calloc.free(p);
+    }
+  }
   void hold() => internal.nativeBindings.baresdk_call_hold(_handle);
   void resume() => internal.nativeBindings.baresdk_call_resume(_handle);
 
