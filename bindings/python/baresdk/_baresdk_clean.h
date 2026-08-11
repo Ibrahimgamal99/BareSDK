@@ -323,6 +323,8 @@ typedef struct {
 } baresdk_event_t;
 typedef void (*baresdk_event_cb_t)(const baresdk_event_t *ev, void *userdata);
 
+ void baresdk_event_release(const baresdk_event_t *ev);
+
 typedef void (*baresdk_media_tap_cb_t)(
  baresdk_call_handle_t call,
  baresdk_media_dir_t direction,
@@ -365,6 +367,7 @@ typedef struct {
  bool ice_enabled;
  bool rtcp_mux;
  baresdk_media_enc_t media_enc;
+
  baresdk_codec_t audio_codecs[8];
  int audio_codec_count;
  uint8_t dscp_sip;
@@ -414,6 +417,9 @@ typedef struct {
  bool net_hangup_on_migration_failure;
  uint32_t net_verify_ms;
  uint32_t net_max_attempts;
+ bool deliver_owned_events;
+ char audio_codec_names[8][32];
+ int audio_codec_name_count;
 
 } baresdk_config_t;
 
@@ -458,6 +464,10 @@ typedef struct {
 } baresdk_account_config_t;
  void baresdk_config_init(baresdk_config_t *cfg);
  int baresdk_init(const baresdk_config_t *cfg);
+ bool baresdk_is_initialized(void);
+ int baresdk_set_event_handler(baresdk_event_cb_t cb,
+                                             void *userdata,
+                                             bool deliver_owned_events);
 
  void baresdk_shutdown(void);
 
@@ -487,12 +497,20 @@ typedef struct {
                                         const char *target_uri);
  int baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
                                           const char *target_uri);
+typedef void (*baresdk_account_iter_fn)(baresdk_account_handle_t acct, void *arg);
+ void baresdk_account_foreach(baresdk_account_iter_fn fn, void *arg);
+ int baresdk_account_get_aor(baresdk_account_handle_t acct,
+                                            char *buf, size_t sz);
+ baresdk_reg_state_t baresdk_account_get_reg_state(
+        baresdk_account_handle_t acct);
 
  int baresdk_call_invite(baresdk_account_handle_t acct,
                          const char *uri,
                          baresdk_call_handle_t *out);
  int baresdk_call_answer(baresdk_call_handle_t call);
  int baresdk_call_hangup(baresdk_call_handle_t call);
+ int baresdk_call_reject(baresdk_call_handle_t call,
+                                        uint16_t scode, const char *reason);
  int baresdk_call_hold(baresdk_call_handle_t call);
  int baresdk_call_resume(baresdk_call_handle_t call);
  bool baresdk_call_is_held(baresdk_call_handle_t call);
@@ -504,6 +522,10 @@ typedef struct {
                                     baresdk_call_handle_t call_b);
 typedef void (*baresdk_call_iter_fn)(baresdk_call_handle_t call, void *arg);
  void baresdk_call_foreach(baresdk_call_iter_fn fn, void *arg);
+ baresdk_account_handle_t baresdk_call_get_account(
+        baresdk_call_handle_t call);
+ baresdk_call_state_t baresdk_call_get_state(
+        baresdk_call_handle_t call);
  int baresdk_message_send(baresdk_account_handle_t account,
                           const char *to_uri,
                           const char *body,

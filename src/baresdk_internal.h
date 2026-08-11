@@ -76,6 +76,11 @@ struct bsdk_ctx {
 	bool               ev_shutdown;
 	size_t             ev_queue_len;
 	size_t             ev_queue_max;
+	/* True while the event thread is inside cfg.event_cb. Own condvar, not
+	 * ev_cond: a signal on ev_cond means "work queued" and must reach the
+	 * event thread, never a drain waiter. */
+	bool               ev_delivering;
+	cnd_t              ev_idle_cond;
 
 	/* Account list */
 	struct list        accounts;    /* struct baresdk_account */

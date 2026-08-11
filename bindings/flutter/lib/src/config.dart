@@ -89,8 +89,14 @@ class BareSDKConfig {
   // ── Media ──────────────────────────────────────────────────────────────
   final MediaEncryption mediaEnc;
 
-  /// Global codec preference by name: `opus`, `ulaw`/`pcmu`, `alaw`/`pcma`,
-  /// `g722`, `g726`. Applied per-account unless overridden there.
+  /// Global codec preference, most preferred first, by name: `opus`,
+  /// `ulaw`/`g711u`/`pcmu`, `alaw`/`g711a`/`pcma`, `g722`, `g729`,
+  /// `g726`/`g726-32`. Matched case-insensitively; an unrecognized name is
+  /// passed through to baresip, so any codec a loaded module registers works.
+  ///
+  /// Applies to every account that does not set [AccountConfig.audioCodecs].
+  /// Only the first 8 entries are used. A list where nothing resolves logs a
+  /// warning and leaves all codecs on offer.
   final List<String> audioCodecs;
   final int dscpSip;
   final int dscpRtp;
@@ -390,18 +396,26 @@ class NativeScope {
   }
 }
 
-/// Copy codec names into the fixed `char[8][32]` array of an account config.
-void writeCodecNames(c.baresdk_account_config_t cfg, List<String> codecs) {
+/// Copy codec names into a fixed `char[8][32]` native array, returning how
+/// many entries were written. Extra codecs past the 8th, and characters past
+/// the 31st of a name, are dropped — the native array cannot hold them.
+int writeCodecNamesInto(Array<Array<Char>> names, List<String> codecs) {
   final count = codecs.length > 8 ? 8 : codecs.length;
   for (var i = 0; i < count; i++) {
     final bytes = codecs[i].codeUnits;
     final len = bytes.length > 31 ? 31 : bytes.length;
     for (var j = 0; j < len; j++) {
-      cfg.audio_codec_names[i][j] = bytes[j];
+      names[i][j] = bytes[j];
     }
-    cfg.audio_codec_names[i][len] = 0;
+    names[i][len] = 0;
   }
-  cfg.audio_codec_name_count = count;
+  return count;
+}
+
+/// Copy codec names into the fixed `char[8][32]` array of an account config.
+void writeCodecNames(c.baresdk_account_config_t cfg, List<String> codecs) {
+  cfg.audio_codec_name_count =
+      writeCodecNamesInto(cfg.audio_codec_names, codecs);
 }
 
 /// Populate a native `baresdk_config_t` from [BareSDKConfig].
@@ -443,6 +457,10 @@ NativeScope fillNativeConfig(
   r.rtcp_mux = conf.rtcpMux;
 
   r.media_enc = conf.mediaEnc.raw;
+  if (conf.audioCodecs.isNotEmpty) {
+    r.audio_codec_name_count =
+        writeCodecNamesInto(r.audio_codec_names, conf.audioCodecs);
+  }
   r.dscp_sip = conf.dscpSip;
   r.dscp_rtp = conf.dscpRtp;
 

@@ -4,6 +4,25 @@ All notable changes to baresdk are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Global codec list was never marshalled from Flutter** — `BareSDKConfig.audioCodecs` existed in Dart and stopped there: nothing wrote it into the native config, so a global codec preference was silently ignored (per-account `AccountConfig.audioCodecs` did work). The global list is now a first-class native field and reaches baresip in order.
+- **Re-entry on a live stack was unusable** — a host that loses its own runtime while the process survives (Android headless Flutter engine destroying the Dart isolate between push wakeups) came back to a stack that was still up, and `baresdk_init()` could only answer `BARESDK_ERR_ALREADY`: the event sink still pointed at the dead runtime and the handles it held were gone. There is now a reattach path — see "Reattaching to a live stack" in `docs/api/overview.md`.
+
+### Added
+
+- `audio_codec_names[8][32]` + `audio_codec_name_count` in `baresdk_config_t` — the global counterpart to the per-account name list, so codecs with no `baresdk_codec_t` constant (`"g729"`) and any codec a loaded module registers can be selected globally. Precedence: account names → account enums → global names → global enums.
+- `baresdk_is_initialized()` — is the stack up in this process.
+- `baresdk_set_event_handler(cb, userdata, deliver_owned_events)` — re-point event delivery at a new consumer, or park it with `NULL`, without tearing the stack down.
+- `baresdk_account_foreach()`, `baresdk_account_get_aor()`, `baresdk_account_get_reg_state()` — re-derive account handles and their state instead of creating duplicates.
+- `baresdk_call_get_account()`, `baresdk_call_get_state()` — pair with the existing `baresdk_call_foreach()` to recover a call that arrived while nobody was listening (events are dropped across the gap; the call itself is not).
+- Flutter: `BareSDK.start()` reattaches to a running stack by default (`reattachIfRunning: false` to opt out), `BareSDK.reattached`, `BareSDK.accounts` / `BareSDK.calls`, `BareSDK.detach()`, `Account.aor`, `Account.regState`.
+- `test/reattach_test.c` — gate test for both fixes.
+
+---
+
 ## [1.4.1] — 2026-05-14
 
 ### Fixed

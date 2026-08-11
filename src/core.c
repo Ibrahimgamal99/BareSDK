@@ -218,6 +218,8 @@ int baresdk_init(const baresdk_config_t *cfg)
 		return BARESDK_ERR_INVAL;
 	if (cfg->audio_codec_count < 0 || cfg->audio_codec_count > 8)
 		return BARESDK_ERR_INVAL;
+	if (cfg->audio_codec_name_count < 0 || cfg->audio_codec_name_count > 8)
+		return BARESDK_ERR_INVAL;
 
 	static bool once = false;
 	if (!once) {
@@ -241,6 +243,8 @@ int baresdk_init(const baresdk_config_t *cfg)
 	g_bsdk.ev_queue_len = 0;
 	mtx_init(&g_bsdk.ev_lock, mtx_plain);
 	cnd_init(&g_bsdk.ev_cond);
+	cnd_init(&g_bsdk.ev_idle_cond);
+	g_bsdk.ev_delivering = false;
 	mtx_init(&g_bsdk.acct_lock, mtx_plain);
 	mtx_init(&g_bsdk.pcap_lock, mtx_plain);
 	{
@@ -460,6 +464,59 @@ fail:
 	memset(&g_bsdk, 0, sizeof(g_bsdk));
 	mtx_unlock(&g_bsdk.lock);
 	return err ? err : BARESDK_ERR_STATE;
+}
+
+/* ── baresdk_is_initialized ──────────────────────────────────────────────── */
+
+bool baresdk_is_initialized(void)
+{
+	/* g_bsdk.lock is only initialized on the first baresdk_init(); before
+	 * that the zeroed struct is answer enough and locking would be UB. */
+	if (!g_bsdk.initialized)
+		return false;
+
+	mtx_lock(&g_bsdk.lock);
+	bool up = g_bsdk.initialized;
+	mtx_unlock(&g_bsdk.lock);
+	return up;
+}
+
+/* ── baresdk_set_event_handler ───────────────────────────────────────────── */
+
+int baresdk_set_event_handler(baresdk_event_cb_t cb, void *userdata,
+                               bool deliver_owned_events)
+{
+	if (!g_bsdk.initialized)
+		return BARESDK_ERR_STATE;
+
+	mtx_lock(&g_bsdk.lock);
+	if (!g_bsdk.initialized) {
+		mtx_unlock(&g_bsdk.lock);
+		return BARESDK_ERR_STATE;
+	}
+
+	/* ev_lock is the one the event thread holds around its snapshot of
+	 * these three fields, so taking it here means a delivery either sees
+	 * the whole old handler or the whole new one — never a callback
+	 * paired with the wrong userdata or ownership mode. */
+	mtx_lock(&g_bsdk.ev_lock);
+	g_bsdk.cfg.event_cb             = cb;
+	g_bsdk.cfg.event_userdata       = userdata;
+	g_bsdk.cfg.deliver_owned_events = deliver_owned_events;
+
+	/* Then wait out a delivery that had already snapshotted the old
+	 * handler, so callers can free it (close a Dart NativeCallable, unload
+	 * a plugin) the moment this returns.  Skipped when called from inside
+	 * the callback itself — that delivery is this thread, and waiting for
+	 * it would wait forever. */
+	if (!thrd_equal(thrd_current(), g_bsdk.ev_thread)) {
+		while (g_bsdk.ev_delivering)
+			cnd_wait(&g_bsdk.ev_idle_cond, &g_bsdk.ev_lock);
+	}
+	mtx_unlock(&g_bsdk.ev_lock);
+
+	mtx_unlock(&g_bsdk.lock);
+	return BARESDK_OK;
 }
 
 /* ── baresdk_shutdown ────────────────────────────────────────────────────── */

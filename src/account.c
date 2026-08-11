@@ -331,7 +331,8 @@ static void configure_baresip_account(struct baresdk_account *acct)
 		if (tp)   account_set_stun_pass(ba, tp);
 	}
 
-	/* Audio codecs — string names > account enum list > global enum list */
+	/* Audio codecs — account names > account enums > global names >
+	 * global enums */
 	{
 		char codecs[256];
 		codecs[0] = '\0';
@@ -344,14 +345,30 @@ static void configure_baresip_account(struct baresdk_account *acct)
 			codec_list_str(acct->cfg.audio_codecs,
 			               acct->cfg.audio_codec_count,
 			               codecs, sizeof(codecs));
+		} else if (cfg->audio_codec_name_count > 0) {
+			codec_names_list_str(cfg->audio_codec_names,
+			                     cfg->audio_codec_name_count,
+			                     codecs, sizeof(codecs));
 		} else if (cfg->audio_codec_count > 0) {
 			codec_list_str(cfg->audio_codecs,
 			               cfg->audio_codec_count,
 			               codecs, sizeof(codecs));
 		}
 
-		if (codecs[0])
+		if (codecs[0]) {
 			account_set_audio_codecs(ba, codecs);
+			/* Unknown names are passed to baresip as-is so any codec a
+			 * loaded module registers can be named. When none of them
+			 * resolve, the account list stays empty and baresip quietly
+			 * falls back to offering every loaded codec — the opposite
+			 * of the restriction that was asked for. Detect that by the
+			 * fallback identity and say so. */
+			if (account_aucodecl(ba) == baresip_aucodecl()) {
+				warning("baresdk/account: codec list \"%s\" matched no "
+				        "loaded codec — offering all codecs instead\n",
+				        codecs);
+			}
+		}
 	}
 
 	/* DTMF via RTP events */
@@ -608,6 +625,45 @@ void baresdk_account_destroy(baresdk_account_handle_t acct)
 {
 	if (!acct) return;
 	bsdk_dispatch_sync(destroy_fn, acct);
+}
+
+/* ── Enumeration & state readers ─────────────────────────────────────────── */
+
+void baresdk_account_foreach(baresdk_account_iter_fn fn, void *arg)
+{
+	if (!fn) return;
+
+	mtx_lock(&g_bsdk.acct_lock);
+	struct le *le;
+	LIST_FOREACH(&g_bsdk.accounts, le) {
+		struct baresdk_account *acct = le->data;
+		if (!acct->destroyed)
+			fn((baresdk_account_handle_t)acct, arg);
+	}
+	mtx_unlock(&g_bsdk.acct_lock);
+}
+
+int baresdk_account_get_aor(baresdk_account_handle_t acct, char *buf, size_t sz)
+{
+	if (!acct || !buf || sz == 0)
+		return BARESDK_ERR_INVAL;
+
+	/* parsed_user/parsed_host are set once at create time and never
+	 * mutated, so no lock is needed. */
+	int n = re_snprintf(buf, sz, strchr(acct->parsed_host, ':')
+	                             ? "sip:%s@[%s]" : "sip:%s@%s",
+	                    acct->parsed_user, acct->parsed_host);
+	if (n < 0) {
+		buf[0] = '\0';
+		return BARESDK_ERR_NOMEM;
+	}
+	return BARESDK_OK;
+}
+
+baresdk_reg_state_t baresdk_account_get_reg_state(baresdk_account_handle_t acct)
+{
+	if (!acct) return BARESDK_REG_UNREGISTERED;
+	return acct->reg_state;
 }
 
 static void register_fn(void *arg)

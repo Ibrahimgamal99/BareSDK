@@ -44,6 +44,50 @@ baresdk_init()               ← start re_main + event threads
 baresdk_shutdown()           ← stop all threads, free everything
 ```
 
+`baresdk_init()` is not idempotent: on a stack that is already up it returns
+`BARESDK_ERR_ALREADY` and changes nothing. Config applies at init only.
+
+---
+
+## Reattaching to a live stack
+
+The stack belongs to the **process**, not to the runtime that started it. A host
+that can lose and rebuild its own runtime while the process survives comes back
+to a stack that is still up and still registered — the motivating case is an
+Android headless Flutter engine destroying the Dart isolate between push
+wakeups, and any re-loaded plugin or scripting VM behaves the same way.
+
+Re-initializing is not the recovery; re-pointing is:
+
+```c
+if (baresdk_is_initialized()) {
+        /* Take over event delivery from the consumer that is gone. */
+        baresdk_set_event_handler(my_event_cb, my_userdata, /*owned=*/true);
+
+        /* Re-derive the handles it held instead of creating duplicates. */
+        baresdk_account_foreach(adopt_account, NULL);   /* + baresdk_account_get_aor() */
+        baresdk_call_foreach(adopt_call, NULL);         /* + baresdk_call_get_state() */
+}
+else {
+        baresdk_init(&cfg);
+}
+```
+
+Events that fired while nobody was listening are **dropped, not buffered** — so
+recover state, not history. An INVITE that arrived during the gap is not
+replayed as an event, but the call is still live: `baresdk_call_foreach()` finds
+it and `baresdk_call_get_state()` reports it still `RINGING`. Registration state
+comes back the same way via `baresdk_account_get_reg_state()`.
+
+Going the other way, a consumer that knows it is about to disappear should call
+`baresdk_set_event_handler(NULL, NULL, false)` so nothing is delivered into a
+runtime being torn down. The stack stays up, registered and push-reachable.
+
+Flutter does all of this for you: `BareSDK.start()` reattaches when the stack is
+already running and sets [`reattached`](../quickstart/flutter.md), adopting the
+live accounts and calls; `detach()` is the park-and-leave-running counterpart to
+`shutdown()`.
+
 ---
 
 ## Config deep-copy

@@ -151,22 +151,34 @@ static int event_thread_fn(void *arg)
 			struct baresdk_queued_event *qev = le->data;
 			list_unlink(&qev->le);
 			g_bsdk.ev_queue_len--;
+			/* Snapshot the handler while still holding ev_lock:
+			 * baresdk_set_event_handler() may swap all three fields
+			 * concurrently and this delivery must use one coherent
+			 * set. Once taken, the old callback can still be running
+			 * here after the swap returns, which is why the swap only
+			 * promises that no *new* delivery uses it. */
+			baresdk_event_cb_t  cb    = g_bsdk.cfg.event_cb;
+			void               *cb_ud = g_bsdk.cfg.event_userdata;
+			bool                owned = g_bsdk.cfg.deliver_owned_events;
+			/* Held across the callback so a handler swap can wait the
+			 * old callback out instead of returning while it still
+			 * runs — consumers free the callback right after swapping
+			 * (a Dart NativeCallable is closed, a plugin unloads). */
+			g_bsdk.ev_delivering = true;
 			mtx_unlock(&g_bsdk.ev_lock);
 
-			if (g_bsdk.cfg.event_cb) {
-				if (g_bsdk.cfg.deliver_owned_events) {
+			if (cb) {
+				if (owned) {
 					/* Hand the consumer an owned clone; it
 					 * frees it via baresdk_event_release().
 					 * OOM → event dropped. */
 					struct baresdk_queued_event *own =
 						qev_clone(qev);
 					if (own)
-						g_bsdk.cfg.event_cb(&own->ev,
-						    g_bsdk.cfg.event_userdata);
+						cb(&own->ev, cb_ud);
 				}
 				else {
-					g_bsdk.cfg.event_cb(&qev->ev,
-					    g_bsdk.cfg.event_userdata);
+					cb(&qev->ev, cb_ud);
 				}
 			}
 			/* Deref the call wrapper only after the app callback has
@@ -178,6 +190,8 @@ static int event_thread_fn(void *arg)
 			mem_deref(qev);
 
 			mtx_lock(&g_bsdk.ev_lock);
+			g_bsdk.ev_delivering = false;
+			cnd_broadcast(&g_bsdk.ev_idle_cond);
 		} else if (g_bsdk.ev_shutdown) {
 			break;
 		}

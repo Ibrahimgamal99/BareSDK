@@ -442,6 +442,28 @@ class Account {
   /// Account-scoped events (registration, this account's calls, ...).
   Stream<BareSDKEvent> get events => _ctrl.stream;
 
+  /// This account's AOR, e.g. `sip:alice@pbx.example.com`. Read from the
+  /// native stack, so it identifies accounts adopted by [BareSDK.reattached]
+  /// too — the isolate that created them is gone, but the AOR is not.
+  String get aor {
+    final buf = calloc<Uint8>(320);
+    try {
+      if (internal.nativeBindings
+              .baresdk_account_get_aor(_handle, buf.cast<Char>(), 320) !=
+          0) {
+        return '';
+      }
+      return buf.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  /// Current registration state as the native stack sees it. Use after
+  /// reattaching, where no [RegStateEvent] has arrived in this isolate yet.
+  RegState get regState => RegState.fromRaw(
+      internal.nativeBindings.baresdk_account_get_reg_state(_handle));
+
   void _add(BareSDKEvent ev) {
     if (!_ctrl.isClosed) _ctrl.add(ev);
   }
@@ -599,11 +621,32 @@ class BareSDK {
           Void Function(Pointer<baresdk_event_t>, Pointer<Void>)> _nativeCb;
   final bool _manageAudioSession;
   bool _audioSessionActive = false;
+  bool _reattached = false;
 
   /// Every event from the stack, including the ones that belong to no
   /// account (network handover, log). Account-scoped events also continue
   /// to arrive on [Account.events].
   Stream<BareSDKEvent> get events => _ctrl.stream;
+
+  /// True when this instance adopted a stack that was already running in the
+  /// process rather than starting one — see [BareSDK.start].
+  ///
+  /// What carried over: the accounts (in [accounts], with their registrations
+  /// intact) and any live call (in [calls], with its real [Call.state]).
+  ///
+  /// What did not: the [BareSDKConfig] passed to [start] was **ignored**.
+  /// Config applies at `baresdk_init` and the stack is past that; changing it
+  /// requires [shutdown] and a fresh start. Events that fired while no isolate
+  /// was listening are also gone — read state off the adopted objects instead
+  /// of waiting for events that already happened.
+  bool get reattached => _reattached;
+
+  /// The accounts this instance knows about — created here, or adopted from a
+  /// previous consumer when [reattached].
+  Iterable<Account> get accounts => _accounts.values;
+
+  /// The calls currently tracked, including any adopted when [reattached].
+  Iterable<Call> get calls => _calls.values;
 
   /// Start the SDK — the recommended entry point.
   ///
@@ -615,10 +658,18 @@ class BareSDK {
   ///    MODE_IN_COMMUNICATION; iOS: AVAudioSession activation) —
   ///    disable with [manageAudioSession] = false when the app owns it
   ///    (e.g. CallKit's `didActivate audioSession`).
+  ///
+  /// If the native stack is already running in this process but this isolate
+  /// never started it — an Android headless engine woken by a second push, the
+  /// Dart isolate from the first wakeup long gone — this reattaches to the live
+  /// stack instead of failing, and [reattached] is true on the result. See
+  /// [reattached] for what that does and does not carry over; pass
+  /// [reattachIfRunning] = false to get the old hard failure instead.
   static Future<BareSDK> start({
     BareSDKConfig config = const BareSDKConfig(),
     bool manageAudioSession = true,
     String? libPath,
+    bool reattachIfRunning = true,
   }) async {
     BareSDKPlatform.ensureHandler();
     final cacheDir = await BareSDKPlatform.getCacheDir();
@@ -629,7 +680,8 @@ class BareSDK {
         netMonitorIntervalSeconds: 0,
       );
     }
-    final sdk = BareSDK._(config, manageAudioSession, libPath);
+    final sdk = BareSDK._(config, manageAudioSession, libPath,
+        reattachIfRunning: reattachIfRunning);
     BareSDKPlatform.onNetworkChanged = sdk.networkChanged;
     return sdk;
   }
@@ -642,10 +694,13 @@ class BareSDK {
   factory BareSDK({
     BareSDKConfig config = const BareSDKConfig(),
     String? libPath,
+    bool reattachIfRunning = true,
   }) =>
-      BareSDK._(config, false, libPath);
+      BareSDK._(config, false, libPath,
+          reattachIfRunning: reattachIfRunning);
 
-  BareSDK._(BareSDKConfig config, this._manageAudioSession, String? libPath) {
+  BareSDK._(BareSDKConfig config, this._manageAudioSession, String? libPath,
+      {bool reattachIfRunning = true}) {
     if (_instance != null) {
       throw StateError(
           'BareSDK is already running (the native stack is a process-wide '
@@ -657,6 +712,16 @@ class BareSDK {
         Void Function(Pointer<baresdk_event_t>, Pointer<Void>)>.listener(
       _cEventCb,
     );
+
+    // The stack lives in the process; this isolate may not have been the one
+    // that started it. Reattach rather than re-init — baresdk_init() on a live
+    // stack fails with ERR_ALREADY, and there is nothing to re-initialize:
+    // the registrations, and any call that arrived while no isolate was
+    // listening, are still up.
+    if (reattachIfRunning && internal.nativeBindings.baresdk_is_initialized()) {
+      _reattach();
+      return;
+    }
 
     final cfg = calloc<baresdk_config_t>();
     final scope = fillNativeConfig(cfg, config, internal.nativeBindings);
@@ -687,6 +752,67 @@ class BareSDK {
       throw StateError('baresdk_init failed: ${strerror(err)} ($err)');
     }
     _instance = this;
+  }
+
+  /// Take over event delivery from the consumer that started the stack, and
+  /// adopt the accounts and calls it left behind.
+  void _reattach() {
+    final b = internal.nativeBindings;
+
+    // Publish the instance before installing the handler: _cEventCb routes
+    // through BareSDK.instance, and an event that lands in the gap would be
+    // released and dropped rather than delivered.
+    _instance = this;
+    final err =
+        b.baresdk_set_event_handler(_nativeCb.nativeFunction, nullptr, true);
+    if (err != 0) {
+      _instance = null;
+      _nativeCb.close();
+      throw StateError(
+          'baresdk_set_event_handler failed: ${strerror(err)} ($err)');
+    }
+    _reattached = true;
+
+    // Accounts before calls — a call resolves its owner out of _accounts.
+    for (final h in _liveAccountHandles()) {
+      _accounts[h.address] = Account._(h, this);
+    }
+    for (final h in _liveCallHandles()) {
+      final acct = b.baresdk_call_get_account(h);
+      final call = _trackCall(h, acct == nullptr ? null : _accounts[acct.address]);
+      // A call that arrived while no isolate was listening is already past
+      // CALLING; take the state from the stack, not from the default.
+      call.state = CallState.fromRaw(b.baresdk_call_get_state(h));
+    }
+  }
+
+  List<Pointer<baresdk_account>> _liveAccountHandles() {
+    final found = <Pointer<baresdk_account>>[];
+    // isolateLocal: baresdk_account_foreach calls back synchronously on this
+    // thread, and returns before the handles can go stale.
+    final cb = NativeCallable<
+            Void Function(Pointer<baresdk_account>, Pointer<Void>)>.isolateLocal(
+        (Pointer<baresdk_account> acct, Pointer<Void> _) => found.add(acct));
+    try {
+      internal.nativeBindings
+          .baresdk_account_foreach(cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+    }
+    return found;
+  }
+
+  List<Pointer<baresdk_call>> _liveCallHandles() {
+    final found = <Pointer<baresdk_call>>[];
+    final cb = NativeCallable<
+            Void Function(Pointer<baresdk_call>, Pointer<Void>)>.isolateLocal(
+        (Pointer<baresdk_call> call, Pointer<Void> _) => found.add(call));
+    try {
+      internal.nativeBindings.baresdk_call_foreach(cb.nativeFunction, nullptr);
+    } finally {
+      cb.close();
+    }
+    return found;
   }
 
   String get version =>
@@ -834,6 +960,29 @@ class BareSDK {
 
   /// False while the device has no usable (non-loopback) local address.
   bool networkIsUp() => internal.nativeBindings.baresdk_network_is_up();
+
+  /// Stop delivering events to this isolate, leaving the native stack running.
+  ///
+  /// The counterpart to the reattach in [BareSDK.start]: accounts stay
+  /// registered and reachable by push, calls stay up, and a later isolate picks
+  /// the stack back up with `BareSDK.start()`. Use it when a background isolate
+  /// is about to go away — an Android headless engine finishing its task — so
+  /// events are not fired at a callback whose isolate is being torn down.
+  ///
+  /// This instance is unusable afterwards; call [shutdown] instead when you
+  /// want the stack itself gone.
+  void detach() {
+    internal.nativeBindings.baresdk_set_event_handler(nullptr, nullptr, false);
+    _nativeCb.close();
+    _ctrl.close();
+    for (final a in _accounts.values) {
+      a._ctrl.close();
+    }
+    _accounts.clear();
+    _calls.clear();
+    BareSDKPlatform.onNetworkChanged = null;
+    if (identical(_instance, this)) _instance = null;
+  }
 
   /// Tear down the stack. All accounts and calls are terminated.
   void shutdown() {

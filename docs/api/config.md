@@ -78,6 +78,8 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `media_enc` | `baresdk_media_enc_t` | `NONE` | `NONE`, `SDES`, `DTLS_SRTP` |
 | `audio_codecs[8]` | `baresdk_codec_t[]` | `[OPUS]` | Preference-ordered codec list |
 | `audio_codec_count` | `int` | 1 | Number of codecs in `audio_codecs` |
+| `audio_codec_names[8][32]` | `char[][]` | empty | Preference-ordered codec list by name; wins over `audio_codecs` |
+| `audio_codec_name_count` | `int` | 0 | Number of names in `audio_codec_names`; 0 = use `audio_codecs` |
 | `dscp_sip` | `uint8_t` | 0 | DSCP for SIP (0=OS default, 24=AF31) |
 | `dscp_rtp` | `uint8_t` | 0 | DSCP for RTP (0=OS default, 46=EF) |
 

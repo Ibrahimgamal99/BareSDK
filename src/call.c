@@ -366,6 +366,20 @@ void baresdk_call_foreach(baresdk_call_iter_fn fn, void *arg)
 	bsdk_call_foreach(public_foreach_cb, &ctx);
 }
 
+baresdk_account_handle_t baresdk_call_get_account(baresdk_call_handle_t call)
+{
+	if (!call) return NULL;
+	return (baresdk_account_handle_t)call->acct;
+}
+
+baresdk_call_state_t baresdk_call_get_state(baresdk_call_handle_t call)
+{
+	if (!call) return BARESDK_CALL_ENDED;
+	/* Local hold is tracked separately (baresdk_call_is_held); a call we
+	 * put on hold ourselves still reads as ESTABLISHED here. */
+	return call->state;
+}
+
 /* ── Per-dialog custom headers ─────────────────────────────────────────── */
 
 typedef struct {

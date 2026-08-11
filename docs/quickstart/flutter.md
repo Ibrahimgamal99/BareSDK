@@ -73,7 +73,40 @@ ConnectivityManager callbacks, and manages audio focus around calls. On
 desktop it behaves like the plain constructor.
 
 The native stack is a **process-wide singleton** — constructing a second
-`BareSDK` throws until you call `shutdown()`.
+`BareSDK` from an isolate that already has one throws until you call
+`shutdown()`.
+
+### Background isolates (push wakeups)
+
+An Android headless engine destroys its Dart isolate when its task ends, while
+the process — and the SIP stack inside it, still registered — stays alive. The
+next push runs your start-up code in a *new* isolate against that live stack, so
+`BareSDK.start()` reattaches to it instead of failing:
+
+```dart
+final sdk = await BareSDK.start(config: cfg);
+
+if (sdk.reattached) {
+  // The stack was already up: `cfg` was NOT applied (config only takes effect
+  // at init), and the accounts/calls of the previous isolate are adopted.
+  for (final a in sdk.accounts) print('${a.aor} is ${a.regState}');
+
+  // An INVITE that arrived while no isolate was listening fired no event here —
+  // but the call is live, so pick it up from state instead.
+  for (final c in sdk.calls) {
+    if (c.state == CallState.ringing) showIncomingCallUi(c);
+  }
+} else {
+  final account = sdk.createAccount('alice@pbx.example.com', 'secret');
+  account.register();
+}
+
+// When the background task is done: park delivery, leave the stack up and
+// push-reachable for the next wakeup. Use shutdown() only to really stop.
+sdk.detach();
+```
+
+Pass `reattachIfRunning: false` to get the hard failure instead.
 
 ## 3 — Register an account (any transport)
 

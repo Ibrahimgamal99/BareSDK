@@ -94,6 +94,73 @@ class BareSDKBindings {
   late final _baresdk_init = _baresdk_initPtr
       .asFunction<int Function(ffi.Pointer<baresdk_config_t>)>();
 
+  /// True while the stack is initialized (between a successful baresdk_init()
+  /// and baresdk_shutdown()).  Thread-safe.
+  ///
+  /// The stack lives in the process, not in the caller's runtime.  A host that
+  /// can lose and rebuild its own runtime while the process stays alive — an
+  /// Android headless Flutter engine tearing down the Dart isolate between push
+  /// wakeups, a re-loaded plugin/scripting VM — comes back to a stack that is
+  /// still up and still registered.  Calling baresdk_init() again then returns
+  /// BARESDK_ERR_ALREADY; the correct recovery is to re-point the event sink at
+  /// the new runtime with baresdk_set_event_handler() and re-discover the live
+  /// accounts and calls with baresdk_account_foreach() / baresdk_call_foreach().
+  bool baresdk_is_initialized() {
+    return _baresdk_is_initialized();
+  }
+
+  late final _baresdk_is_initializedPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function()>>(
+          'baresdk_is_initialized');
+  late final _baresdk_is_initialized =
+      _baresdk_is_initializedPtr.asFunction<bool Function()>();
+
+  /// Re-point the event sink at a new callback on an already-initialized stack.
+  ///
+  /// Use when the process outlives the consumer that installed cfg.event_cb (see
+  /// baresdk_is_initialized()).  Once this returns the old callback is neither
+  /// running nor reachable — a delivery already inside it is waited out — so the
+  /// caller may free it immediately (close a Dart NativeCallable, unload a
+  /// plugin).  Calling from inside the event callback skips that wait and returns
+  /// without blocking, since the delivery being waited for would be the caller.
+  /// A callback that blocks forever blocks this call with it.
+  ///
+  /// Events are NOT buffered across the gap — whatever fired while the old
+  /// consumer was gone is dropped, including an INVITE that arrived during the
+  /// gap.  Recover the resulting state, not the missed events: the call itself is
+  /// still live in the stack, so a reattaching consumer enumerates
+  /// baresdk_call_foreach() and reads baresdk_call_get_state() to find a call
+  /// still RINGING, and baresdk_account_foreach() /
+  /// baresdk_account_get_reg_state() for registration state.
+  ///
+  /// @param cb                    New callback; NULL parks delivery (events keep
+  /// being dequeued and dropped, never queued up)
+  /// @param userdata              Passed to cb as-is
+  /// @param deliver_owned_events  Ownership mode for the new callback — same
+  /// contract as cfg.deliver_owned_events.  A
+  /// handler installed with true MUST release every
+  /// event it receives.
+  /// @return BARESDK_OK, or BARESDK_ERR_STATE if the stack is not initialized
+  int baresdk_set_event_handler(
+    baresdk_event_cb_t cb,
+    ffi.Pointer<ffi.Void> userdata,
+    bool deliver_owned_events,
+  ) {
+    return _baresdk_set_event_handler(
+      cb,
+      userdata,
+      deliver_owned_events,
+    );
+  }
+
+  late final _baresdk_set_event_handlerPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(baresdk_event_cb_t, ffi.Pointer<ffi.Void>,
+              ffi.Bool)>>('baresdk_set_event_handler');
+  late final _baresdk_set_event_handler =
+      _baresdk_set_event_handlerPtr.asFunction<
+          int Function(baresdk_event_cb_t, ffi.Pointer<ffi.Void>, bool)>();
+
   /// Tear down the stack. Blocks until all internal threads have exited.
   /// All active accounts and calls are forcibly terminated first.
   void baresdk_shutdown() {
@@ -365,6 +432,68 @@ class BareSDKBindings {
       _baresdk_account_unsubscribe_presencePtr.asFunction<
           int Function(baresdk_account_handle_t, ffi.Pointer<ffi.Char>)>();
 
+  /// Iterate all live accounts. Safe to call from any thread.
+  /// Do not create or destroy accounts from inside fn.
+  ///
+  /// Together with baresdk_account_get_aor() this lets a consumer that lost its
+  /// own handles — a rebuilt runtime attaching to a stack that is still up, see
+  /// baresdk_is_initialized() — re-derive them instead of creating duplicates.
+  void baresdk_account_foreach(
+    baresdk_account_iter_fn fn,
+    ffi.Pointer<ffi.Void> arg,
+  ) {
+    return _baresdk_account_foreach(
+      fn,
+      arg,
+    );
+  }
+
+  late final _baresdk_account_foreachPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Void Function(baresdk_account_iter_fn,
+              ffi.Pointer<ffi.Void>)>>('baresdk_account_foreach');
+  late final _baresdk_account_foreach = _baresdk_account_foreachPtr.asFunction<
+      void Function(baresdk_account_iter_fn, ffi.Pointer<ffi.Void>)>();
+
+  /// Write the account's AOR ("sip:user@host") into buf as a NUL-terminated
+  /// string.  Identifies an account handle obtained from
+  /// baresdk_account_foreach().
+  /// @return BARESDK_OK, BARESDK_ERR_INVAL on bad args, or BARESDK_ERR_NOMEM
+  /// if buf is too small (buf is left empty).
+  int baresdk_account_get_aor(
+    baresdk_account_handle_t acct,
+    ffi.Pointer<ffi.Char> buf,
+    int sz,
+  ) {
+    return _baresdk_account_get_aor(
+      acct,
+      buf,
+      sz,
+    );
+  }
+
+  late final _baresdk_account_get_aorPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(baresdk_account_handle_t, ffi.Pointer<ffi.Char>,
+              ffi.Size)>>('baresdk_account_get_aor');
+  late final _baresdk_account_get_aor = _baresdk_account_get_aorPtr.asFunction<
+      int Function(baresdk_account_handle_t, ffi.Pointer<ffi.Char>, int)>();
+
+  /// Current registration state, as last reported by BARESDK_EV_REG_STATE.
+  int baresdk_account_get_reg_state(
+    baresdk_account_handle_t acct,
+  ) {
+    return _baresdk_account_get_reg_state(
+      acct,
+    );
+  }
+
+  late final _baresdk_account_get_reg_statePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(baresdk_account_handle_t)>>(
+          'baresdk_account_get_reg_state');
+  late final _baresdk_account_get_reg_state = _baresdk_account_get_reg_statePtr
+      .asFunction<int Function(baresdk_account_handle_t)>();
+
   /// Initiate an outgoing call. Returns immediately; fires BARESDK_EV_CALL_STATE
   /// CALLING, then RINGING, then ESTABLISHED (or FAILED).
   int baresdk_call_invite(
@@ -586,6 +715,37 @@ class BareSDKBindings {
               ffi.Pointer<ffi.Void>)>>('baresdk_call_foreach');
   late final _baresdk_call_foreach = _baresdk_call_foreachPtr
       .asFunction<void Function(baresdk_call_iter_fn, ffi.Pointer<ffi.Void>)>();
+
+  /// The account this call belongs to, or NULL if it has none.
+  baresdk_account_handle_t baresdk_call_get_account(
+    baresdk_call_handle_t call,
+  ) {
+    return _baresdk_call_get_account(
+      call,
+    );
+  }
+
+  late final _baresdk_call_get_accountPtr = _lookup<
+      ffi.NativeFunction<
+          baresdk_account_handle_t Function(
+              baresdk_call_handle_t)>>('baresdk_call_get_account');
+  late final _baresdk_call_get_account = _baresdk_call_get_accountPtr
+      .asFunction<baresdk_account_handle_t Function(baresdk_call_handle_t)>();
+
+  /// Current call state. Returns BARESDK_CALL_ENDED for a NULL handle.
+  int baresdk_call_get_state(
+    baresdk_call_handle_t call,
+  ) {
+    return _baresdk_call_get_state(
+      call,
+    );
+  }
+
+  late final _baresdk_call_get_statePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(baresdk_call_handle_t)>>(
+          'baresdk_call_get_state');
+  late final _baresdk_call_get_state = _baresdk_call_get_statePtr
+      .asFunction<int Function(baresdk_call_handle_t)>();
 
   /// Send a SIP MESSAGE (instant message) out of dialog.
   /// content_type defaults to "text/plain" if NULL.
@@ -1934,7 +2094,9 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Int32()
   external int media_enc;
 
-  /// ordered preference list
+  /// Ordered preference list. Overridden per account by
+  /// baresdk_account_config_t.audio_codec[_name]s, and by the
+  /// string list in audio_codec_names[] below.
   @ffi.Array.multi([8])
   external ffi.Array<ffi.Int32> audio_codecs;
 
@@ -2139,6 +2301,14 @@ final class baresdk_config_t extends ffi.Struct {
   /// isolate's event loop after the C call has already returned.
   @ffi.Bool()
   external bool deliver_owned_events;
+
+  /// codec name strings, each ≤ 31 chars
+  @ffi.Array.multi([8, 32])
+  external ffi.Array<ffi.Array<ffi.Char>> audio_codec_names;
+
+  /// 0 = fall back to audio_codecs[]
+  @ffi.Int()
+  external int audio_codec_name_count;
 }
 
 typedef baresdk_aec_mode_t = ffi.Uint8;
@@ -2280,6 +2450,14 @@ final class baresdk_account_config_t extends ffi.Struct {
   @ffi.Int32()
   external int dtmf_mode;
 }
+
+/// Called once per live account by baresdk_account_foreach().
+typedef baresdk_account_iter_fn
+    = ffi.Pointer<ffi.NativeFunction<baresdk_account_iter_fnFunction>>;
+typedef baresdk_account_iter_fnFunction = ffi.Void Function(
+    baresdk_account_handle_t acct, ffi.Pointer<ffi.Void> arg);
+typedef Dartbaresdk_account_iter_fnFunction = void Function(
+    baresdk_account_handle_t acct, ffi.Pointer<ffi.Void> arg);
 
 /// Called once per active call by baresdk_call_foreach().
 typedef baresdk_call_iter_fn

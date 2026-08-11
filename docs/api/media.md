@@ -18,6 +18,31 @@ cfg.audio_codec_count = 2;
 | G.722 | `BARESDK_CODEC_G722` | Wideband, good for HD voice |
 | G.726 32 kbit/s | `BARESDK_CODEC_G726_32` | 8 kHz, legacy ADPCM |
 
+### By name
+
+Codecs can also be listed by name, which reaches codecs with no enum constant
+(`"g729"`) and any codec a loaded baresip module registers. Names are matched
+case-insensitively; aliases: `opus`, `ulaw`/`g711u`/`pcmu`, `alaw`/`g711a`/`pcma`,
+`g722`, `g729`, `g726`/`g726-32`.
+
+```c
+strcpy(cfg.audio_codec_names[0], "ulaw");
+strcpy(cfg.audio_codec_names[1], "opus");
+cfg.audio_codec_name_count = 2;
+```
+
+Both lists exist on `baresdk_config_t` (global) and
+`baresdk_account_config_t` (per account). Precedence, highest first:
+
+1. account `audio_codec_names`
+2. account `audio_codecs`
+3. global `audio_codec_names`
+4. global `audio_codecs`
+
+In Flutter both levels are `List<String>` and use the name form:
+`BareSDKConfig(audioCodecs: ['ulaw', 'opus'])` globally,
+`AccountConfig(audioCodecs: [...])` per account.
+
 ---
 
 ## Opus tuning

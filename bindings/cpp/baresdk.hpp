@@ -110,7 +110,10 @@ typedef enum {
  *   libwebrtc-audio-processing-1.  Returns ENOTSUP on mobile builds and
  *   when the option is off.
  */
-#if defined(_MSC_VER)
+/* BARESDK_NO_PACKED_ENUM: for binding generators (e.g. ffigen) that ignore
+ * __attribute__((packed)) and would widen the field to 4 bytes, silently
+ * shifting every later struct member. The uint8_t typedef keeps the ABI. */
+#if defined(_MSC_VER) || defined(BARESDK_NO_PACKED_ENUM)
 typedef uint8_t baresdk_aec_mode_t;
 #  define BARESDK_AEC_OFF        ((baresdk_aec_mode_t)0)
 #  define BARESDK_AEC_SUPPRESSOR ((baresdk_aec_mode_t)1)
@@ -500,6 +503,14 @@ typedef struct {
 typedef void (*baresdk_event_cb_t)(const baresdk_event_t *ev, void *userdata);
 
 /**
+ * Release an event delivered with cfg.deliver_owned_events = true.
+ * Must be called exactly once per delivered event; may be called from any
+ * thread, at any time after delivery.  No-op on NULL.  Passing an event
+ * that was NOT delivered in owned mode is undefined behavior.
+ */
+BARESDK_EXPORT void baresdk_event_release(const baresdk_event_t *ev);
+
+/**
  * Media tap callback — fired from the audio thread on each audio frame.
  * Must be non-blocking. Copy PCM data if you need it beyond the callback.
  */
@@ -581,7 +592,10 @@ typedef struct {
 
 	/* ── Media ────────────────────────────────────────────────────── */
 	baresdk_media_enc_t  media_enc;
-	baresdk_codec_t      audio_codecs[8]; /* ordered preference list */
+	/* Ordered preference list. Overridden per account by
+	 * baresdk_account_config_t.audio_codec[_name]s, and by the
+	 * string list in audio_codec_names[] below. */
+	baresdk_codec_t      audio_codecs[8];
 	int                  audio_codec_count;
 	uint8_t              dscp_sip;  /* 0 = OS default; 24 = AF31 */
 	uint8_t              dscp_rtp;  /* 0 = OS default; 46 = EF */
@@ -685,6 +699,41 @@ typedef struct {
 
 	/** Maximum handover / re-INVITE attempts before giving up. Default 6. */
 	uint32_t  net_max_attempts;
+
+	/* ── Event delivery ownership ─────────────────────────────────
+	 *
+	 * false (default): event_cb receives a borrowed event, valid only
+	 * for the duration of the callback (the historical contract).
+	 *
+	 * true: event_cb receives a heap-owned clone of the event; the
+	 * consumer MUST call baresdk_event_release(ev) exactly once when
+	 * done — which may be after the callback has returned.  Required
+	 * for bindings that dispatch events asynchronously, e.g. Dart's
+	 * NativeCallable.listener, where the callback body runs on the
+	 * isolate's event loop after the C call has already returned. */
+	bool      deliver_owned_events;
+
+	/* ── Global audio codec list by name ─────────────────────────
+	 *
+	 * String form of audio_codecs[] above; takes precedence over it
+	 * when audio_codec_name_count > 0.  Names are matched
+	 * case-insensitively and an unrecognized name is passed through
+	 * to baresip as-is, so any codec a loaded module registers can be
+	 * selected — including ones with no baresdk_codec_t constant
+	 * (e.g. "g729").  Same accepted spellings as the per-account
+	 * baresdk_account_config_t.audio_codec_names.
+	 *
+	 * Precedence, highest first:
+	 *   account audio_codec_names → account audio_codecs →
+	 *   global audio_codec_names  → global audio_codecs.
+	 *
+	 * Example — prefer µ-law globally, fall back to Opus:
+	 *   strcpy(cfg.audio_codec_names[0], "ulaw");
+	 *   strcpy(cfg.audio_codec_names[1], "opus");
+	 *   cfg.audio_codec_name_count = 2;
+	 */
+	char  audio_codec_names[8][32];  /* codec name strings, each ≤ 31 chars */
+	int   audio_codec_name_count;    /* 0 = fall back to audio_codecs[] */
 
 } baresdk_config_t;
 
@@ -835,6 +884,53 @@ BARESDK_EXPORT void baresdk_config_init(baresdk_config_t *cfg);
 BARESDK_EXPORT int baresdk_init(const baresdk_config_t *cfg);
 
 /**
+ * True while the stack is initialized (between a successful baresdk_init()
+ * and baresdk_shutdown()).  Thread-safe.
+ *
+ * The stack lives in the process, not in the caller's runtime.  A host that
+ * can lose and rebuild its own runtime while the process stays alive — an
+ * Android headless Flutter engine tearing down the Dart isolate between push
+ * wakeups, a re-loaded plugin/scripting VM — comes back to a stack that is
+ * still up and still registered.  Calling baresdk_init() again then returns
+ * BARESDK_ERR_ALREADY; the correct recovery is to re-point the event sink at
+ * the new runtime with baresdk_set_event_handler() and re-discover the live
+ * accounts and calls with baresdk_account_foreach() / baresdk_call_foreach().
+ */
+BARESDK_EXPORT bool baresdk_is_initialized(void);
+
+/**
+ * Re-point the event sink at a new callback on an already-initialized stack.
+ *
+ * Use when the process outlives the consumer that installed cfg.event_cb (see
+ * baresdk_is_initialized()).  Once this returns the old callback is neither
+ * running nor reachable — a delivery already inside it is waited out — so the
+ * caller may free it immediately (close a Dart NativeCallable, unload a
+ * plugin).  Calling from inside the event callback skips that wait and returns
+ * without blocking, since the delivery being waited for would be the caller.
+ * A callback that blocks forever blocks this call with it.
+ *
+ * Events are NOT buffered across the gap — whatever fired while the old
+ * consumer was gone is dropped, including an INVITE that arrived during the
+ * gap.  Recover the resulting state, not the missed events: the call itself is
+ * still live in the stack, so a reattaching consumer enumerates
+ * baresdk_call_foreach() and reads baresdk_call_get_state() to find a call
+ * still RINGING, and baresdk_account_foreach() /
+ * baresdk_account_get_reg_state() for registration state.
+ *
+ * @param cb                    New callback; NULL parks delivery (events keep
+ *                              being dequeued and dropped, never queued up)
+ * @param userdata              Passed to cb as-is
+ * @param deliver_owned_events  Ownership mode for the new callback — same
+ *                              contract as cfg.deliver_owned_events.  A
+ *                              handler installed with true MUST release every
+ *                              event it receives.
+ * @return BARESDK_OK, or BARESDK_ERR_STATE if the stack is not initialized
+ */
+BARESDK_EXPORT int baresdk_set_event_handler(baresdk_event_cb_t cb,
+                                             void *userdata,
+                                             bool deliver_owned_events);
+
+/**
  * Tear down the stack. Blocks until all internal threads have exited.
  * All active accounts and calls are forcibly terminated first.
  */
@@ -942,6 +1038,33 @@ BARESDK_EXPORT int baresdk_account_subscribe_presence(baresdk_account_handle_t a
 BARESDK_EXPORT int baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
                                           const char *target_uri);
 
+/** Called once per live account by baresdk_account_foreach(). */
+typedef void (*baresdk_account_iter_fn)(baresdk_account_handle_t acct, void *arg);
+
+/**
+ * Iterate all live accounts. Safe to call from any thread.
+ * Do not create or destroy accounts from inside fn.
+ *
+ * Together with baresdk_account_get_aor() this lets a consumer that lost its
+ * own handles — a rebuilt runtime attaching to a stack that is still up, see
+ * baresdk_is_initialized() — re-derive them instead of creating duplicates.
+ */
+BARESDK_EXPORT void baresdk_account_foreach(baresdk_account_iter_fn fn, void *arg);
+
+/**
+ * Write the account's AOR ("sip:user@host") into buf as a NUL-terminated
+ * string.  Identifies an account handle obtained from
+ * baresdk_account_foreach().
+ * @return BARESDK_OK, BARESDK_ERR_INVAL on bad args, or BARESDK_ERR_NOMEM
+ *         if buf is too small (buf is left empty).
+ */
+BARESDK_EXPORT int baresdk_account_get_aor(baresdk_account_handle_t acct,
+                                            char *buf, size_t sz);
+
+/** Current registration state, as last reported by BARESDK_EV_REG_STATE. */
+BARESDK_EXPORT baresdk_reg_state_t baresdk_account_get_reg_state(
+        baresdk_account_handle_t acct);
+
 /* ── Calls ────────────────────────────────────────────────────────────────── */
 
 /**
@@ -957,6 +1080,17 @@ BARESDK_EXPORT int baresdk_call_answer(baresdk_call_handle_t call);
 
 /** Terminate a call with BYE. */
 BARESDK_EXPORT int baresdk_call_hangup(baresdk_call_handle_t call);
+
+/**
+ * Terminate a call with an explicit SIP status code.
+ * For an unanswered incoming call this sends the given final response
+ * (486 "Busy Here", 603 "Decline", ...); for an established call the
+ * dialog is ended as usual (the code applies where the SIP state allows).
+ * @param scode   SIP status code, e.g. 486 or 603. 0 = default behavior.
+ * @param reason  Reason phrase; NULL = derived from scode.
+ */
+BARESDK_EXPORT int baresdk_call_reject(baresdk_call_handle_t call,
+                                        uint16_t scode, const char *reason);
 
 /** Put call on hold (re-INVITE with sendonly). */
 BARESDK_EXPORT int baresdk_call_hold(baresdk_call_handle_t call);
@@ -996,6 +1130,14 @@ typedef void (*baresdk_call_iter_fn)(baresdk_call_handle_t call, void *arg);
 
 /** Iterate all active calls. Safe to call from any thread. */
 BARESDK_EXPORT void baresdk_call_foreach(baresdk_call_iter_fn fn, void *arg);
+
+/** The account this call belongs to, or NULL if it has none. */
+BARESDK_EXPORT baresdk_account_handle_t baresdk_call_get_account(
+        baresdk_call_handle_t call);
+
+/** Current call state. Returns BARESDK_CALL_ENDED for a NULL handle. */
+BARESDK_EXPORT baresdk_call_state_t baresdk_call_get_state(
+        baresdk_call_handle_t call);
 
 /* ── SIP MESSAGE ─────────────────────────────────────────────────────────── */
 
@@ -1236,6 +1378,7 @@ BARESDK_EXPORT int baresdk_pcap_stop(void);
 #ifdef __cplusplus
 }
 #endif
+
 #endif /* BARESDK_H — embedded C declarations end */
 
 /* ── C++ wrapper ────────────────────────────────────────────────────────── */
