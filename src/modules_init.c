@@ -21,11 +21,18 @@
  *               SUBSCRIBE dialogs); contacts are added via the API
  *   "menu"    — interactive CLI menu; writes to stderr and has no role
  *               in a library SDK
+ *   "plc"     — G.711 packet-loss concealment.  Wanted for lossy links, but
+ *               baresip's implementation is a thin wrapper over spandsp and
+ *               its CMakeLists returns early when SPANDSP is not found, so
+ *               listing it here without vendoring spandsp for all five
+ *               target platforms would only produce a load warning at every
+ *               startup.  Opus conceals internally and, with
+ *               cfg.opus_expected_loss_pct, with FEC — that is the resilient
+ *               codec path until spandsp is part of the build.
  */
 static const char *COMMON_MODULES[] = {
 	"opus",
 	"g711",
-	"g722",
 	"srtp",
 	"dtls_srtp",
 	"stun",
@@ -37,9 +44,9 @@ static const char *COMMON_MODULES[] = {
 	NULL
 };
 
-/* Desktop-only modules */
+/* Desktop-only modules — audio plumbing, no codecs: the codec set is
+ * identical on desktop and mobile (opus + g711). */
 static const char *DESKTOP_EXTRA[] = {
-	"l16",
 	"aubridge",
 	"auconv",
 	"auresamp",
@@ -87,9 +94,32 @@ static void load_list(const char **list)
 	}
 }
 
+/* Whether the audio driver we ended up with captures through the OS voice
+ * path, i.e. the device has already run its own AEC (and NS/AGC) before the
+ * first sample reaches us.  Set by modules_init() below, read by
+ * audio_processing.c to decide whether the software echo suppressor has any
+ * work left to do. */
+static bool s_platform_aec;
+
+bool bsdk_platform_has_aec(void)
+{
+	return s_platform_aec;
+}
+
+/* The device module the platform would use on its own, remembered so
+ * baresdk_audio_use_external(false) can put it back. */
+static char s_platform_audio_mod[32];
+
+const char *bsdk_platform_audio_mod(void)
+{
+	return s_platform_audio_mod[0] ? s_platform_audio_mod : NULL;
+}
+
 int modules_init(void)
 {
 	const char *audio_mod = PLATFORM_AUDIO[0];
+
+	s_platform_aec = false;
 
 	load_list(COMMON_MODULES);
 
@@ -100,18 +130,41 @@ int modules_init(void)
 #if defined(BARESDK_AUDIO_OPENSLES)
 	/* Prefer baresdk's voice-communication OpenSLES driver (platform
 	 * AEC/NS); fall back to the stock opensles module on failure. */
-	if (bsdk_sles_vc_init() == 0)
+	if (bsdk_sles_vc_init() == 0) {
 		audio_mod = "sles_vc";
-	else
+		/* VOICE_COMMUNICATION recording preset — the HAL's AEC/NS/AGC. */
+		s_platform_aec = true;
+	}
+	else {
+		/* The stock module records with the generic preset, so nothing
+		 * cancels echo below us and the software suppressor is still
+		 * the only one there is. */
 		load_list(PLATFORM_AUDIO);
+	}
 #else
 	load_list(PLATFORM_AUDIO);
+#endif
+
+#if defined(BARESDK_AUDIO_AUDIOUNIT)
+	/* iOS: audiounit's I/O unit is VoiceProcessingIO, which is Apple's
+	 * hardware echo canceller. (The define is only set for iOS — a macOS
+	 * build gets coreaudio, which is not echo-cancelled.) */
+	s_platform_aec = true;
 #endif
 
 #if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
 	if (g_bsdk.cfg.aec_mode == BARESDK_AEC_WEBRTC)
 		load_list(WEBRTC_AEC_LIST);
 #endif
+
+	/* Always available, never automatic: the app opts in with
+	 * baresdk_audio_use_external(true). */
+	if (bsdk_audio_external_init())
+		warning("baresdk: app-owned audio device unavailable\n");
+
+	if (audio_mod)
+		str_ncpy(s_platform_audio_mod, audio_mod,
+		         sizeof(s_platform_audio_mod));
 
 	/* Wire the platform audio module name into baresip config so audio_alloc
 	 * picks the real device module.  Must overwrite unconditionally:

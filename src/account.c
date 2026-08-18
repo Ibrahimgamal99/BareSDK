@@ -151,6 +151,10 @@ static const char *normalize_codec_name(const char *name)
 	if (strcasecmp(name, "alaw")               == 0 ||
 	    strcasecmp(name, "g711a")              == 0 ||
 	    strcasecmp(name, "pcma")               == 0) return "PCMA/8000/1";
+	/* No module in the build registers these, so they resolve to nothing and
+	 * get dropped from the offer with a warning.  The spellings are kept so
+	 * that adding the corresponding module (g722 to the profile, an external
+	 * g729/g726) is a build change only, with no code edit here. */
 	if (strcasecmp(name, "g722")               == 0) return "G722/8000/1";
 	if (strcasecmp(name, "g729")               == 0) return "G729/8000/1";
 	if (strcasecmp(name, "g726")               == 0 ||
@@ -158,6 +162,15 @@ static const char *normalize_codec_name(const char *name)
 	/* Unknown name passed as-is — lets callers use any codec baresip has loaded */
 	return name;
 }
+
+/* Codec list offered when neither the account nor the global config names any.
+ * Without this, baresip falls back to every codec its loaded modules register,
+ * so the default SDP offer would silently follow whatever the build happens to
+ * link.  Pinning it here gives every platform the same default: Opus first
+ * (wideband), G.711 as the universally-interoperable fallback.  Both profiles
+ * compile exactly these two codec modules — see cmake/modules-{desktop,mobile}
+ * .cmake — so this list is always fully satisfiable. */
+#define BSDK_DEFAULT_AUDIO_CODECS "opus/48000/2,PCMU/8000/1,PCMA/8000/1"
 
 /* Build codec list string from enum array: "opus/48000/2,PCMU/8000/1" */
 static void codec_list_str(const baresdk_codec_t *codecs, int count,
@@ -355,6 +368,12 @@ static void configure_baresip_account(struct baresdk_account *acct)
 			               codecs, sizeof(codecs));
 		}
 
+		/* Nothing configured anywhere, or every configured name was empty */
+		if (!codecs[0]) {
+			str_ncpy(codecs, BSDK_DEFAULT_AUDIO_CODECS,
+			         sizeof(codecs));
+		}
+
 		if (codecs[0]) {
 			account_set_audio_codecs(ba, codecs);
 			/* Unknown names are passed to baresip as-is so any codec a
@@ -390,16 +409,444 @@ static void configure_baresip_account(struct baresdk_account *acct)
 
 }
 
+/* ── Registration watchdog (fires on re_main) ───────────────────────────────
+ *
+ * Registration state is reported to the consumer from baresip events. That is
+ * the only signal, which makes a missed event indistinguishable from a
+ * registration that is still in flight: the SDK sits in REGISTERING forever,
+ * with no event, no error and no timeout, and the app has nothing to act on.
+ * That has happened for real — see the FALLBACK_OK case in event.c — and a
+ * REGISTER can also simply go unanswered.
+ *
+ * So do not trust the event stream as the only source of truth. After every
+ * ua_register(), poll baresip's own view with ua_isregistered() and reconcile:
+ *
+ *   - registered, but the consumer was never told → emit REGISTERED (and warn,
+ *     because a synthesised event means an event went missing upstream),
+ *   - still nothing after the timeout → emit FAILED/TIMEOUT and hand over to
+ *     the normal retry policy.
+ *
+ * The watchdog only ever *adds* a transition the consumer is owed; if the
+ * event arrives normally, reg_state is already terminal and this is a no-op.
+ *
+ * The timeout is cfg.sip_timer_f_ms, defaulting to the 32 s of RFC 3261
+ * Timer F.  That default is deliberately not *longer* than Timer F any more:
+ * libre's own transaction timeout is a compile-time constant, so an app that
+ * wants a REGISTER on a dead link to fail in eight seconds instead of
+ * thirty-two has only this watchdog to say it with.  Both paths converge on
+ * bsdk_account_schedule_retry(), which ignores a second request while a retry
+ * is already armed, so whichever fires first wins and the other is a no-op.
+ */
+
+enum {
+	BSDK_REG_WATCH_INTERVAL_MS = 500,
+};
+
+static uint32_t reg_watch_timeout_ms(void)
+{
+	return g_bsdk.cfg.sip_timer_f_ms;
+}
+
+static void reg_watch_handler(void *arg)
+{
+	struct baresdk_account *acct = arg;
+
+	if (acct->destroyed || !acct->ua || !acct->reg_wanted)
+		return;
+
+	/* The consumer already has a terminal answer — nothing owed. */
+	if (acct->reg_state == BARESDK_REG_REGISTERED ||
+	    acct->reg_state == BARESDK_REG_FAILED)
+		return;
+
+	if (ua_isregistered(acct->ua)) {
+		baresdk_event_t ev = {0};
+
+		warning("baresdk: account %s is registered but baresip emitted "
+		        "no event; synthesising REGISTERED\n",
+		        acct->cfg_uri ? acct->cfg_uri : "(unknown)");
+
+		acct->reg_state     = BARESDK_REG_REGISTERED;
+		acct->retry_attempt = 0;
+		bsdk_account_keepalive_arm(acct);
+
+		ev.type          = BARESDK_EV_REG_STATE;
+		ev.u.reg.state   = BARESDK_REG_REGISTERED;
+		ev.u.reg.error   = BARESDK_OK;
+		ev.u.reg.account = acct;
+		bsdk_event_post(&ev);
+		return;
+	}
+
+	acct->reg_watch_elapsed_ms += BSDK_REG_WATCH_INTERVAL_MS;
+
+	if (reg_watch_timeout_ms() &&
+	    acct->reg_watch_elapsed_ms >= reg_watch_timeout_ms()) {
+		baresdk_event_t ev = {0};
+
+		warning("baresdk: account %s got no registration answer in "
+		        "%u ms; reporting timeout\n",
+		        acct->cfg_uri ? acct->cfg_uri : "(unknown)",
+		        acct->reg_watch_elapsed_ms);
+
+		acct->reg_state = BARESDK_REG_FAILED;
+		acct->reg_error = BARESDK_ERR_TIMEOUT;
+		str_ncpy(acct->reg_error_str, "registration timed out",
+		         sizeof(acct->reg_error_str));
+
+		ev.type            = BARESDK_EV_REG_STATE;
+		ev.u.reg.state     = BARESDK_REG_FAILED;
+		ev.u.reg.error     = BARESDK_ERR_TIMEOUT;
+		ev.u.reg.error_str = acct->reg_error_str;
+		ev.u.reg.account   = acct;
+		bsdk_event_post(&ev);
+
+		bsdk_account_schedule_retry(acct);
+		return;
+	}
+
+	tmr_start(&acct->reg_watch_tmr, BSDK_REG_WATCH_INTERVAL_MS,
+	          reg_watch_handler, acct);
+}
+
+/* Arm the watchdog for a registration that was just requested. Call on
+ * re_main, immediately after ua_register(). */
+void bsdk_account_watch_registration(struct baresdk_account *acct)
+{
+	if (!acct || acct->destroyed || !acct->ua)
+		return;
+
+	acct->reg_watch_elapsed_ms = 0;
+	tmr_start(&acct->reg_watch_tmr, BSDK_REG_WATCH_INTERVAL_MS,
+	          reg_watch_handler, acct);
+}
+
 /* ── Retry timer (fires on re_main) ─────────────────────────────────────── */
+
+/* ── RFC 3263 SRV failover ───────────────────────────────────────────────────
+ *
+ * SRV records exist so that a domain can name more than one proxy and say in
+ * which order to try them.  A retry loop that re-sends to the same host it
+ * just timed out on never consults that order, so a down primary is retried
+ * forever while the secondary sits idle — which is the failure the records
+ * were published to prevent.
+ *
+ * The lookup runs once per account, asynchronously, on first register; the
+ * answer is kept as ready-to-use outbound-proxy URIs.  Each failed attempt
+ * advances one target, wrapping at the end so a transient outage of every
+ * proxy still returns to the primary.
+ *
+ * Deliberately skipped, because in each case there is no ordered list to walk
+ * and pretending otherwise would override an explicit operator decision:
+ *
+ *   - an outbound proxy pinned in the account or global config,
+ *   - a server given by IP literal (nothing to resolve),
+ *   - an explicit port (RFC 3263 §4 step 1: skip NAPTR/SRV),
+ *   - WS/WSS, where the server is a URL with a path rather than a SIP domain.
+ */
+
+static bool host_is_ip_literal(const char *host)
+{
+	struct sa sa;
+	return host && sa_set_str(&sa, host, 0) == 0;
+}
+
+static bool srv_failover_eligible(const struct baresdk_account *acct)
+{
+	const baresdk_config_t *cfg = &g_bsdk.cfg;
+
+	if (!cfg->dns_srv_failover)
+		return false;
+	if (acct->cfg.outbound || acct->cfg.outbound_proxy || cfg->outbound_proxy)
+		return false;
+	if (acct->cfg.server_url || acct->auto_server_url[0])
+		return false;
+	if (acct->parsed_transport == BARESDK_TRANSPORT_WS ||
+	    acct->parsed_transport == BARESDK_TRANSPORT_WSS)
+		return false;
+	if (acct->cfg.server_port || acct->parsed_port)
+		return false;
+
+	{
+		const char *host = (acct->cfg.server_host && acct->cfg.server_host[0])
+		                   ? acct->cfg.server_host : acct->parsed_host;
+		if (!host || !host[0] || host_is_ip_literal(host))
+			return false;
+	}
+
+	return true;
+}
+
+/* Is this account still in the live list?  The DNS callback can outlive an
+ * account the app destroyed while the query was in flight, and the pointer
+ * would then dangle. */
+static bool acct_is_live(const struct baresdk_account *acct)
+{
+	struct le *le;
+	bool found = false;
+
+	mtx_lock(&g_bsdk.acct_lock);
+	LIST_FOREACH(&g_bsdk.accounts, le) {
+		if (le->data == acct) {
+			found = true;
+			break;
+		}
+	}
+	mtx_unlock(&g_bsdk.acct_lock);
+
+	return found && !acct->destroyed;
+}
+
+static void srv_done_handler(const struct bsdk_dns_result *res, void *arg)
+{
+	struct baresdk_account *acct = arg;
+	size_t n, i;
+
+	if (!acct_is_live(acct))
+		return;
+
+	acct->srv_pending = false;
+
+	if (bsdk_dns_result_err(res))
+		return;
+
+	n = bsdk_dns_result_count(res);
+	for (i = 0; i < n && acct->srv_count < BSDK_SRV_MAX_TARGETS; i++) {
+		baresdk_transport_t t;
+		char     host[256];
+		uint16_t port = 0;
+
+		if (bsdk_dns_result_get(res, i, &t, host, sizeof(host), &port))
+			continue;
+
+		bsdk_build_outbound(NULL, host, port, t,
+		                    acct->srv_uri[acct->srv_count],
+		                    sizeof(acct->srv_uri[0]));
+		if (acct->srv_uri[acct->srv_count][0])
+			acct->srv_count++;
+	}
+
+	if (acct->srv_count > 1)
+		info("baresdk: %u SRV targets available for failover\n",
+		     acct->srv_count);
+}
+
+void bsdk_account_srv_resolve(struct baresdk_account *acct)
+{
+	const char *host;
+
+	if (!acct || acct->srv_tried || acct->srv_pending)
+		return;
+	if (!srv_failover_eligible(acct))
+		return;
+
+	acct->srv_tried = true;
+
+	host = (acct->cfg.server_host && acct->cfg.server_host[0])
+	       ? acct->cfg.server_host : acct->parsed_host;
+
+	acct->srv_pending = true;
+	/* port_hint 0 — eligibility already established there is no explicit
+	 * port, which is what makes the NAPTR/SRV chain applicable. */
+	if (bsdk_dns_resolve(host, acct->parsed_transport, 0,
+	                     srv_done_handler, acct))
+		acct->srv_pending = false;
+}
+
+/**
+ * Point this account's outbound proxy at the next SRV target.
+ * No-op unless there is more than one target to move between.
+ */
+static void srv_advance(struct baresdk_account *acct)
+{
+	struct account *ba;
+
+	if (acct->srv_count < 2 || !acct->ua)
+		return;
+
+	acct->srv_idx = (uint8_t)((acct->srv_idx + 1u) % acct->srv_count);
+
+	ba = ua_account(acct->ua);
+	if (!ba)
+		return;
+
+	if (account_set_outbound(ba, acct->srv_uri[acct->srv_idx], 0)) {
+		warning("baresdk: SRV failover: could not set outbound %s\n",
+		        acct->srv_uri[acct->srv_idx]);
+		return;
+	}
+
+	info("baresdk: SRV failover: trying proxy %u/%u (%s)\n",
+	     acct->srv_idx + 1u, acct->srv_count,
+	     acct->srv_uri[acct->srv_idx]);
+}
 
 static void retry_timer_handler(void *arg)
 {
 	struct baresdk_account *acct = arg;
 	if (acct->destroyed || !acct->ua)
 		return;
+
+	/* Move to the next proxy before re-sending, so consecutive attempts walk
+	 * the SRV list instead of hammering one host. */
+	srv_advance(acct);
+
 	info("baresdk: re-registering account (attempt %u)\n",
 	     acct->retry_attempt + 1);
 	ua_register(acct->ua);
+	bsdk_account_watch_registration(acct);
+}
+
+/* ── Keepalive / reachability probe ──────────────────────────────────────────
+ *
+ * A registration can be alive on paper and unreachable in fact: the local
+ * address never changed, so handover sees nothing, and the next REGISTER
+ * refresh is up to reg_expires away — an hour, at the default.  Meanwhile the
+ * carrier NAT has dropped the UDP binding (30–180 s is typical) and every
+ * inbound INVITE is delivered to a mapping that no longer exists.
+ *
+ * An OPTIONS request each interval fixes both halves: the request itself
+ * refreshes the binding, and its answer — or the absence of one — is a
+ * reachability test.  Any response counts as reachable, including a 405
+ * Method Not Allowed: a proxy that refuses OPTIONS still had to receive it.
+ */
+
+static void keepalive_handler(void *arg);
+
+static void keepalive_resp_handler(int err, const struct sip_msg *msg,
+                                    void *arg)
+{
+	struct baresdk_account *acct = arg;
+	baresdk_event_t ev = {0};
+
+	if (!acct_is_live(acct))
+		return;
+
+	acct->ka_in_flight = false;
+
+	if (!err && msg) {
+		/* Reachable.  Nothing to report — an app that wants to see the
+		 * probes can watch SIP tracing. */
+		bsdk_account_keepalive_arm(acct);
+		return;
+	}
+
+	warning("baresdk: keepalive probe failed (%m); path to proxy is "
+	        "unreachable\n", err ? err : ETIMEDOUT);
+
+	acct->reg_state = BARESDK_REG_FAILED;
+	acct->reg_error = BARESDK_ERR_TIMEOUT;
+	str_ncpy(acct->reg_error_str, "keepalive probe timed out",
+	         sizeof(acct->reg_error_str));
+
+	ev.type            = BARESDK_EV_REG_STATE;
+	ev.u.reg.state     = BARESDK_REG_FAILED;
+	ev.u.reg.error     = BARESDK_ERR_TIMEOUT;
+	ev.u.reg.error_str = acct->reg_error_str;
+	ev.u.reg.account   = acct;
+	bsdk_event_post(&ev);
+
+	if (g_bsdk.cfg.keepalive_reregister && acct->reg_wanted) {
+		/* Straight to a retry rather than an immediate ua_register(): the
+		 * retry path is what walks the SRV list and applies the backoff, and
+		 * a proxy that just stopped answering is exactly when both matter. */
+		bsdk_account_schedule_retry(acct);
+	}
+	else {
+		bsdk_account_keepalive_arm(acct);
+	}
+}
+
+static void keepalive_handler(void *arg)
+{
+	struct baresdk_account *acct = arg;
+	char uri[320];
+	const char *host;
+
+	if (acct->destroyed || !acct->ua || !acct->reg_wanted)
+		return;
+	if (acct->ka_in_flight)
+		return;   /* previous probe still outstanding */
+
+	/* RTP on an active call already holds the NAT binding open, and an
+	 * OPTIONS competing with media for a congested uplink is exactly the
+	 * wrong request to add.  Skip this round. */
+	if (!list_isempty(ua_calls(acct->ua))) {
+		bsdk_account_keepalive_arm(acct);
+		return;
+	}
+
+	host = (acct->cfg.server_host && acct->cfg.server_host[0])
+	       ? acct->cfg.server_host : acct->parsed_host;
+	if (!host || !host[0])
+		return;
+
+	/* Address the domain, not a specific proxy: baresip routes the request
+	 * through the account's outbound proxy, which is what we are probing. */
+	if (re_snprintf(uri, sizeof(uri), "sip:%s", host) < 0)
+		return;
+
+	acct->ka_in_flight = true;
+	if (ua_options_send(acct->ua, uri, keepalive_resp_handler, acct)) {
+		acct->ka_in_flight = false;
+		bsdk_account_keepalive_arm(acct);
+	}
+}
+
+void bsdk_account_keepalive_arm(struct baresdk_account *acct)
+{
+	uint32_t iv;
+
+	if (!acct || acct->destroyed || !acct->reg_wanted)
+		return;
+
+	iv = g_bsdk.cfg.keepalive_interval;
+	if (!iv)
+		return;
+
+	tmr_start(&acct->ka_tmr, iv, keepalive_handler, acct);
+}
+
+void bsdk_account_keepalive_cancel(struct baresdk_account *acct)
+{
+	if (acct)
+		tmr_cancel(&acct->ka_tmr);
+}
+
+/**
+ * Spread a retry delay out over ±`jitter`·delay.
+ *
+ * Every device that lost the same Wi-Fi runs the same backoff from the same
+ * instant, so without this they all re-REGISTER in step and the registrar
+ * takes the whole fleet as one burst — the outage turns into a thundering
+ * herd on recovery, and the herd re-forms on every subsequent attempt because
+ * the schedules never diverge.
+ *
+ * rand_u32(), not rand_u16(): reg_retry_max_ms defaults to 300000, so the
+ * window can be 120000 ms wide and `rand_u16() % (span + 1)` would degenerate
+ * to plain rand_u16() — capped at 65535, it could only ever shorten such a
+ * delay, biasing the whole fleet earlier instead of spreading it.
+ */
+static uint32_t apply_jitter(uint32_t delay, float jitter)
+{
+	uint32_t span;
+	int32_t  offset;
+
+	if (jitter <= 0.f || delay == 0)
+		return delay;
+	if (jitter > 1.f)
+		jitter = 1.f;
+
+	/* Full width of the window, i.e. 2·jitter·delay. */
+	span = (uint32_t)((float)delay * jitter * 2.f);
+	if (span == 0)
+		return delay;
+
+	offset = (int32_t)(rand_u32() % (span + 1)) - (int32_t)(span / 2);
+	if (offset < 0 && (uint32_t)(-offset) >= delay)
+		return 1;   /* never schedule a zero-delay retry */
+
+	return (uint32_t)((int32_t)delay + offset);
 }
 
 void bsdk_account_schedule_retry(struct baresdk_account *acct)
@@ -410,6 +857,15 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 	uint32_t max_ms       = acct->retry_policy_set ? acct->retry_max_ms       : cfg->reg_retry_max_ms;
 	float    backoff      = acct->retry_policy_set ? acct->retry_backoff      : cfg->reg_retry_backoff;
 	uint32_t max_attempts = acct->retry_policy_set ? acct->retry_max_attempts : cfg->reg_retry_max_attempts;
+
+	/* A failure can reach us twice for the same REGISTER — the watchdog and
+	 * baresip's own transaction timeout both report it — and once from a
+	 * failed keepalive probe on top.  Without this guard each one would
+	 * bump retry_attempt and re-arm the timer, so the backoff would climb
+	 * at two or three times the configured rate and blow through
+	 * max_attempts early. */
+	if (tmr_isrunning(&acct->retry_tmr))
+		return;
 
 	if (max_attempts > 0 && acct->retry_attempt >= max_attempts) {
 		info("baresdk: max retry attempts reached for account\n");
@@ -424,6 +880,11 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 			break;
 		}
 	}
+
+	/* Jitter is global only: baresdk_account_set_retry_policy() predates it
+	 * and has no parameter for it, so there is no per-account value to
+	 * prefer here. */
+	delay = apply_jitter(delay, cfg->reg_retry_jitter);
 
 	acct->retry_attempt++;
 
@@ -446,6 +907,13 @@ static void account_destructor(void *data)
 {
 	struct baresdk_account *acct = data;
 	tmr_cancel(&acct->retry_tmr);
+	tmr_cancel(&acct->reg_watch_tmr);
+	tmr_cancel(&acct->ka_tmr);
+	if (acct->ws_port) {
+		bsdk_ws_unset_server(acct->parsed_transport, acct->ws_host,
+		                     acct->ws_port, acct->ws_pin_path);
+		acct->ws_port = 0;
+	}
 	struct le *le, *le_tmp;
 	LIST_FOREACH_SAFE(&acct->custom_hdrs, le, le_tmp) {
 		struct bsdk_custom_hdr *hdr = le->data;
@@ -489,6 +957,8 @@ static void create_fn(void *arg)
 	if (!acct) { ctx->result = ENOMEM; return; }
 	memset(acct, 0, sizeof(*acct));
 	tmr_init(&acct->retry_tmr);
+	tmr_init(&acct->reg_watch_tmr);
+	tmr_init(&acct->ka_tmr);
 	list_init(&acct->custom_hdrs);
 
 	bsdk_acct_cfg_deep_copy(&acct->cfg, &ctx->cfg, acct);
@@ -556,11 +1026,15 @@ static void create_fn(void *arg)
 	}
 	acct->parsed_transport = tp;
 
-	/* Store the explicit path for __wrap_websock_connect (ws_path.c).
-	 * Empty means no substitution — libre's "/" is passed through as-is. */
+	/* Claim the server + explicit path for __wrap_websock_connect
+	 * (ws_path.c).  Released in account_destructor, so a destroyed account
+	 * stops counting against connection pinning. */
 	if (tp == BARESDK_TRANSPORT_WS || tp == BARESDK_TRANSPORT_WSS) {
-		str_ncpy(g_bsdk_ws_path, ws_path, sizeof(g_bsdk_ws_path));
-		bsdk_ws_set_server(tp, ws_host, ws_port);
+		str_ncpy(acct->ws_host, ws_host, sizeof(acct->ws_host));
+		str_ncpy(acct->ws_pin_path, ws_path, sizeof(acct->ws_pin_path));
+		acct->ws_port = ws_port;
+		bsdk_ws_set_server(tp, acct->ws_host, acct->ws_port,
+		                   acct->ws_pin_path);
 	}
 
 	/* Build AOR: sip:user@host[:port];transport=proto
@@ -610,6 +1084,7 @@ static void destroy_fn(void *arg)
 	struct baresdk_account *acct = arg;
 	acct->destroyed = true;
 	tmr_cancel(&acct->retry_tmr);
+	tmr_cancel(&acct->reg_watch_tmr);
 	if (acct->ua) {
 		ua_hangup(acct->ua, NULL, 0, NULL);
 		mem_deref(acct->ua);
@@ -671,7 +1146,13 @@ static void register_fn(void *arg)
 	struct baresdk_account *acct = arg;
 	if (acct->ua) {
 		acct->reg_wanted = true;   /* netmon.c re-REGISTERs on handover */
+		/* Fire the SRV lookup alongside the first REGISTER rather than
+		 * before it: the answer is only needed if this attempt fails, and
+		 * delaying the REGISTER on a DNS round-trip would slow down every
+		 * successful registration to help the rare failing one. */
+		bsdk_account_srv_resolve(acct);
 		ua_register(acct->ua);
+		bsdk_account_watch_registration(acct);
 	}
 }
 
@@ -687,6 +1168,8 @@ static void unregister_fn(void *arg)
 	if (acct->ua) {
 		acct->reg_wanted = false;
 		acct->reg_state = BARESDK_REG_UNREGISTERING;
+		tmr_cancel(&acct->reg_watch_tmr);
+		bsdk_account_keepalive_cancel(acct);
 		ua_unregister(acct->ua);
 	}
 }
@@ -695,6 +1178,27 @@ int baresdk_account_unregister(baresdk_account_handle_t acct)
 {
 	if (!acct) return BARESDK_ERR_INVAL;
 	return bsdk_dispatch(unregister_fn, acct);
+}
+
+static void keepalive_now_fn(void *arg)
+{
+	struct baresdk_account *acct = arg;
+
+	/* Cancel the pending tick first: keepalive_handler() re-arms on every
+	 * exit path, so firing it early without this would leave the schedule
+	 * shifted by however long was left on the old timer. */
+	tmr_cancel(&acct->ka_tmr);
+	keepalive_handler(acct);
+}
+
+int baresdk_account_keepalive_now(baresdk_account_handle_t acct)
+{
+	if (!acct)
+		return BARESDK_ERR_INVAL;
+	if (!acct->ua || acct->destroyed || !acct->reg_wanted)
+		return BARESDK_ERR_STATE;
+
+	return bsdk_dispatch(keepalive_now_fn, acct);
 }
 
 /* ── Retry control ───────────────────────────────────────────────────────── */
@@ -731,6 +1235,7 @@ static void cancel_retry_fn(void *arg)
 {
 	struct baresdk_account *acct = arg;
 	tmr_cancel(&acct->retry_tmr);
+	tmr_cancel(&acct->reg_watch_tmr);
 	acct->retry_attempt = 0;
 }
 
@@ -748,6 +1253,7 @@ static void retry_now_fn(void *arg)
 	if (!acct->destroyed && acct->ua) {
 		acct->reg_wanted = true;
 		ua_register(acct->ua);
+		bsdk_account_watch_registration(acct);
 	}
 }
 

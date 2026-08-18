@@ -64,12 +64,17 @@ typedef enum {
 	BARESDK_MEDIA_ENC_DTLS_SRTP,
 } baresdk_media_enc_t;
 
+/* Only OPUS, PCMU and PCMA are compiled into the library — on every platform.
+ * G722 and G726_32 are retained so the numeric values of the constants above
+ * and below them stay put (removing them would shift the enum and break the
+ * ABI for already-built callers), but no module registers those codecs:
+ * selecting one contributes nothing to the SDP offer and logs a warning. */
 typedef enum {
 	BARESDK_CODEC_OPUS = 0,
 	BARESDK_CODEC_PCMU,     /* G.711 µ-law */
 	BARESDK_CODEC_PCMA,     /* G.711 A-law */
-	BARESDK_CODEC_G722,
-	BARESDK_CODEC_G726_32,  /* G.726 32 kbit/s, 8 kHz */
+	BARESDK_CODEC_G722,     /* deprecated — not compiled in */
+	BARESDK_CODEC_G726_32,  /* deprecated — not compiled in */
 } baresdk_codec_t;
 
 typedef enum {
@@ -83,7 +88,10 @@ typedef enum {
  * preserving baresdk_config_t memory layout.
  *
  * BARESDK_AEC_SUPPRESSOR (default): built-in half-duplex TX suppressor.
- *   Works on all platforms, zero external dependencies.
+ *   Zero external dependencies.  Ignored on Android and iOS, where the
+ *   platform driver captures through the OS voice path (VOICE_COMMUNICATION /
+ *   VoiceProcessingIO) and has already cancelled the echo in hardware —
+ *   ducking the mic on top of that only costs full duplex.
  * BARESDK_AEC_WEBRTC: full-duplex WebRTC acoustic echo cancellation.
  *   Desktop only; requires BARESDK_WITH_WEBRTC_AEC build option and
  *   libwebrtc-audio-processing-1.  Returns ENOTSUP on mobile builds and
@@ -120,6 +128,28 @@ typedef enum {
 	BARESDK_JBUF_ADAPTIVE = 0, /* adaptive jitter buffer (default) */
 	BARESDK_JBUF_FIXED    = 1, /* fixed-depth jitter buffer */
 } baresdk_jbuf_type_t;
+
+/**
+ * What to do with an ICE call whose local candidates went stale on handover.
+ *
+ * A network handover invalidates every gathered ICE candidate, and baresip
+ * fixes the local ufrag/pwd when the media session is created — an RFC 8445
+ * §9 ICE restart is therefore not possible from outside the library.  The
+ * re-INVITE we do send carries the old candidate set: it recovers the call
+ * when the peer is reachable directly or through a still-valid TURN relay,
+ * and cannot recover it otherwise.
+ */
+typedef enum {
+	/** Send the re-INVITE anyway and let media verification decide.
+	 *  Recovers relay/direct paths; wastes net_verify_ms × net_max_attempts
+	 *  before failing when it cannot. */
+	BARESDK_ICE_HANDOVER_BEST_EFFORT = 0,
+	/** Try once, then fail immediately.  Gives the app a prompt
+	 *  CALL_MIGRATION_FAILED it can answer by re-placing the call, instead
+	 *  of a long silence.  Recommended when calls are ICE+TURN over
+	 *  cellular. */
+	BARESDK_ICE_HANDOVER_FAIL_FAST,
+} baresdk_ice_handover_t;
 
 typedef struct {
 	int  bitrate;    /* 0 = auto/VBR; otherwise bps, e.g. 32000 */
@@ -239,6 +269,10 @@ typedef enum {
 	BARESDK_NET_CALL_MIGRATION_FAILED, /* gave up; see `error`               */
 	BARESDK_NET_CALL_DEFERRED,         /* not refreshable yet; will retry    */
 	BARESDK_NET_HANDOVER_FAILED,       /* transport reset failed; retrying   */
+	/** ICE call: gathered candidates are stale and cannot be re-gathered.
+	 *  Emitted once per call per handover, before the re-INVITE.  See
+	 *  baresdk_ice_handover_t and cfg.net_ice_handover. */
+	BARESDK_NET_CALL_ICE_STALE,
 } baresdk_net_event_t;
 
 /**
@@ -255,7 +289,16 @@ typedef struct {
 	baresdk_account_handle_t account;  /* REREGISTERING only; else NULL    */
 	const char              *local_addr; /* new local IP, "" when unknown  */
 	uint32_t                 attempt;  /* 1-based retry counter            */
-	uint32_t                 max_attempts; /* ceiling for `attempt`        */
+	/**
+	 * The offer budget this call is held to — net_max_attempts normally, or 1
+	 * for a stale-ICE call under BARESDK_ICE_HANDOVER_FAIL_FAST.
+	 *
+	 * Render it as a progress counter ("%u/%u"), not as an invariant:
+	 * `attempt` also advances while a call waits for a default route to
+	 * appear (CALL_DEFERRED), and those waits keep the full net_max_attempts
+	 * budget, so on a fail-fast call `attempt` can exceed this value.
+	 */
+	uint32_t                 max_attempts;
 	uint32_t                 elapsed_ms;   /* ms since this migration began */
 	/**
 	 * True when the call negotiated ICE.  Media recovery is best-effort
@@ -438,6 +481,11 @@ typedef enum {
 	BARESDK_QUALITY_LOSS,
 	BARESDK_QUALITY_JITTER,
 	BARESDK_QUALITY_RTT,
+	/** No inbound RTP for cfg.media_stall_ms while the call is not on hold.
+	 *  `value` is the stall duration in ms, `threshold` is media_stall_ms.
+	 *  Non-fatal: fires again with `recovering` = true when RTP resumes.
+	 *  See also cfg.rtp_timeout_s, which *ends* the call instead. */
+	BARESDK_QUALITY_MEDIA_STALL,
 } baresdk_quality_issue_t;
 
 typedef struct {
@@ -573,7 +621,8 @@ typedef struct {
 	baresdk_media_enc_t  media_enc;
 	/* Ordered preference list. Overridden per account by
 	 * baresdk_account_config_t.audio_codec[_name]s, and by the
-	 * string list in audio_codec_names[] below. */
+	 * string list in audio_codec_names[] below.
+	 * Leave at 0 for the cross-platform default: Opus, PCMU, PCMA. */
 	baresdk_codec_t      audio_codecs[8];
 	int                  audio_codec_count;
 	uint8_t              dscp_sip;  /* 0 = OS default; 24 = AF31 */
@@ -599,19 +648,79 @@ typedef struct {
 	/* ── Registration ─────────────────────────────────────────────── */
 	uint32_t  reg_expires;           /* seconds; default 3600 */
 	uint32_t  reg_refresh_pct;       /* refresh at N% of expires; default 75 */
-	uint32_t  keepalive_interval;    /* ms; 0 = transport default */
+	/**
+	 * SIP keepalive / reachability probe interval in ms.  0 disables.
+	 * Default 30000.
+	 *
+	 * Every `keepalive_interval` ms of registered idle time the SDK sends an
+	 * OPTIONS request to the account's proxy.  Two things depend on it:
+	 *
+	 *  - the UDP NAT binding is refreshed, so inbound INVITEs keep arriving
+	 *    between REGISTER refreshes (a `reg_expires` of 3600 s is far longer
+	 *    than a typical carrier-NAT UDP timeout of 30–180 s);
+	 *  - a black-holed path is detected within one interval instead of at
+	 *    the next refresh.  When `keepalive_reregister` is set, a failed
+	 *    probe re-REGISTERs immediately rather than waiting.
+	 *
+	 * The probe is suppressed while a call is up on that account: RTP is
+	 * already holding the binding open, and the request would compete with
+	 * media for a congested uplink.
+	 */
+	uint32_t  keepalive_interval;
 
 	/* Registration retry policy */
 	uint32_t  reg_retry_initial_ms;  /* default 2000 */
 	uint32_t  reg_retry_max_ms;      /* default 300000 (5 min) */
 	float     reg_retry_backoff;     /* multiplier; default 2.0 */
 	uint32_t  reg_retry_max_attempts;/* 0 = retry forever */
+	/**
+	 * Randomisation applied to each retry delay, as a fraction of it.
+	 * Default 0.2; 0 disables.  The delay actually used is drawn uniformly
+	 * from [d·(1−jitter), d·(1+jitter)].
+	 *
+	 * Without it every device that lost the same network re-REGISTERs on
+	 * the same schedule and arrives at the registrar in one burst — the
+	 * outage becomes a thundering herd on recovery.  Clamped to [0, 1].
+	 */
+	float     reg_retry_jitter;
 
-	/* ── SIP timers (RFC 3261 §17) ───────────────────────────────── */
-	uint32_t  sip_t1_ms;        /* default 500 */
-	uint32_t  sip_t2_ms;        /* default 4000 */
-	uint32_t  sip_timer_b_ms;   /* default 32000 */
-	uint32_t  sip_timer_f_ms;   /* default 32000 */
+	/* ── SIP timers (RFC 3261 §17) ─────────────────────────────────
+	 *
+	 * T1 and T2 govern retransmission intervals inside libre's transaction
+	 * layer, where they are compile-time constants (SIP_T1 / SIP_T2).  The
+	 * two fields below are reported by baresdk_config_get() for
+	 * completeness and are otherwise informational — setting them has no
+	 * effect.
+	 */
+	uint32_t  sip_t1_ms;        /* informational; libre constant, 500 */
+	uint32_t  sip_t2_ms;        /* informational; libre constant, 4000 */
+	/**
+	 * INVITE transaction timeout, ms.  Default 32000 (RFC 3261 Timer B).
+	 *
+	 * An outgoing call whose INVITE is black-holed — the usual outcome of a
+	 * link that is up but not passing traffic — produces no response at
+	 * all, and libre's Timer B is a compile-time 64·T1 = 32 s.  This field
+	 * arms an SDK-side watchdog instead: an outgoing call still in
+	 * BARESDK_CALL_CALLING after `sip_timer_b_ms` is cancelled with 408 and
+	 * reported as BARESDK_CALL_FAILED / BARESDK_ERR_TIMEOUT.  Set below
+	 * 32000 to fail fast (8000–12000 is usual on mobile); 0 disables the
+	 * watchdog and leaves the 32 s transaction timeout as the only bound.
+	 *
+	 * Only the CALLING state is watched — the state where nothing at all has
+	 * come back.  Once any provisional response arrives the call moves to
+	 * RINGING, the far end is demonstrably reachable, and how long the user
+	 * is willing to let it ring is a product decision rather than a
+	 * transport timeout.
+	 */
+	uint32_t  sip_timer_b_ms;
+	/**
+	 * Non-INVITE transaction timeout, ms.  Default 32000 (Timer F).
+	 *
+	 * Bounds how long the registration watchdog waits for any answer to a
+	 * REGISTER before reporting BARESDK_ERR_TIMEOUT and handing over to the
+	 * retry policy.  0 disables the watchdog.
+	 */
+	uint32_t  sip_timer_f_ms;
 
 	/* ── Session timers (RFC 4028) ───────────────────────────────── */
 	bool      session_timer_enabled; /* default true */
@@ -619,7 +728,16 @@ typedef struct {
 	uint32_t  session_min_se_s;      /* default 90 */
 
 	/* ── Quality / observability ─────────────────────────────────── */
-	uint32_t              stats_interval_ms; /* 0 = disabled */
+	/**
+	 * BARESDK_EV_MEDIA_STATS poll interval in ms.  Default 2000; 0 disables.
+	 *
+	 * This is also the master switch for RTCP accounting
+	 * (baresip `avt.rtp_stats`), so with 0 the loss/jitter/RTT/MOS fields
+	 * read back as zero from baresdk_call_get_stats() too, and every
+	 * feature derived from them — quality alerts, media-stall detection and
+	 * adaptive bitrate — is inert.
+	 */
+	uint32_t              stats_interval_ms;
 	baresdk_mos_method_t  mos_method;
 	/* Quality alert thresholds — 0 disables each alert */
 	float  mos_alert_threshold;     /* fire QUALITY_ALERT when mos_lq < this (recommended 3.5) */
@@ -697,14 +815,18 @@ typedef struct {
 	 * String form of audio_codecs[] above; takes precedence over it
 	 * when audio_codec_name_count > 0.  Names are matched
 	 * case-insensitively and an unrecognized name is passed through
-	 * to baresip as-is, so any codec a loaded module registers can be
-	 * selected — including ones with no baresdk_codec_t constant
-	 * (e.g. "g729").  Same accepted spellings as the per-account
-	 * baresdk_account_config_t.audio_codec_names.
+	 * to baresip as-is, so a codec registered by a module added to the
+	 * build can be selected even without a baresdk_codec_t constant.
+	 * Same accepted spellings as the per-account
+	 * baresdk_account_config_t.audio_codec_names: "opus", "ulaw"/"pcmu",
+	 * "alaw"/"pcma".
 	 *
 	 * Precedence, highest first:
 	 *   account audio_codec_names → account audio_codecs →
 	 *   global audio_codec_names  → global audio_codecs.
+	 *
+	 * When all four are empty the SDK offers a fixed default that is the
+	 * same on every platform: opus/48000/2, PCMU/8000/1, PCMA/8000/1.
 	 *
 	 * Example — prefer µ-law globally, fall back to Opus:
 	 *   strcpy(cfg.audio_codec_names[0], "ulaw");
@@ -735,6 +857,121 @@ typedef struct {
 	 * activates the session.
 	 */
 	bool      platform_audio_activate;
+
+	/* ── Degraded-link handling ───────────────────────────────────
+	 *
+	 * Handover (the net_* fields above) covers the case where the local
+	 * address changes.  The fields here cover the other one: the address
+	 * stays put and the link itself goes bad — a phone at one bar, a
+	 * congested uplink, a cell that stops passing packets without ever
+	 * dropping the PDP context.  Nothing in SIP notices that on its own.
+	 */
+
+	/**
+	 * Terminate a call after this many seconds without inbound RTP.
+	 * 0 (default) = never.
+	 *
+	 * Maps to baresip's `avt.rtp_timeout`.  This is the hard, fatal bound:
+	 * the stream is closed with ETIMEDOUT and the call ends with
+	 * BARESDK_ERR_TIMEOUT.  Only sendrecv streams are checked, so a held
+	 * call is never torn down by it.
+	 *
+	 * Left off by default because ending a call is destructive and some
+	 * deployments legitimately run one-way media.  30–60 s is the usual
+	 * choice when it is wanted; prefer `media_stall_ms` for a warning that
+	 * keeps the call up.
+	 */
+	uint32_t  rtp_timeout_s;
+
+	/**
+	 * Warn after this many ms without inbound RTP.  Default 4000; 0 = off.
+	 *
+	 * Non-fatal counterpart to `rtp_timeout_s`, evaluated on the stats tick:
+	 * fires BARESDK_QUALITY_MEDIA_STALL when inbound RTP stops advancing and
+	 * again with `recovering` = true when it resumes.  This is what turns
+	 * "the user says they can't hear anything" into an event — a stall that
+	 * is not accompanied by an address change is invisible to handover and,
+	 * with rtp_timeout_s at 0, invisible to baresip.
+	 *
+	 * Requires stats_interval_ms > 0.  Values below one stats interval
+	 * cannot be detected any sooner than that interval.
+	 */
+	uint32_t  media_stall_ms;
+
+	/**
+	 * Reduce the audio encoder's bitrate when the link degrades, and raise
+	 * it again when the link recovers.  Default false.
+	 *
+	 * Evaluated on the stats tick against the remote's RTCP receiver report
+	 * (`loss_pct`, i.e. what the peer is actually losing).  A step down is
+	 * taken when loss exceeds `adapt_loss_down_pct`; a step up after
+	 * `adapt_recover_ticks` consecutive ticks below `adapt_loss_up_pct`.
+	 * Steps are halve-down / +25%-up between the bounds below.
+	 *
+	 * Applied through the codec's encoder-update path (no re-INVITE, no
+	 * renegotiation, no audio gap), so it only does anything for codecs
+	 * with a variable bitrate — Opus in practice.  A G.711 call is left
+	 * alone; there is nothing to vary.  A deployment pinned to G.711 has no
+	 * concealment available in this build (see the `plc` note in
+	 * src/modules_init.c) — offering Opus is what makes a lossy link
+	 * survivable.
+	 */
+	bool      adaptive_bitrate;
+	uint32_t  adapt_min_bitrate;    /* bps; 0 = 12000  */
+	uint32_t  adapt_max_bitrate;    /* bps; 0 = 32000  */
+	float     adapt_loss_down_pct;  /* step down above this; 0 = 5.0  */
+	float     adapt_loss_up_pct;    /* step up below this;   0 = 1.0  */
+	uint32_t  adapt_recover_ticks;  /* clean ticks before a step up; 0 = 5 */
+
+	/**
+	 * Expected packet loss handed to the Opus encoder, percent.  0 = off.
+	 *
+	 * Turns on Opus in-band FEC (LBRR) at both ends — the encoder spends
+	 * part of its budget on a redundant low-bitrate copy of the previous
+	 * frame, and the decoder uses it to reconstruct a lost one.  Costs
+	 * bitrate and quality even on a clean link, which is why it is off by
+	 * default; 10–20 is a reasonable setting for mobile.
+	 *
+	 * `opus.fec` only enables the mechanism.  This value is what tells the
+	 * encoder how much redundancy to actually spend, and the decoder to
+	 * look for it, so set both.
+	 */
+	uint32_t  opus_expected_loss_pct;
+
+	/**
+	 * Re-REGISTER immediately when a keepalive probe fails.  Default true.
+	 *
+	 * A failed OPTIONS means the path to the proxy is gone even though the
+	 * local address never changed — the case handover cannot see.  Without
+	 * this the account stays nominally REGISTERED until the next refresh,
+	 * which with the default `reg_expires` is up to an hour of missed
+	 * inbound calls.  Requires keepalive_interval > 0.
+	 */
+	bool      keepalive_reregister;
+
+	/**
+	 * Rotate through the RFC 3263 SRV target list on registration retry.
+	 * Default true.
+	 *
+	 * Without it every retry re-sends to the same host the last attempt
+	 * timed out on, so a down primary proxy is never failed over to the
+	 * secondary the SRV records exist to provide.  With it the SDK resolves
+	 * _sip._<transport>.<domain> once per account and advances the outbound
+	 * proxy one target per failed attempt, in (priority, weight) order,
+	 * wrapping at the end.
+	 *
+	 * Ignored when the account or global config pins an explicit
+	 * `outbound_proxy` — an operator-chosen proxy is not second-guessed —
+	 * and when the server is reached by IP literal or WS/WSS URL, neither
+	 * of which has SRV records to consult.
+	 */
+	bool      dns_srv_failover;
+
+	/**
+	 * How to treat an ICE call on handover.  Default BEST_EFFORT.
+	 * See baresdk_ice_handover_t.
+	 */
+	baresdk_ice_handover_t net_ice_handover;
 
 } baresdk_config_t;
 
@@ -851,13 +1088,15 @@ typedef struct {
 	 * String-based codec list — takes precedence over audio_codecs[] when
 	 * audio_codec_name_count > 0.  Names are matched case-insensitively.
 	 *
-	 * Common values (aliases accepted):
+	 * Accepted values (aliases accepted) — the full set of compiled-in
+	 * codecs, identical on desktop and mobile:
 	 *   "opus"              — Opus 48 kHz stereo
 	 *   "ulaw" / "pcmu"     — G.711 µ-law
 	 *   "alaw" / "pcma"     — G.711 A-law
-	 *   "g722"              — G.722 wideband
-	 *   "g729"              — G.729 (requires licensed module)
-	 *   "g726" / "g726-32"  — G.726 at 32 kbps
+	 *
+	 * Any other name is passed through to baresip unchanged, so a codec
+	 * registered by a module added to the build can be selected too.  A name
+	 * nothing registers is dropped from the offer with a warning.
 	 *
 	 * Example — prefer µ-law, fall back to Opus:
 	 *   strcpy(cfg.audio_codec_names[0], "ulaw");
@@ -1172,6 +1411,85 @@ BARESDK_EXPORT int baresdk_account_set_100rel(baresdk_account_handle_t account,
 
 /* ── Audio ────────────────────────────────────────────────────────────────── */
 
+/* ── App-owned audio device ───────────────────────────────────────────────── */
+
+/**
+ * Hand the microphone and speaker to the app.
+ *
+ * With this on the SDK opens no capture or playback device of its own — no
+ * OpenSL ES on Android, no AudioUnit on iOS — and the app supplies and consumes
+ * PCM itself, from whatever the platform gives it (AudioRecord/AudioTrack,
+ * AVAudioEngine, a WebRTC AudioDeviceModule, a file):
+ *
+ *   app capture thread   -> baresdk_audio_external_push()  -> far end
+ *   app playback thread  <- baresdk_audio_external_pull()  <- far end
+ *
+ * Turning it off restores the platform device.  Takes effect immediately,
+ * including on calls that are already up, so it is safe to switch mid-call.
+ *
+ * Not sticky across a restart: baresdk_init() re-derives the device from the
+ * platform, so an app that shuts the stack down and brings it back up has to
+ * ask for the app-owned device again.
+ *
+ * One microphone, one speaker: baresip opens a device per call, but the app
+ * has only one of each.  The most recently opened call owns them; a second
+ * concurrent call gets silence rather than a share.
+ *
+ * Note this replaces the device only.  Echo cancellation follows the device:
+ * the platform cancellers the SDK relies on (Android's VOICE_COMMUNICATION
+ * capture preset, iOS's VoiceProcessingIO) belong to the drivers being
+ * displaced, so an app taking this over owns AEC too — capture through
+ * VOICE_COMMUNICATION / VoiceProcessingIO on its own side, or expect echo.
+ * The SDK's own half-duplex suppressor becomes available as a fallback while
+ * the app owns the device, but stays off unless asked for with
+ * baresdk_set_aec_mode(BARESDK_AEC_SUPPRESSOR); it is switched off again when
+ * the platform device comes back, so the two cancellers never stack.
+ *
+ * Returns 0, or an errno on failure.
+ */
+BARESDK_EXPORT int baresdk_audio_use_external(bool enable);
+
+/**
+ * Give the stack captured microphone audio.  This is what the far end hears.
+ *
+ * [pcm] is S16LE interleaved, [nsamp] total samples (frames x channels), at the
+ * rate and channel count from baresdk_audio_external_format().  Any buffer size
+ * is accepted; the stack re-frames internally.
+ *
+ * Call from the app's capture thread.  Returns 0, ENODEV when no call is
+ * capturing (push between calls is not an error worth acting on), or an errno.
+ */
+BARESDK_EXPORT int baresdk_audio_external_push(const int16_t *pcm, size_t nsamp);
+
+/**
+ * Take decoded audio to play.  This is what the local user hears.
+ *
+ * Fills [pcm] with [nsamp] S16LE interleaved samples, always completely:
+ * silence when no call is up, so the app can hand the buffer straight to the
+ * speaker without checking.
+ *
+ * Call from the app's playback thread.  Returns 0, or ENODEV when no call is
+ * playing (the buffer is still zeroed).
+ */
+BARESDK_EXPORT int baresdk_audio_external_pull(int16_t *pcm, size_t nsamp);
+
+/**
+ * The format the current call negotiated, for sizing the app's own device.
+ * Any of the out-params may be NULL.  Returns 0, or ENODEV when no call has
+ * media yet — poll after the call is established, or just re-check on each
+ * call, since a different codec can mean a different rate.
+ *
+ * There is no event for "media is up": CALL_ESTABLISHED is a SIP state and
+ * races the device by a few ms, and a mid-call re-INVITE can renegotiate the
+ * codec without any call-state change at all.  Polling this is the way to
+ * learn both that the device opened and that its format changed.
+ */
+BARESDK_EXPORT int baresdk_audio_external_format(uint32_t *srate, uint8_t *ch,
+                                                  uint32_t *ptime);
+
+/** True while a call is capturing or playing through the app-owned device. */
+BARESDK_EXPORT bool baresdk_audio_external_is_active(void);
+
 /* ── Audio device enumeration ─────────────────────────────────────────────── */
 
 typedef struct {
@@ -1259,6 +1577,66 @@ BARESDK_EXPORT void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
 
 /** Set jitter buffer type (adaptive or fixed). Takes effect on new calls. */
 BARESDK_EXPORT void baresdk_set_jitter_buffer_type(baresdk_jbuf_type_t type);
+
+/* ── Degraded-link control ───────────────────────────────────────────────── */
+
+/**
+ * Set the no-inbound-RTP timeout for one established call, in seconds.
+ *
+ * Per-call override of cfg.rtp_timeout_s.  0 disables the timeout for this
+ * call.  Takes effect immediately on every stream of the call.
+ *
+ * Useful where the policy is per-call rather than global: an attended
+ * transfer or a call parked against music-on-hold may legitimately go quiet,
+ * while a normal two-party call should not.
+ *
+ * @return 0, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+ */
+BARESDK_EXPORT int baresdk_call_set_rtp_timeout(baresdk_call_handle_t call,
+                                                 uint32_t seconds);
+
+/**
+ * Set the audio encoder bitrate for one call, in bits/s.
+ *
+ * Goes through the codec's encoder-update path: no re-INVITE and no audio
+ * gap, but also no effect for a fixed-rate codec such as G.711.  Pass 0 to
+ * return the encoder to its negotiated automatic rate.
+ *
+ * Calling this on a call that the adaptive controller is managing is
+ * honoured, and then overridden by the controller on its next decision — set
+ * cfg.adaptive_bitrate to false, or use baresdk_set_adaptive_bitrate(), if
+ * the app wants to own the rate.
+ *
+ * @return 0, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+ */
+BARESDK_EXPORT int baresdk_call_set_bitrate(baresdk_call_handle_t call,
+                                             uint32_t bitrate_bps);
+
+/**
+ * Enable or disable link-adaptive bitrate at runtime, with bounds.
+ *
+ * Pass 0 for either bound to keep the value already configured.  Disabling
+ * leaves every call at whatever rate it currently has; call
+ * baresdk_call_set_bitrate(call, 0) to restore the negotiated rate.
+ */
+BARESDK_EXPORT void baresdk_set_adaptive_bitrate(bool enabled,
+                                                  uint32_t min_bps,
+                                                  uint32_t max_bps);
+
+/**
+ * Send a keepalive/reachability probe (SIP OPTIONS) for one account now.
+ *
+ * The same probe the keepalive_interval timer sends, on demand — useful from
+ * an app-foreground or push-wake handler, where the question "is my
+ * registration still reachable?" is worth answering before the user places a
+ * call.  The result arrives as BARESDK_EV_REG_STATE: nothing changes on
+ * success, and on failure the account goes to FAILED and (when
+ * cfg.keepalive_reregister is set) re-REGISTERs.
+ *
+ * @return 0, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+ */
+BARESDK_EXPORT int baresdk_account_keepalive_now(
+                                        baresdk_account_handle_t account);
 
 /* ── Audio mute / device control ─────────────────────────────────────────── */
 

@@ -49,6 +49,7 @@ struct ausrc_st {
 	ausrc_read_h *rh;
 	void         *arg;
 	struct ausrc_prm prm;
+	bool          first_frame;   /* logged once — see rec_bq_callback */
 
 	SLObjectItf                   rec_obj;
 	SLRecordItf                   rec;
@@ -71,11 +72,27 @@ static void ausrc_destructor(void *arg)
 		mem_deref(st->sampv[i]);
 }
 
+static int start_recording(struct ausrc_st *st);
+
 static void rec_bq_callback(SLAndroidSimpleBufferQueueItf bq, void *context)
 {
 	struct ausrc_st *st = context;
 	struct auframe af;
+	SLresult r;
 	(void)bq;
+
+	/* A recorder that opens and then never delivers is the failure mode
+	 * worth naming: SetRecordState() succeeds without RECORD_AUDIO, and the
+	 * queue then simply never completes a buffer.  There is no error to
+	 * report anywhere — the call comes up, the far end hears nothing, and
+	 * the only trace is baresip's "tx aubuf underrun".  So say plainly, once,
+	 * that capture actually produced a frame; the absence of this line is
+	 * the diagnosis. */
+	if (!st->first_frame) {
+		st->first_frame = true;
+		info("sles_vc: capture delivering (%u Hz, %u ch)\n",
+		     st->prm.srate, st->prm.ch);
+	}
 
 	auframe_init(&af, AUFMT_S16LE, st->sampv[st->buffer_id], st->sampc,
 	             st->prm.srate, st->prm.ch);
@@ -83,10 +100,35 @@ static void rec_bq_callback(SLAndroidSimpleBufferQueueItf bq, void *context)
 
 	st->rh(&af, st->arg);
 
-	st->buffer_id = (st->buffer_id + 1) % N_QUEUE_BUFFERS;
-	memset(st->sampv[st->buffer_id], 0, st->sampc * 2);
-	(*st->rec_bq)->Enqueue(st->rec_bq, st->sampv[st->buffer_id],
-	                       (unsigned int)(st->sampc * 2));
+	/* Hand the buffer we just drained back to the recorder and advance to
+	 * the next one, which is already queued.  Keeping every buffer but the
+	 * one in flight enqueued is the point: with a single buffer in the queue
+	 * the recorder has nowhere to write between a completion callback and
+	 * the next Enqueue, and AudioFlinger drops that slice of input — a
+	 * steady stream of small gaps in what the far end hears.
+	 *
+	 * This is the only place the queue gets re-primed, so a dropped Enqueue
+	 * is terminal: the callback fires when a buffer completes, and with the
+	 * queue empty no buffer ever completes again. Capture then goes silent
+	 * for the rest of the call with the recorder still "started" as far as
+	 * AudioFlinger is concerned — no error anywhere, the far end just stops
+	 * hearing us. Android returns an error here when the recorder is mid
+	 * transition (audio route change, focus loss, transport reset), which is
+	 * exactly when a call is most likely to be interrupted.
+	 *
+	 * So check it, and re-prime the queue rather than dying quietly. */
+	r = (*st->rec_bq)->Enqueue(st->rec_bq, st->sampv[st->buffer_id],
+	                           (unsigned int)(st->sampc * 2));
+	if (SL_RESULT_SUCCESS == r) {
+		st->buffer_id = (st->buffer_id + 1) % N_QUEUE_BUFFERS;
+		return;
+	}
+
+	warning("sles_vc: capture Enqueue failed (0x%x) — restarting\n",
+	        (unsigned)r);
+
+	if (start_recording(st))
+		warning("sles_vc: capture restart failed; mic is now silent\n");
 }
 
 static int create_recorder(struct ausrc_st *st, struct ausrc_prm *prm)
@@ -100,14 +142,26 @@ static int create_recorder(struct ausrc_st *st, struct ausrc_prm *prm)
 	SLDataLocator_AndroidSimpleBufferQueue loc_bq = {
 		SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, N_QUEUE_BUFFERS
 	};
-	int speakers = prm->ch > 1
+	/* Capture masks are NOT the playback masks.  Mono capture must be
+	 * SL_SPEAKER_FRONT_LEFT: Android maps the OpenSL positional mask onto an
+	 * AUDIO_CHANNEL_IN_* mask, and FRONT_CENTER has no input equivalent — it
+	 * converts to 0, which the platform reports as
+	 *
+	 *   W libOpenSLES: Conversion from OpenSL ES positional channel mask 0x4
+	 *                  to Android mask 0 loses channels
+	 *
+	 * before falling back to a guess based on the channel count.  FRONT_LEFT
+	 * maps cleanly to AUDIO_CHANNEL_IN_MONO and needs no guess.  (The stock
+	 * baresip opensles module uses FRONT_CENTER here, which is where this
+	 * came from.) */
+	int chmask = prm->ch > 1
 		? SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT
-		: SL_SPEAKER_FRONT_CENTER;
+		: SL_SPEAKER_FRONT_LEFT;
 	SLDataFormat_PCM format_pcm = {SL_DATAFORMAT_PCM, prm->ch,
 	                               prm->srate * 1000,
 	                               SL_PCMSAMPLEFORMAT_FIXED_16,
 	                               SL_PCMSAMPLEFORMAT_FIXED_16,
-	                               speakers,
+	                               chmask,
 	                               SL_BYTEORDER_LITTLEENDIAN};
 	SLDataSink audio_snk = {&loc_bq, &format_pcm};
 
@@ -173,11 +227,15 @@ static int start_recording(struct ausrc_st *st)
 	(*st->rec)->SetRecordState(st->rec, SL_RECORDSTATE_STOPPED);
 	(*st->rec_bq)->Clear(st->rec_bq);
 
+	/* Prime every buffer, not just the first: the recorder must always have
+	 * a free buffer to write into while the callback is draining another. */
 	st->buffer_id = 0;
-	r = (*st->rec_bq)->Enqueue(st->rec_bq, st->sampv[st->buffer_id],
-	                           (unsigned int)(st->sampc * 2));
-	if (SL_RESULT_SUCCESS != r)
-		return ENODEV;
+	for (int i = 0; i < N_QUEUE_BUFFERS; i++) {
+		r = (*st->rec_bq)->Enqueue(st->rec_bq, st->sampv[i],
+		                           (unsigned int)(st->sampc * 2));
+		if (SL_RESULT_SUCCESS != r)
+			return ENODEV;
+	}
 
 	r = (*st->rec)->SetRecordState(st->rec, SL_RECORDSTATE_RECORDING);
 	if (SL_RESULT_SUCCESS != r)
@@ -267,18 +325,31 @@ static void auplay_destructor(void *arg)
 		mem_deref(st->sampv[i]);
 }
 
+static int start_player(struct auplay_st *st);
+
 static void play_bq_callback(SLAndroidSimpleBufferQueueItf bq, void *context)
 {
 	struct auplay_st *st = context;
 	struct auframe af;
+	SLresult r;
 
 	auframe_init(&af, AUFMT_S16LE, st->sampv[st->buffer_id], st->sampc,
 	             st->prm.srate, st->prm.ch);
 
 	st->wh(&af, st->arg);
 
-	(*st->play_bq)->Enqueue(bq, st->sampv[st->buffer_id],
-	                        (unsigned int)(st->sampc * 2));
+	/* Same one-way door as the capture path: the queue is only re-primed
+	 * here, so a dropped Enqueue silences playback permanently. */
+	r = (*st->play_bq)->Enqueue(bq, st->sampv[st->buffer_id],
+	                            (unsigned int)(st->sampc * 2));
+	if (SL_RESULT_SUCCESS != r) {
+		warning("sles_vc: playback Enqueue failed (0x%x) — restarting\n",
+		        (unsigned)r);
+		if (start_player(st))
+			warning("sles_vc: playback restart failed; speaker is "
+			        "now silent\n");
+		return;
+	}
 
 	st->buffer_id = (st->buffer_id + 1) % N_QUEUE_BUFFERS;
 }

@@ -284,7 +284,15 @@ static void bevent_handler(enum bevent_ev bev,
 		if (acct) acct->reg_state = BARESDK_REG_REGISTERING;
 		break;
 
+	/* FALLBACK_OK is the same success, reported under a different name:
+	 * baresip picks the event by reg->regint (src/reg.c), so a registration
+	 * whose interval reaches reg_register() as 0 — a fallback registration,
+	 * or an account whose regint never made it through — answers a 200 OK
+	 * with FALLBACK_OK. Left unhandled it hit the silent `default` below,
+	 * so the stack registered on the wire while every consumer sat in
+	 * REGISTERING forever with no event and no error. */
 	case BEVENT_REGISTER_OK:
+	case BEVENT_FALLBACK_OK:
 		ev.type        = BARESDK_EV_REG_STATE;
 		ev.u.reg.state = BARESDK_REG_REGISTERED;
 		ev.u.reg.error = BARESDK_OK;
@@ -292,10 +300,14 @@ static void bevent_handler(enum bevent_ev bev,
 		if (acct) {
 			acct->reg_state    = BARESDK_REG_REGISTERED;
 			acct->retry_attempt = 0;
+			/* Registered and reachable — start probing so we notice if
+			 * that stops being true before the next refresh. */
+			bsdk_account_keepalive_arm(acct);
 		}
 		break;
 
-	case BEVENT_REGISTER_FAIL: {
+	case BEVENT_REGISTER_FAIL:
+	case BEVENT_FALLBACK_FAIL: {   /* see FALLBACK_OK above */
 		const char *reason = bevent_get_text(event);
 		ev.type            = BARESDK_EV_REG_STATE;
 		ev.u.reg.state     = BARESDK_REG_FAILED;
@@ -320,6 +332,9 @@ static void bevent_handler(enum bevent_ev bev,
 			if (acct) {
 				acct->reg_state  = BARESDK_REG_FAILED;
 				acct->reg_error  = ev.u.reg.error;
+				/* No point probing a registration that is down; the
+				 * retry path re-arms this on success. */
+				bsdk_account_keepalive_cancel(acct);
 				if (reason)
 					str_ncpy(acct->reg_error_str, reason,
 					         sizeof(acct->reg_error_str));
@@ -382,6 +397,9 @@ static void bevent_handler(enum bevent_ev bev,
 	}
 
 	case BEVENT_CALL_RINGING:
+	case BEVENT_CALL_PROGRESS:   /* 183 w/ SDP — alerting, early media may
+	                              * already be flowing, so the consumer needs
+	                              * the same signal as a plain 180. */
 		ev.type = BARESDK_EV_CALL_STATE;
 		ev.u.call_state.call    = lc;
 		ev.u.call_state.account = acct;
@@ -398,6 +416,13 @@ static void bevent_handler(enum bevent_ev bev,
 		if (lc) {
 			lc->state            = BARESDK_CALL_ESTABLISHED;
 			lc->stats_call_start = tmr_jiffies();
+			/* The call is up — the setup watchdog has nothing left to
+			 * guard against. */
+			bsdk_call_setup_watch_cancel(lc);
+			/* Arm stall detection from here, so a call that never
+			 * receives a packet is reported rather than waiting for a
+			 * counter that will never move. */
+			bsdk_adapt_call_start(lc);
 			/* A migration deferred while the dialog was early can now
 			 * proceed — the SDP negotiation is complete. */
 			bsdk_netmon_call_refreshable(lc);
@@ -416,8 +441,32 @@ static void bevent_handler(enum bevent_ev bev,
 		int scode = sip_reason_code(reason);
 		bool is_transport_err = (scode == 0 && reason &&
 		                         strrchr(reason, '[') && strrchr(reason, ']') > strrchr(reason, '['));
+
+		/* ...except that ECONNRESET is also how libre reports a peer-initiated
+		 * termination, not only a dead socket.  Its BYE handler answers 200 OK
+		 * and then calls sipsess_terminate(sess, ECONNRESET, NULL)
+		 * (re/src/sipsess/listen.c), and the CANCEL path does the same with the
+		 * CANCEL message (accept.c).  baresip's close handler tests `err`
+		 * before `msg`, so both arrive here as "Connection reset by peer [104]"
+		 * with nothing to tell them apart from a genuine reset.
+		 *
+		 * The call's own state does tell them apart well enough to matter: a
+		 * call that was ESTABLISHED and then saw this ended normally — the far
+		 * end hung up.  Reporting that as FAILED with a transport error was the
+		 * visible bug: apps that branch on ENDED left the call on screen, and
+		 * every normal remote hangup looked like a network fault.
+		 *
+		 * A real socket death on an established call is then also reported as
+		 * ENDED.  That is the right trade: the call is over either way, and the
+		 * transport itself is covered by REG_STATE and BARESDK_EV_NETWORK, which
+		 * a plain hangup never touches. */
+		bool peer_hangup = is_transport_err && lc &&
+		                   lc->state == BARESDK_CALL_ESTABLISHED;
+
 		if (scode == 487)
 			ev.u.call_state.state = BARESDK_CALL_CANCELLED;
+		else if (peer_hangup)
+			ev.u.call_state.state = BARESDK_CALL_ENDED;
 		else if (scode >= 400 || is_transport_err)
 			ev.u.call_state.state = BARESDK_CALL_FAILED;
 		else
@@ -425,11 +474,16 @@ static void bevent_handler(enum bevent_ev bev,
 
 		if (scode == 401 || scode == 403 || scode == 407)
 			ev.u.call_state.error = BARESDK_ERR_AUTH;
+		/* 408 is what the setup watchdog cancels with, and what a proxy
+		 * sends when its own transaction timed out — both are timeouts,
+		 * not the malformed-request sense of BARESDK_ERR_INVAL. */
+		else if (scode == 408)
+			ev.u.call_state.error = BARESDK_ERR_TIMEOUT;
 		else if (scode >= 500 && scode < 600)
 			ev.u.call_state.error = BARESDK_ERR_SERVER_5XX;
 		else if (scode >= 400)
 			ev.u.call_state.error = BARESDK_ERR_INVAL;
-		else if (is_transport_err)
+		else if (is_transport_err && !peer_hangup)
 			ev.u.call_state.error = BARESDK_ERR_TRANSPORT;
 
 		if (lc) {
@@ -443,7 +497,15 @@ static void bevent_handler(enum bevent_ev bev,
 		if (qev) {
 			memset(qev, 0, sizeof(*qev));
 			memcpy(&qev->ev, &ev, sizeof(ev));
-			if (reason) {
+			if (peer_hangup) {
+				/* Don't pass libre's ECONNRESET text on as the
+				 * reason for a normal hangup — it reads as a
+				 * network fault to anyone logging it. */
+				str_ncpy(qev->buf, "Remote hangup",
+				         sizeof(qev->buf));
+				qev->ev.u.call_state.reason = qev->buf;
+			}
+			else if (reason) {
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
 				qev->ev.u.call_state.reason = qev->buf;
 			}
@@ -533,7 +595,38 @@ static void bevent_handler(enum bevent_ev bev,
 		post = false;
 		break;
 
+	/* Known and deliberately not forwarded.  Listed so they stay out of the
+	 * "unhandled" log below — an unexplained drop reads as a gap in the
+	 * mapping, and CALL_RTCP alone fires every few seconds of every call.
+	 *
+	 *   OUTGOING  fires inside ua_connect(), before baresdk_call_invite()
+	 *             has built its wrapper, so there is no call handle to
+	 *             report yet.  The invite returns the handle in state
+	 *             CALLING instead.
+	 *   RTPESTAB  first RTP packet; MEDIA_STATS and the audio-level events
+	 *             already cover live media.
+	 *   RTCP      periodic report; stats.c samples the same counters off
+	 *             its own timer for BARESDK_EV_MEDIA_STATS.
+	 *   MENC      media-encryption progress; the SDK reports the outcome
+	 *             through the call state and SDP negotiation events.
+	 *   CREATE    a UA was allocated, which the caller already knows:
+	 *             baresdk_account_create() returned it the handle.
+	 */
+	case BEVENT_CREATE:
+	case BEVENT_CALL_OUTGOING:
+	case BEVENT_CALL_RTPESTAB:
+	case BEVENT_CALL_RTCP:
+	case BEVENT_CALL_MENC:
+		post = false;
+		break;
+
 	default:
+		/* Name what we drop. A baresip event this switch does not know
+		 * is indistinguishable from one that never fired, which is how
+		 * FALLBACK_OK above cost a day: the stack was registered and the
+		 * app could not tell. */
+		debug("baresdk: unhandled baresip event %s (%d)\n",
+		      bevent_str(bev), (int)bev);
 		post = false;
 		break;
 	}

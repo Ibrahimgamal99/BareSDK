@@ -64,9 +64,25 @@ void main() {
       expect(l.message, isNotNull);
     }
 
+    // App-owned audio device. Exercised here rather than in its own test so
+    // it runs against a live stack, and because this also proves the
+    // regenerated ffi_bindings.dart resolves against the real .so — a bad
+    // regen fails here instead of on a device.
+    await sdk.useAppOwnedAudio(true);
+    expect(sdk.appOwnedAudioActive, isFalse,
+        reason: 'no call is up, so no device should be open');
+    expect(sdk.appOwnedAudioFormat, isNull,
+        reason: 'format is only known once a call has media');
+    await sdk.useAppOwnedAudio(false);
+
     account.destroy();
     sdk.shutdown();
     expect(BareSDK.instance, isNull);
+
+    // Refused once the stack is down — the switch is a dispatch onto the SIP
+    // thread, and it is not running. expectLater, not expect: the method is
+    // async, so it completes with the error rather than throwing inline.
+    await expectLater(sdk.useAppOwnedAudio(true), throwsStateError);
   }, skip: haveLib ? false : 'dist/linux/x86_64/baresdk.so not built');
 
   // One body on purpose: the event callback is bound to the zone that created

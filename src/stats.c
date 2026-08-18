@@ -210,9 +210,9 @@ static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
 
 /* ── Quality alert helper ────────────────────────────────────────────────── */
 
-static void post_quality_alert(struct baresdk_call *lc,
-                                baresdk_quality_issue_t issue,
-                                float value, float threshold, bool recovering)
+void bsdk_post_quality_alert(struct baresdk_call *lc,
+                             baresdk_quality_issue_t issue,
+                             float value, float threshold, bool recovering)
 {
 	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 	if (!qev) return;
@@ -278,26 +278,31 @@ static void collect_call_stats(struct baresdk_call *lc)
 		            && lc->last_mos_lq < cfg->mos_alert_threshold;
 		bool is_bad  = s->mos_lq < cfg->mos_alert_threshold;
 		if (is_bad != was_bad)
-			post_quality_alert(lc, BARESDK_QUALITY_MOS, s->mos_lq,
+			bsdk_post_quality_alert(lc, BARESDK_QUALITY_MOS, s->mos_lq,
 			                   cfg->mos_alert_threshold, was_bad);
 	}
 	if (cfg->loss_alert_threshold > 0.f) {
 		bool was_bad = lc->last_loss_pct > cfg->loss_alert_threshold;
 		bool is_bad  = s->loss_pct      > cfg->loss_alert_threshold;
 		if (is_bad != was_bad)
-			post_quality_alert(lc, BARESDK_QUALITY_LOSS, s->loss_pct,
+			bsdk_post_quality_alert(lc, BARESDK_QUALITY_LOSS, s->loss_pct,
 			                   cfg->loss_alert_threshold, was_bad);
 	}
 	if (cfg->jitter_alert_threshold > 0.f) {
 		bool was_bad = lc->last_jitter_ms > cfg->jitter_alert_threshold;
 		bool is_bad  = s->jitter_ms       > cfg->jitter_alert_threshold;
 		if (is_bad != was_bad)
-			post_quality_alert(lc, BARESDK_QUALITY_JITTER, s->jitter_ms,
+			bsdk_post_quality_alert(lc, BARESDK_QUALITY_JITTER, s->jitter_ms,
 			                   cfg->jitter_alert_threshold, was_bad);
 	}
 	lc->last_mos_lq    = s->mos_lq;
 	lc->last_loss_pct  = s->loss_pct;
 	lc->last_jitter_ms = s->jitter_ms;
+
+	/* Stall detection and bitrate adaptation read the same sample.  Run
+	 * them before the event is posted so the app cannot observe a stats
+	 * tick whose consequences have not been applied yet. */
+	bsdk_adapt_tick(lc, s);
 
 	bsdk_event_post_qev(qev);
 }

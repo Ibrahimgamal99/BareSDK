@@ -198,12 +198,13 @@ Accepted name aliases:
 | `"opus"` | Opus 48 kHz stereo |
 | `"ulaw"` / `"pcmu"` / `"g711u"` | G.711 µ-law (PCMU/8000) |
 | `"alaw"` / `"pcma"` / `"g711a"` | G.711 A-law (PCMA/8000) |
-| `"g722"` | G.722 wideband |
-| `"g729"` | G.729 (requires licensed module) |
-| `"g726"` / `"g726-32"` | G.726 at 32 kbps |
 | anything else | passed as-is to baresip |
 
+Opus and G.711 are the only codecs the library compiles in. A name that no
+loaded module registers is offered to nobody and logs a warning.
+
 **Priority:** per-account string names → per-account enum list → global `cfg.audio_codecs`.
+When none are set, the default offer is `opus, PCMU, PCMA`.
 
 ### Python
 

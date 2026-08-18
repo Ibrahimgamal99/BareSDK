@@ -387,6 +387,38 @@ static struct aufilt g_spk_gain_filter = {
 	.dech    = spk_gain_decode,
 };
 
+/* Whether the half-duplex suppressor should run at all.
+ *
+ * It exists for platforms that hand us the raw microphone.  Both mobile
+ * drivers capture through the OS voice path instead — Android's sles_vc via
+ * the VOICE_COMMUNICATION recording preset, iOS's audiounit via
+ * VoiceProcessingIO — so the device has already cancelled the echo in
+ * hardware before the first sample reaches us.  Ducking TX by another 16.5 dB
+ * every time the far end has audio removes no echo that is still there; it
+ * just half-duplexes a call the hardware had already made full-duplex, and
+ * takes ~0.85 s to let the mic back up after the far end stops.  There is no
+ * case where that is the right thing, so it is not an app-overridable choice.
+ *
+ * The veto only holds while that driver is the one in the path.  Once the app
+ * takes the device over (baresdk_audio_use_external), our voice-path driver is
+ * displaced and its canceller goes with it — so the suppressor becomes
+ * available again.  It still does not switch itself on: an app that owns the
+ * device is expected to capture through the platform voice path itself, and
+ * has to ask for the fallback explicitly. */
+bool bsdk_aec_suppressor_wanted(baresdk_aec_mode_t mode)
+{
+	if (mode != BARESDK_AEC_SUPPRESSOR)
+		return false;
+
+	if (bsdk_platform_has_aec() && !bsdk_audio_external_selected()) {
+		info("baresdk: platform audio driver cancels echo in hardware; "
+		     "software suppressor stays off\n");
+		return false;
+	}
+
+	return true;
+}
+
 void bsdk_audio_processing_init(bool ns, bool agc,
                                 baresdk_aec_mode_t aec_mode,
                                 float aec_suppression_level,
@@ -409,16 +441,42 @@ void bsdk_audio_processing_init(bool ns, bool agc,
 	aufilt_register(fl, &g_aec_filter);
 	aufilt_register(fl, &g_spk_gain_filter);  /* RX only */
 
-	/* Gain filters always enabled — they self-bypass at unity (g==1.0). */
+	/* Every enable below must pass the flag, never `if (flag) enable(true)`:
+	 * aufilt_register() enables what it registers, so a one-way enable is
+	 * not "leave it alone", it is "leave it ON".  These are TX filters and
+	 * that is not a subtle difference — bsdk_ns gates to −20 dB, bsdk_agc
+	 * pulls toward −20 dBFS with a 0.1 gain floor, and bsdk_aec ducks
+	 * 16.5 dB whenever the far end has audio.  Stacked on a microphone the
+	 * app asked us not to touch (ns and agc default to false, and AEC_OFF
+	 * means off), that is a caller nobody can hear.
+	 *
+	 * The two gain filters are the exception, and only because they read as
+	 * enabled either way: they self-bypass at unity. */
 	/* PROTECTED BY RE_MAIN */
 	aufilt_enable(fl, "bsdk_mic_gain", true);
 	aufilt_enable(fl, "bsdk_spk_gain", true);
 
-	if (ns)  /* PROTECTED BY RE_MAIN */ aufilt_enable(fl, "bsdk_ns",  true);
-	if (agc) /* PROTECTED BY RE_MAIN */ aufilt_enable(fl, "bsdk_agc", true);
-	/* bsdk_aec only enabled for SUPPRESSOR; WEBRTC uses webrtc_aec module instead. */
-	if (aec_mode == BARESDK_AEC_SUPPRESSOR)
-		/* PROTECTED BY RE_MAIN */ aufilt_enable(fl, "bsdk_aec", true);
+	bool aec_on = bsdk_aec_suppressor_wanted(aec_mode);
+
+	/* PROTECTED BY RE_MAIN */
+	aufilt_enable(fl, "bsdk_ns",  ns);
+	aufilt_enable(fl, "bsdk_agc", agc);
+	/* bsdk_aec only for SUPPRESSOR, and only where nothing below us has
+	 * already cancelled the echo; WEBRTC uses the webrtc_aec module. */
+	aufilt_enable(fl, "bsdk_aec", aec_on);
+
+	/* Say what the microphone actually goes through.  Every one of these is
+	 * capable of taking the TX path down by 20 dB, so "what is touching the
+	 * mic" is the first question worth answering when a caller reports that
+	 * the far end cannot hear them — on a device, from a log, without a
+	 * debugger. */
+	info("baresdk: TX chain: mic_gain=%s ns=%s agc=%s aec=%s%s\n",
+	     mic_db != 0.0f ? "on" : "unity/bypass",
+	     ns ? "on" : "off",
+	     agc ? "on" : "off",
+	     aec_on ? "suppressor" : "off",
+	     (!aec_on && aec_mode == BARESDK_AEC_SUPPRESSOR)
+	         ? " (platform canceller)" : "");
 }
 
 void bsdk_audio_processing_close(void)

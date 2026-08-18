@@ -11,7 +11,7 @@ A production-ready SIP/WebRTC/NAT SDK built on [baresip](https://github.com/bare
 | **SIP** | INVITE, BYE, REGISTER, MESSAGE, SUBSCRIBE/NOTIFY, REFER (blind + attended) |
 | **WebRTC media** | DTLS-SRTP, ICE, STUN, TURN |
 | **Transports** | UDP, TCP, TLS, WebSocket, WSS |
-| **Audio** | Opus, G.711 (PCMU/PCMA), G.722; AEC, NS, AGC |
+| **Audio** | Opus, G.711 (PCMU/PCMA); AEC, NS, AGC; app-owned audio device |
 | **Observability** | RTCP stats, MOS (E-model + simplified), SIP trace, pcap, SDP diff |
 | **Messaging** | SIP MESSAGE (in/out), MWI, presence (PUBLISH/SUBSCRIBE) |
 
@@ -75,6 +75,7 @@ all three languages side by side.
 
 - [NAT traversal (ICE / STUN / TURN)](guides/nat_traversal.md)
 - [Network handover (Wi-Fi ↔ 4G/5G)](guides/network_handover.md)
+- [Degraded links (bad signal, slow uplink, dead paths)](guides/degraded_links.md)
 - [TLS and WSS setup](guides/tls_wss.md)
 - [Multiple accounts](guides/multi_account.md)
 - [WebRTC browser interop](guides/webrtc_browser.md)

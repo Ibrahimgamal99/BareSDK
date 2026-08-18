@@ -95,6 +95,12 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `speaker_gain_db` | `float` | 0.0 | Speaker gain in dB (−20 to +20) |
 | `platform_audio_activate` | `bool` | true | iOS: activate the AVAudioSession during init. **Set false in CallKit apps** — see [media.md](media.md#ios-audio-session--callkit) |
 
+There is deliberately **no** config field for the app-owned audio device: it is a
+runtime switch (`baresdk_audio_use_external()`), so it can be flipped mid-call
+and does not survive a restart. Flutter exposes `BareSDKConfig.appOwnedAudio`
+as convenience only — it is applied straight after `init()`, not marshalled into
+`baresdk_config_t`. See [App-owned audio device](media.md#app-owned-audio-device).
+
 ### Opus encoder
 
 | Field | Type | Default | Description |
@@ -120,20 +126,29 @@ server_url = "wss://pbx.example.com:8089/ws"
 |---|---|---|---|
 | `reg_expires` | `uint32_t` | 3600 | REGISTER Expires (seconds) |
 | `reg_refresh_pct` | `uint32_t` | 75 | Refresh at N% of expires |
-| `keepalive_interval` | `uint32_t` | 0 | Keepalive ms (0=transport default) |
+| `keepalive_interval` | `uint32_t` | 30000 | SIP OPTIONS probe period in ms; 0 = off. Refreshes the UDP NAT binding and detects a black-holed path — see [Degraded links](../guides/degraded_links.md) |
+| `keepalive_reregister` | `bool` | true | Re-REGISTER immediately when a probe fails |
 | `reg_retry_initial_ms` | `uint32_t` | 2000 | Initial retry delay |
 | `reg_retry_max_ms` | `uint32_t` | 300000 | Max retry delay (5 min) |
 | `reg_retry_backoff` | `float` | 2.0 | Exponential backoff multiplier |
 | `reg_retry_max_attempts` | `uint32_t` | 0 | 0 = retry forever |
+| `reg_retry_jitter` | `float` | 0.2 | Randomise each delay by ±this fraction, so a fleet returning from an outage does not hit the registrar in one burst. 0 disables |
+| `dns_srv_failover` | `bool` | true | Advance one RFC 3263 SRV target per failed attempt instead of re-sending to the same dead proxy. Ignored when `outbound_proxy` is pinned, or for IP literals and WS/WSS URLs |
 
-### SIP timers (RFC 3261)
+### SIP timers (RFC 3261 §17)
 
-| Field | Type | Default |
-|---|---|---|
-| `sip_t1_ms` | `uint32_t` | 500 |
-| `sip_t2_ms` | `uint32_t` | 4000 |
-| `sip_timer_b_ms` | `uint32_t` | 32000 |
-| `sip_timer_f_ms` | `uint32_t` | 32000 |
+T1 and T2 are compile-time constants inside libre's transaction layer
+(`SIP_T1` / `SIP_T2`); the fields exist for completeness and setting them has
+no effect. Timers B and F are enforced by the SDK instead, which is what makes
+them useful — a request that gets no response at all is otherwise bounded only
+by libre's fixed 64·T1 = 32 s.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sip_t1_ms` | `uint32_t` | 500 | Informational only |
+| `sip_t2_ms` | `uint32_t` | 4000 | Informational only |
+| `sip_timer_b_ms` | `uint32_t` | 32000 | An outgoing call still in `CALLING` after this long is cancelled with 408 → `CALL_FAILED` / `BARESDK_ERR_TIMEOUT`. 8000–12000 to fail fast on mobile; 0 disables. Only `CALLING` is watched — a call that reached `RINGING` has proven the path works |
+| `sip_timer_f_ms` | `uint32_t` | 32000 | A REGISTER with no answer after this long reports `BARESDK_ERR_TIMEOUT` and hands over to the retry policy; 0 disables |
 
 ### Session timers (RFC 4028)
 
@@ -147,8 +162,11 @@ server_url = "wss://pbx.example.com:8089/ws"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `stats_interval_ms` | `uint32_t` | 0 | 0=disabled; fires `BARESDK_EV_MEDIA_STATS`. Python: `call.poll_stats(interval=)` overrides this per-call. |
+| `stats_interval_ms` | `uint32_t` | 2000 | Poll period for `BARESDK_EV_MEDIA_STATS`; 0 disables. Also the master switch for RTCP accounting, so with 0 the loss/jitter/RTT/MOS fields read back as zero everywhere and quality alerts, media-stall detection and adaptive bitrate are all inert. Python: `call.poll_stats(interval=)` overrides this per-call |
 | `mos_method` | `baresdk_mos_method_t` | `EMODEL` | `EMODEL` or `SIMPLIFIED` |
+| `mos_alert_threshold` | `float` | 3.5 | Fire `QUALITY_ALERT` when `mos_lq` drops below this; 0 disables |
+| `loss_alert_threshold` | `float` | 5.0 | Fire when `loss_pct` exceeds this; 0 disables |
+| `jitter_alert_threshold` | `float` | 40.0 | Fire when `jitter_ms` exceeds this; 0 disables |
 | `trace_sip` | `bool` | false | Emit `BARESDK_EV_SIP_TRACE` per message |
 | `trace_sdp_diff` | `bool` | false | Emit `BARESDK_EV_SDP_NEGOTIATION` |
 | `pcap_path` | `const char *` | NULL | Path for live pcap capture |
@@ -165,6 +183,25 @@ Full guide: [Network handover](../guides/network_handover.md).
 | `net_verify_ms` | `uint32_t` | 4000 | Wait for RTP on the new path before retrying; 0 disables the media check |
 | `net_max_attempts` | `uint32_t` | 6 | Retry ceiling for the rebind and for each call migration |
 | `net_hangup_on_migration_failure` | `bool` | false | End calls whose media could not be migrated |
+| `net_ice_handover` | `baresdk_ice_handover_t` | `BEST_EFFORT` | `BEST_EFFORT` runs the full retry budget for an ICE call; `FAIL_FAST` gives up after one attempt. An ICE call cannot re-gather candidates mid-call — see [Network handover](../guides/network_handover.md#ice-calls) |
+
+### Degraded links
+
+Handover above covers a changed local address. These cover the other failure:
+the address stays put and the link itself goes bad. Full guide:
+[Degraded links](../guides/degraded_links.md).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `media_stall_ms` | `uint32_t` | 4000 | Fire `QUALITY_ALERT` with issue `MEDIA_STALL` after this long with no inbound RTP; fires again with `recovering` when it resumes. Non-fatal; 0 disables. Requires `stats_interval_ms` > 0 |
+| `rtp_timeout_s` | `uint32_t` | 0 | **End** the call after this long with no inbound RTP (baresip `avt.rtp_timeout`). 0 = never; 30–60 when wanted. Only sendrecv streams are checked, so a held call is never torn down |
+| `adaptive_bitrate` | `bool` | false | Step the audio encoder bitrate down under peer-reported loss and back up on recovery, via the codec's encoder-update path — no re-INVITE, no audio gap. Opus only; a fixed-rate codec has nothing to vary |
+| `adapt_min_bitrate` | `uint32_t` | 12000 | Adaptation floor, bps |
+| `adapt_max_bitrate` | `uint32_t` | 32000 | Adaptation ceiling, bps |
+| `adapt_loss_down_pct` | `float` | 5.0 | Halve the bitrate above this loss % |
+| `adapt_loss_up_pct` | `float` | 1.0 | Raise it (+25%) below this loss % |
+| `adapt_recover_ticks` | `uint32_t` | 5 | Consecutive clean stats ticks required before a step up |
+| `opus_expected_loss_pct` | `uint32_t` | 0 | Opus in-band FEC (LBRR) redundancy, percent. `opus.fec` permits FEC; this is what makes the encoder spend bitrate on it and the decoder look for it — set both. 10–20 suits mobile; 0 = off |
 
 ### Logging
 

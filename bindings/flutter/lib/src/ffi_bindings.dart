@@ -814,6 +814,143 @@ class BareSDKBindings {
   late final _baresdk_account_set_100rel = _baresdk_account_set_100relPtr
       .asFunction<int Function(baresdk_account_handle_t, int)>();
 
+  /// Hand the microphone and speaker to the app.
+  ///
+  /// With this on the SDK opens no capture or playback device of its own — no
+  /// OpenSL ES on Android, no AudioUnit on iOS — and the app supplies and consumes
+  /// PCM itself, from whatever the platform gives it (AudioRecord/AudioTrack,
+  /// AVAudioEngine, a WebRTC AudioDeviceModule, a file):
+  ///
+  /// app capture thread   -> baresdk_audio_external_push()  -> far end
+  /// app playback thread  <- baresdk_audio_external_pull()  <- far end
+  ///
+  /// Turning it off restores the platform device.  Takes effect immediately,
+  /// including on calls that are already up, so it is safe to switch mid-call.
+  ///
+  /// Not sticky across a restart: baresdk_init() re-derives the device from the
+  /// platform, so an app that shuts the stack down and brings it back up has to
+  /// ask for the app-owned device again.
+  ///
+  /// One microphone, one speaker: baresip opens a device per call, but the app
+  /// has only one of each.  The most recently opened call owns them; a second
+  /// concurrent call gets silence rather than a share.
+  ///
+  /// Note this replaces the device only.  Echo cancellation follows the device:
+  /// the platform cancellers the SDK relies on (Android's VOICE_COMMUNICATION
+  /// capture preset, iOS's VoiceProcessingIO) belong to the drivers being
+  /// displaced, so an app taking this over owns AEC too — capture through
+  /// VOICE_COMMUNICATION / VoiceProcessingIO on its own side, or expect echo.
+  /// The SDK's own half-duplex suppressor becomes available as a fallback while
+  /// the app owns the device, but stays off unless asked for with
+  /// baresdk_set_aec_mode(BARESDK_AEC_SUPPRESSOR); it is switched off again when
+  /// the platform device comes back, so the two cancellers never stack.
+  ///
+  /// Returns 0, or an errno on failure.
+  int baresdk_audio_use_external(
+    bool enable,
+  ) {
+    return _baresdk_audio_use_external(
+      enable,
+    );
+  }
+
+  late final _baresdk_audio_use_externalPtr =
+      _lookup<ffi.NativeFunction<ffi.Int Function(ffi.Bool)>>(
+          'baresdk_audio_use_external');
+  late final _baresdk_audio_use_external =
+      _baresdk_audio_use_externalPtr.asFunction<int Function(bool)>();
+
+  /// Give the stack captured microphone audio.  This is what the far end hears.
+  ///
+  /// [pcm] is S16LE interleaved, [nsamp] total samples (frames x channels), at the
+  /// rate and channel count from baresdk_audio_external_format().  Any buffer size
+  /// is accepted; the stack re-frames internally.
+  ///
+  /// Call from the app's capture thread.  Returns 0, ENODEV when no call is
+  /// capturing (push between calls is not an error worth acting on), or an errno.
+  int baresdk_audio_external_push(
+    ffi.Pointer<ffi.Int16> pcm,
+    int nsamp,
+  ) {
+    return _baresdk_audio_external_push(
+      pcm,
+      nsamp,
+    );
+  }
+
+  late final _baresdk_audio_external_pushPtr = _lookup<
+          ffi
+          .NativeFunction<ffi.Int Function(ffi.Pointer<ffi.Int16>, ffi.Size)>>(
+      'baresdk_audio_external_push');
+  late final _baresdk_audio_external_push = _baresdk_audio_external_pushPtr
+      .asFunction<int Function(ffi.Pointer<ffi.Int16>, int)>();
+
+  /// Take decoded audio to play.  This is what the local user hears.
+  ///
+  /// Fills [pcm] with [nsamp] S16LE interleaved samples, always completely:
+  /// silence when no call is up, so the app can hand the buffer straight to the
+  /// speaker without checking.
+  ///
+  /// Call from the app's playback thread.  Returns 0, or ENODEV when no call is
+  /// playing (the buffer is still zeroed).
+  int baresdk_audio_external_pull(
+    ffi.Pointer<ffi.Int16> pcm,
+    int nsamp,
+  ) {
+    return _baresdk_audio_external_pull(
+      pcm,
+      nsamp,
+    );
+  }
+
+  late final _baresdk_audio_external_pullPtr = _lookup<
+          ffi
+          .NativeFunction<ffi.Int Function(ffi.Pointer<ffi.Int16>, ffi.Size)>>(
+      'baresdk_audio_external_pull');
+  late final _baresdk_audio_external_pull = _baresdk_audio_external_pullPtr
+      .asFunction<int Function(ffi.Pointer<ffi.Int16>, int)>();
+
+  /// The format the current call negotiated, for sizing the app's own device.
+  /// Any of the out-params may be NULL.  Returns 0, or ENODEV when no call has
+  /// media yet — poll after the call is established, or just re-check on each
+  /// call, since a different codec can mean a different rate.
+  ///
+  /// There is no event for "media is up": CALL_ESTABLISHED is a SIP state and
+  /// races the device by a few ms, and a mid-call re-INVITE can renegotiate the
+  /// codec without any call-state change at all.  Polling this is the way to
+  /// learn both that the device opened and that its format changed.
+  int baresdk_audio_external_format(
+    ffi.Pointer<ffi.Uint32> srate,
+    ffi.Pointer<ffi.Uint8> ch,
+    ffi.Pointer<ffi.Uint32> ptime,
+  ) {
+    return _baresdk_audio_external_format(
+      srate,
+      ch,
+      ptime,
+    );
+  }
+
+  late final _baresdk_audio_external_formatPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint8>,
+              ffi.Pointer<ffi.Uint32>)>>('baresdk_audio_external_format');
+  late final _baresdk_audio_external_format =
+      _baresdk_audio_external_formatPtr.asFunction<
+          int Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint8>,
+              ffi.Pointer<ffi.Uint32>)>();
+
+  /// True while a call is capturing or playing through the app-owned device.
+  bool baresdk_audio_external_is_active() {
+    return _baresdk_audio_external_is_active();
+  }
+
+  late final _baresdk_audio_external_is_activePtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function()>>(
+          'baresdk_audio_external_is_active');
+  late final _baresdk_audio_external_is_active =
+      _baresdk_audio_external_is_activePtr.asFunction<bool Function()>();
+
   /// Fill devices[] with available audio input devices, up to max_count entries.
   /// Returns the number of entries written (0 if no devices found yet).
   /// Call after baresdk_init(); device lists may be empty until the audio
@@ -1029,6 +1166,110 @@ class BareSDKBindings {
           'baresdk_set_jitter_buffer_type');
   late final _baresdk_set_jitter_buffer_type =
       _baresdk_set_jitter_buffer_typePtr.asFunction<void Function(int)>();
+
+  /// Set the no-inbound-RTP timeout for one established call, in seconds.
+  ///
+  /// Per-call override of cfg.rtp_timeout_s.  0 disables the timeout for this
+  /// call.  Takes effect immediately on every stream of the call.
+  ///
+  /// Useful where the policy is per-call rather than global: an attended
+  /// transfer or a call parked against music-on-hold may legitimately go quiet,
+  /// while a normal two-party call should not.
+  ///
+  /// @return 0, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+  int baresdk_call_set_rtp_timeout(
+    baresdk_call_handle_t call,
+    int seconds,
+  ) {
+    return _baresdk_call_set_rtp_timeout(
+      call,
+      seconds,
+    );
+  }
+
+  late final _baresdk_call_set_rtp_timeoutPtr = _lookup<
+          ffi
+          .NativeFunction<ffi.Int Function(baresdk_call_handle_t, ffi.Uint32)>>(
+      'baresdk_call_set_rtp_timeout');
+  late final _baresdk_call_set_rtp_timeout = _baresdk_call_set_rtp_timeoutPtr
+      .asFunction<int Function(baresdk_call_handle_t, int)>();
+
+  /// Set the audio encoder bitrate for one call, in bits/s.
+  ///
+  /// Goes through the codec's encoder-update path: no re-INVITE and no audio
+  /// gap, but also no effect for a fixed-rate codec such as G.711.  Pass 0 to
+  /// return the encoder to its negotiated automatic rate.
+  ///
+  /// Calling this on a call that the adaptive controller is managing is
+  /// honoured, and then overridden by the controller on its next decision — set
+  /// cfg.adaptive_bitrate to false, or use baresdk_set_adaptive_bitrate(), if
+  /// the app wants to own the rate.
+  ///
+  /// @return 0, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+  int baresdk_call_set_bitrate(
+    baresdk_call_handle_t call,
+    int bitrate_bps,
+  ) {
+    return _baresdk_call_set_bitrate(
+      call,
+      bitrate_bps,
+    );
+  }
+
+  late final _baresdk_call_set_bitratePtr = _lookup<
+          ffi
+          .NativeFunction<ffi.Int Function(baresdk_call_handle_t, ffi.Uint32)>>(
+      'baresdk_call_set_bitrate');
+  late final _baresdk_call_set_bitrate = _baresdk_call_set_bitratePtr
+      .asFunction<int Function(baresdk_call_handle_t, int)>();
+
+  /// Enable or disable link-adaptive bitrate at runtime, with bounds.
+  ///
+  /// Pass 0 for either bound to keep the value already configured.  Disabling
+  /// leaves every call at whatever rate it currently has; call
+  /// baresdk_call_set_bitrate(call, 0) to restore the negotiated rate.
+  void baresdk_set_adaptive_bitrate(
+    bool enabled,
+    int min_bps,
+    int max_bps,
+  ) {
+    return _baresdk_set_adaptive_bitrate(
+      enabled,
+      min_bps,
+      max_bps,
+    );
+  }
+
+  late final _baresdk_set_adaptive_bitratePtr = _lookup<
+          ffi
+          .NativeFunction<ffi.Void Function(ffi.Bool, ffi.Uint32, ffi.Uint32)>>(
+      'baresdk_set_adaptive_bitrate');
+  late final _baresdk_set_adaptive_bitrate = _baresdk_set_adaptive_bitratePtr
+      .asFunction<void Function(bool, int, int)>();
+
+  /// Send a keepalive/reachability probe (SIP OPTIONS) for one account now.
+  ///
+  /// The same probe the keepalive_interval timer sends, on demand — useful from
+  /// an app-foreground or push-wake handler, where the question "is my
+  /// registration still reachable?" is worth answering before the user places a
+  /// call.  The result arrives as BARESDK_EV_REG_STATE: nothing changes on
+  /// success, and on failure the account goes to FAILED and (when
+  /// cfg.keepalive_reregister is set) re-REGISTERs.
+  ///
+  /// @return 0, or BARESDK_ERR_INVAL / BARESDK_ERR_STATE.
+  int baresdk_account_keepalive_now(
+    baresdk_account_handle_t account,
+  ) {
+    return _baresdk_account_keepalive_now(
+      account,
+    );
+  }
+
+  late final _baresdk_account_keepalive_nowPtr =
+      _lookup<ffi.NativeFunction<ffi.Int Function(baresdk_account_handle_t)>>(
+          'baresdk_account_keepalive_now');
+  late final _baresdk_account_keepalive_now = _baresdk_account_keepalive_nowPtr
+      .asFunction<int Function(baresdk_account_handle_t)>();
 
   /// Mute/unmute the microphone (TX path) for a call.
   int baresdk_audio_mute(
@@ -1340,6 +1581,11 @@ abstract class baresdk_media_enc_t {
   static const int BARESDK_MEDIA_ENC_DTLS_SRTP = 2;
 }
 
+/// Only OPUS, PCMU and PCMA are compiled into the library — on every platform.
+/// G722 and G726_32 are retained so the numeric values of the constants above
+/// and below them stay put (removing them would shift the enum and break the
+/// ABI for already-built callers), but no module registers those codecs:
+/// selecting one contributes nothing to the SDP offer and logs a warning.
 abstract class baresdk_codec_t {
   static const int BARESDK_CODEC_OPUS = 0;
 
@@ -1348,9 +1594,11 @@ abstract class baresdk_codec_t {
 
   /// G.711 A-law
   static const int BARESDK_CODEC_PCMA = 2;
+
+  /// deprecated — not compiled in
   static const int BARESDK_CODEC_G722 = 3;
 
-  /// G.726 32 kbit/s, 8 kHz
+  /// deprecated — not compiled in
   static const int BARESDK_CODEC_G726_32 = 4;
 }
 
@@ -1381,6 +1629,27 @@ abstract class baresdk_jbuf_type_t {
 
   /// fixed-depth jitter buffer
   static const int BARESDK_JBUF_FIXED = 1;
+}
+
+/// What to do with an ICE call whose local candidates went stale on handover.
+///
+/// A network handover invalidates every gathered ICE candidate, and baresip
+/// fixes the local ufrag/pwd when the media session is created — an RFC 8445
+/// §9 ICE restart is therefore not possible from outside the library.  The
+/// re-INVITE we do send carries the old candidate set: it recovers the call
+/// when the peer is reachable directly or through a still-valid TURN relay,
+/// and cannot recover it otherwise.
+abstract class baresdk_ice_handover_t {
+  /// Send the re-INVITE anyway and let media verification decide.
+  /// Recovers relay/direct paths; wastes net_verify_ms × net_max_attempts
+  /// before failing when it cannot.
+  static const int BARESDK_ICE_HANDOVER_BEST_EFFORT = 0;
+
+  /// Try once, then fail immediately.  Gives the app a prompt
+  /// CALL_MIGRATION_FAILED it can answer by re-placing the call, instead
+  /// of a long silence.  Recommended when calls are ICE+TURN over
+  /// cellular.
+  static const int BARESDK_ICE_HANDOVER_FAIL_FAST = 1;
 }
 
 final class baresdk_opus_config_t extends ffi.Struct {
@@ -1548,6 +1817,11 @@ abstract class baresdk_net_event_t {
 
   /// transport reset failed; retrying
   static const int BARESDK_NET_HANDOVER_FAILED = 10;
+
+  /// ICE call: gathered candidates are stale and cannot be re-gathered.
+  /// Emitted once per call per handover, before the re-INVITE.  See
+  /// baresdk_ice_handover_t and cfg.net_ice_handover.
+  static const int BARESDK_NET_CALL_ICE_STALE = 11;
 }
 
 /// Network handover progress.
@@ -1573,7 +1847,13 @@ final class baresdk_ev_network_t extends ffi.Struct {
   @ffi.Uint32()
   external int attempt;
 
-  /// ceiling for `attempt`
+  /// The offer budget this call is held to — net_max_attempts normally, or 1
+  /// for a stale-ICE call under BARESDK_ICE_HANDOVER_FAIL_FAST.
+  ///
+  /// Render it as a progress counter ("%u/%u"), not as an invariant:
+  /// `attempt` also advances while a call waits for a default route to
+  /// appear (CALL_DEFERRED), and those waits keep the full net_max_attempts
+  /// budget, so on a fail-fast call `attempt` can exceed this value.
   @ffi.Uint32()
   external int max_attempts;
 
@@ -1942,6 +2222,12 @@ abstract class baresdk_quality_issue_t {
   static const int BARESDK_QUALITY_LOSS = 1;
   static const int BARESDK_QUALITY_JITTER = 2;
   static const int BARESDK_QUALITY_RTT = 3;
+
+  /// No inbound RTP for cfg.media_stall_ms while the call is not on hold.
+  /// `value` is the stall duration in ms, `threshold` is media_stall_ms.
+  /// Non-fatal: fires again with `recovering` = true when RTP resumes.
+  /// See also cfg.rtp_timeout_s, which *ends* the call instead.
+  static const int BARESDK_QUALITY_MEDIA_STALL = 4;
 }
 
 final class baresdk_ev_quality_alert_t extends ffi.Struct {
@@ -2097,6 +2383,7 @@ final class baresdk_config_t extends ffi.Struct {
   /// Ordered preference list. Overridden per account by
   /// baresdk_account_config_t.audio_codec[_name]s, and by the
   /// string list in audio_codec_names[] below.
+  /// Leave at 0 for the cross-platform default: Opus, PCMU, PCMA.
   @ffi.Array.multi([8])
   external ffi.Array<ffi.Int32> audio_codecs;
 
@@ -2162,7 +2449,22 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Uint32()
   external int reg_refresh_pct;
 
-  /// ms; 0 = transport default
+  /// SIP keepalive / reachability probe interval in ms.  0 disables.
+  /// Default 30000.
+  ///
+  /// Every `keepalive_interval` ms of registered idle time the SDK sends an
+  /// OPTIONS request to the account's proxy.  Two things depend on it:
+  ///
+  /// - the UDP NAT binding is refreshed, so inbound INVITEs keep arriving
+  /// between REGISTER refreshes (a `reg_expires` of 3600 s is far longer
+  /// than a typical carrier-NAT UDP timeout of 30–180 s);
+  /// - a black-holed path is detected within one interval instead of at
+  /// the next refresh.  When `keepalive_reregister` is set, a failed
+  /// probe re-REGISTERs immediately rather than waiting.
+  ///
+  /// The probe is suppressed while a call is up on that account: RTP is
+  /// already holding the binding open, and the request would compete with
+  /// media for a congested uplink.
   @ffi.Uint32()
   external int keepalive_interval;
 
@@ -2182,19 +2484,48 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Uint32()
   external int reg_retry_max_attempts;
 
-  /// default 500
+  /// Randomisation applied to each retry delay, as a fraction of it.
+  /// Default 0.2; 0 disables.  The delay actually used is drawn uniformly
+  /// from [d·(1−jitter), d·(1+jitter)].
+  ///
+  /// Without it every device that lost the same network re-REGISTERs on
+  /// the same schedule and arrives at the registrar in one burst — the
+  /// outage becomes a thundering herd on recovery.  Clamped to [0, 1].
+  @ffi.Float()
+  external double reg_retry_jitter;
+
+  /// informational; libre constant, 500
   @ffi.Uint32()
   external int sip_t1_ms;
 
-  /// default 4000
+  /// informational; libre constant, 4000
   @ffi.Uint32()
   external int sip_t2_ms;
 
-  /// default 32000
+  /// INVITE transaction timeout, ms.  Default 32000 (RFC 3261 Timer B).
+  ///
+  /// An outgoing call whose INVITE is black-holed — the usual outcome of a
+  /// link that is up but not passing traffic — produces no response at
+  /// all, and libre's Timer B is a compile-time 64·T1 = 32 s.  This field
+  /// arms an SDK-side watchdog instead: an outgoing call still in
+  /// BARESDK_CALL_CALLING after `sip_timer_b_ms` is cancelled with 408 and
+  /// reported as BARESDK_CALL_FAILED / BARESDK_ERR_TIMEOUT.  Set below
+  /// 32000 to fail fast (8000–12000 is usual on mobile); 0 disables the
+  /// watchdog and leaves the 32 s transaction timeout as the only bound.
+  ///
+  /// Only the CALLING state is watched — the state where nothing at all has
+  /// come back.  Once any provisional response arrives the call moves to
+  /// RINGING, the far end is demonstrably reachable, and how long the user
+  /// is willing to let it ring is a product decision rather than a
+  /// transport timeout.
   @ffi.Uint32()
   external int sip_timer_b_ms;
 
-  /// default 32000
+  /// Non-INVITE transaction timeout, ms.  Default 32000 (Timer F).
+  ///
+  /// Bounds how long the registration watchdog waits for any answer to a
+  /// REGISTER before reporting BARESDK_ERR_TIMEOUT and handing over to the
+  /// retry policy.  0 disables the watchdog.
   @ffi.Uint32()
   external int sip_timer_f_ms;
 
@@ -2210,7 +2541,15 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Uint32()
   external int session_min_se_s;
 
-  /// 0 = disabled
+  /// ── Quality / observability ─────────────────────────────────── */
+  /// /**
+  /// BARESDK_EV_MEDIA_STATS poll interval in ms.  Default 2000; 0 disables.
+  ///
+  /// This is also the master switch for RTCP accounting
+  /// (baresip `avt.rtp_stats`), so with 0 the loss/jitter/RTT/MOS fields
+  /// read back as zero from baresdk_call_get_stats() too, and every
+  /// feature derived from them — quality alerts, media-stall detection and
+  /// adaptive bitrate — is inert.
   @ffi.Uint32()
   external int stats_interval_ms;
 
@@ -2331,6 +2670,120 @@ final class baresdk_config_t extends ffi.Struct {
   /// activates the session.
   @ffi.Bool()
   external bool platform_audio_activate;
+
+  /// Terminate a call after this many seconds without inbound RTP.
+  /// 0 (default) = never.
+  ///
+  /// Maps to baresip's `avt.rtp_timeout`.  This is the hard, fatal bound:
+  /// the stream is closed with ETIMEDOUT and the call ends with
+  /// BARESDK_ERR_TIMEOUT.  Only sendrecv streams are checked, so a held
+  /// call is never torn down by it.
+  ///
+  /// Left off by default because ending a call is destructive and some
+  /// deployments legitimately run one-way media.  30–60 s is the usual
+  /// choice when it is wanted; prefer `media_stall_ms` for a warning that
+  /// keeps the call up.
+  @ffi.Uint32()
+  external int rtp_timeout_s;
+
+  /// Warn after this many ms without inbound RTP.  Default 4000; 0 = off.
+  ///
+  /// Non-fatal counterpart to `rtp_timeout_s`, evaluated on the stats tick:
+  /// fires BARESDK_QUALITY_MEDIA_STALL when inbound RTP stops advancing and
+  /// again with `recovering` = true when it resumes.  This is what turns
+  /// "the user says they can't hear anything" into an event — a stall that
+  /// is not accompanied by an address change is invisible to handover and,
+  /// with rtp_timeout_s at 0, invisible to baresip.
+  ///
+  /// Requires stats_interval_ms > 0.  Values below one stats interval
+  /// cannot be detected any sooner than that interval.
+  @ffi.Uint32()
+  external int media_stall_ms;
+
+  /// Reduce the audio encoder's bitrate when the link degrades, and raise
+  /// it again when the link recovers.  Default false.
+  ///
+  /// Evaluated on the stats tick against the remote's RTCP receiver report
+  /// (`loss_pct`, i.e. what the peer is actually losing).  A step down is
+  /// taken when loss exceeds `adapt_loss_down_pct`; a step up after
+  /// `adapt_recover_ticks` consecutive ticks below `adapt_loss_up_pct`.
+  /// Steps are halve-down / +25%-up between the bounds below.
+  ///
+  /// Applied through the codec's encoder-update path (no re-INVITE, no
+  /// renegotiation, no audio gap), so it only does anything for codecs
+  /// with a variable bitrate — Opus in practice.  A G.711 call is left
+  /// alone; there is nothing to vary.  A deployment pinned to G.711 has no
+  /// concealment available in this build (see the `plc` note in
+  /// src/modules_init.c) — offering Opus is what makes a lossy link
+  /// survivable.
+  @ffi.Bool()
+  external bool adaptive_bitrate;
+
+  /// bps; 0 = 12000
+  @ffi.Uint32()
+  external int adapt_min_bitrate;
+
+  /// bps; 0 = 32000
+  @ffi.Uint32()
+  external int adapt_max_bitrate;
+
+  /// step down above this; 0 = 5.0
+  @ffi.Float()
+  external double adapt_loss_down_pct;
+
+  /// step up below this;   0 = 1.0
+  @ffi.Float()
+  external double adapt_loss_up_pct;
+
+  /// clean ticks before a step up; 0 = 5
+  @ffi.Uint32()
+  external int adapt_recover_ticks;
+
+  /// Expected packet loss handed to the Opus encoder, percent.  0 = off.
+  ///
+  /// Turns on Opus in-band FEC (LBRR) at both ends — the encoder spends
+  /// part of its budget on a redundant low-bitrate copy of the previous
+  /// frame, and the decoder uses it to reconstruct a lost one.  Costs
+  /// bitrate and quality even on a clean link, which is why it is off by
+  /// default; 10–20 is a reasonable setting for mobile.
+  ///
+  /// `opus.fec` only enables the mechanism.  This value is what tells the
+  /// encoder how much redundancy to actually spend, and the decoder to
+  /// look for it, so set both.
+  @ffi.Uint32()
+  external int opus_expected_loss_pct;
+
+  /// Re-REGISTER immediately when a keepalive probe fails.  Default true.
+  ///
+  /// A failed OPTIONS means the path to the proxy is gone even though the
+  /// local address never changed — the case handover cannot see.  Without
+  /// this the account stays nominally REGISTERED until the next refresh,
+  /// which with the default `reg_expires` is up to an hour of missed
+  /// inbound calls.  Requires keepalive_interval > 0.
+  @ffi.Bool()
+  external bool keepalive_reregister;
+
+  /// Rotate through the RFC 3263 SRV target list on registration retry.
+  /// Default true.
+  ///
+  /// Without it every retry re-sends to the same host the last attempt
+  /// timed out on, so a down primary proxy is never failed over to the
+  /// secondary the SRV records exist to provide.  With it the SDK resolves
+  /// _sip._<transport>.<domain> once per account and advances the outbound
+  /// proxy one target per failed attempt, in (priority, weight) order,
+  /// wrapping at the end.
+  ///
+  /// Ignored when the account or global config pins an explicit
+  /// `outbound_proxy` — an operator-chosen proxy is not second-guessed —
+  /// and when the server is reached by IP literal or WS/WSS URL, neither
+  /// of which has SRV records to consult.
+  @ffi.Bool()
+  external bool dns_srv_failover;
+
+  /// How to treat an ICE call on handover.  Default BEST_EFFORT.
+  /// See baresdk_ice_handover_t.
+  @ffi.Int32()
+  external int net_ice_handover;
 }
 
 typedef baresdk_aec_mode_t = ffi.Uint8;

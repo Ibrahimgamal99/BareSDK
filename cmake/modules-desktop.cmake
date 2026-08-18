@@ -7,11 +7,11 @@
 # NAT:     stun/turn/ice = RFC 5389/5766/8445.
 
 set(BARESDK_DESKTOP_MODULES
-  # Audio codecs
+  # Audio codecs — must stay identical to BARESDK_MOBILE_MODULES_BASE so the
+  # default SDP offer (see BSDK_DEFAULT_AUDIO_CODECS in src/account.c) is
+  # satisfiable on every platform.
   "opus"
   "g711"
-  "g722"
-  "l16"
   # Audio processing
   "aubridge"
   "auconv"

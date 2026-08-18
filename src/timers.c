@@ -36,6 +36,11 @@ void bsdk_timers_configure(const baresdk_config_t *cfg)
 	/* Enable RTCP stats collection */
 	c->avt.rtp_stats = (cfg->stats_interval_ms > 0);
 
+	/* No-inbound-RTP call timeout.  baresip checks this per stream, only
+	 * while the SDP direction is sendrecv, so a held call is not affected.
+	 * 0 leaves it off, which is baresip's own default. */
+	c->avt.rtp_timeout = cfg->rtp_timeout_s;
+
 	/* Jitter buffer — adaptive mode with caller-supplied min/max bounds.
 	 * Only applied when at least one bound is non-zero to preserve baresip
 	 * defaults for callers that don't set either field. */

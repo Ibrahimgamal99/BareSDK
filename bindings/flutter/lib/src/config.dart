@@ -90,23 +90,39 @@ class BareSDKConfig {
   final MediaEncryption mediaEnc;
 
   /// Global codec preference, most preferred first, by name: `opus`,
-  /// `ulaw`/`g711u`/`pcmu`, `alaw`/`g711a`/`pcma`, `g722`, `g729`,
-  /// `g726`/`g726-32`. Matched case-insensitively; an unrecognized name is
-  /// passed through to baresip, so any codec a loaded module registers works.
+  /// `ulaw`/`g711u`/`pcmu`, `alaw`/`g711a`/`pcma` — the full set compiled
+  /// into the library, on every platform. Matched case-insensitively; an
+  /// unrecognized name is passed through to baresip, so a codec registered
+  /// by a module added to the build works too.
   ///
   /// Applies to every account that does not set [AccountConfig.audioCodecs].
-  /// Only the first 8 entries are used. A list where nothing resolves logs a
-  /// warning and leaves all codecs on offer.
+  /// Only the first 8 entries are used. Leaving this empty offers the
+  /// default `['opus', 'ulaw', 'alaw']`. A list where nothing resolves logs
+  /// a warning and leaves all codecs on offer.
   final List<String> audioCodecs;
   final int dscpSip;
   final int dscpRtp;
 
   // ── Audio processing ───────────────────────────────────────────────────
+
+  /// Echo-cancellation backend.
+  ///
+  /// Desktop-only in effect: on Android and iOS the platform audio driver
+  /// captures through the OS voice path (`VOICE_COMMUNICATION` /
+  /// `VoiceProcessingIO`) and the echo is gone in hardware before the SDK
+  /// sees a sample, so [AecMode.suppressor] is not applied there — ducking
+  /// the mic on top of a working canceller only costs full duplex.
   final AecMode aecMode;
+
+  /// Noise suppression on the TX path. Off by default, and normally left off
+  /// on mobile: the OS voice capture path already suppresses noise.
   final bool noiseSuppression;
+
+  /// Automatic gain control on the TX path. Off by default, and normally left
+  /// off on mobile: the OS voice capture path already normalises level.
   final bool autoGainControl;
 
-  /// 0 = none .. 1 = maximum; SUPPRESSOR mode only.
+  /// 0 = none .. 1 = maximum; SUPPRESSOR mode only, desktop only.
   final double aecSuppressionLevel;
 
   /// Mic gain dB, clamped [-20, +20]; 0 = unity.
@@ -131,6 +147,20 @@ class BareSDKConfig {
   /// [BareSDK.start], which stops the SDK toggling activation around calls.
   final bool platformAudioActivate;
 
+  /// Hand the microphone and speaker to the app instead of letting the SDK
+  /// open them.
+  ///
+  /// Applied after `baresdk_init()` — there is no native config field for it,
+  /// the switch is the runtime call [BareSDK.useAppOwnedAudio]. On mobile this
+  /// also starts the plugin's realtime capture/playback loops around each
+  /// call; on desktop the loops are the app's own business.
+  ///
+  /// Use it when the platform fights the SDK's own audio drivers — Bluetooth
+  /// routing that will not follow, CallKit owning the session, one-way audio.
+  /// The app then owns echo cancellation too. Default `false`: the SDK-owned
+  /// device is the tested path.
+  final bool appOwnedAudio;
+
   // ── Jitter buffer ──────────────────────────────────────────────────────
   final JitterBufferType jitterBufferType;
 
@@ -147,7 +177,12 @@ class BareSDKConfig {
   /// Refresh at N% of expires; 0 = native default (75).
   final int regRefreshPct;
 
-  /// Keepalive interval ms; 0 = transport default.
+  /// SIP keepalive / reachability probe interval in ms; 0 = SDK default
+  /// (30000).  Every interval of registered idle time the SDK sends an OPTIONS
+  /// request to the proxy: the request refreshes the UDP NAT binding — which
+  /// carrier NAT drops long before [regExpires] elapses — and its answer, or
+  /// absence, is a reachability test.  Suppressed while a call is up on the
+  /// account.  See [keepaliveReregister] and `Account.keepaliveNow()`.
   final int keepaliveIntervalMs;
   final int regRetryInitialMs;
   final int regRetryMaxMs;
@@ -155,6 +190,82 @@ class BareSDKConfig {
 
   /// 0 = retry forever.
   final int regRetryMaxAttempts;
+
+  /// Randomise each retry delay by this fraction of itself, in [0, 1].
+  /// 0 = SDK default (0.2).  Without it every device that lost the same
+  /// network re-registers on the same schedule and arrives at the registrar
+  /// as one burst.
+  final double regRetryJitter;
+
+  /// Fail an outgoing INVITE that gets no response at all after this many ms
+  /// (RFC 3261 Timer B).  0 = SDK default (32000); 8000-12000 fails fast on
+  /// mobile.  Only the `calling` state is watched — once the call is
+  /// `ringing` the far end is demonstrably reachable.
+  final int sipTimerBMs;
+
+  /// Fail a REGISTER that gets no response after this many ms (Timer F).
+  /// 0 = SDK default (32000).
+  final int sipTimerFMs;
+
+  // ── Degraded links ─────────────────────────────────────────────────────
+  // Handover (netMonitorIntervalSeconds and BareSDK.networkChanged) covers a
+  // changed local address.  These cover the other failure: the address stays
+  // put and the link goes bad — one bar of signal, a saturated uplink, a cell
+  // that stops forwarding packets without dropping the PDP context.  Nothing
+  // in SIP notices that on its own.
+
+  /// End a call after this many seconds with no inbound RTP; 0 = never
+  /// (default).  The fatal bound.  Only sendrecv streams are checked, so a
+  /// held call is never torn down.  Prefer [mediaStallMs] for a warning that
+  /// keeps the call up.
+  final int rtpTimeoutSeconds;
+
+  /// Warn after this many ms with no inbound RTP, as a [QualityAlertEvent]
+  /// with `issue == QualityIssue.mediaStall`; 0 = off.  Non-fatal, and the
+  /// only way a stall with no address change becomes visible at all.
+  /// Requires [statsIntervalMs] > 0.
+  final int mediaStallMs;
+
+  /// Lower the audio encoder bitrate under packet loss and raise it again on
+  /// recovery, driven by the loss the peer reports over RTCP.  Applied
+  /// through the codec's encoder-update path, so there is no re-INVITE and no
+  /// audio gap — and no effect for a fixed-rate codec such as G.711.
+  final bool adaptiveBitrate;
+
+  /// Adaptation floor in bps; 0 = SDK default (12000).
+  final int adaptMinBitrate;
+
+  /// Adaptation ceiling in bps; 0 = SDK default (32000).
+  final int adaptMaxBitrate;
+
+  /// Step the bitrate down above this loss percentage; 0 = default (5.0).
+  final double adaptLossDownPct;
+
+  /// Step the bitrate up below this loss percentage; 0 = default (1.0).
+  final double adaptLossUpPct;
+
+  /// Consecutive clean stats ticks required before a step up; 0 = default (5).
+  final int adaptRecoverTicks;
+
+  /// Expected packet loss handed to the Opus encoder, percent; 0 = off.
+  /// Turns on in-band FEC (LBRR) at both ends: the encoder spends part of its
+  /// budget on a redundant copy of the previous frame and the decoder uses it
+  /// to reconstruct a lost one.  Costs bitrate even on a clean link, hence
+  /// off by default; 10-20 suits mobile.  Set `opus.fec` as well.
+  final int opusExpectedLossPct;
+
+  /// Re-REGISTER immediately when a keepalive probe fails; default true.
+  /// Without it the account stays nominally registered until the next
+  /// refresh — up to [regExpires] of missed inbound calls.
+  final bool keepaliveReregister;
+
+  /// Walk the RFC 3263 SRV target list on registration retry; default true.
+  /// Ignored when [outboundProxy] is pinned, or when the server is an IP
+  /// literal or a WS/WSS URL, none of which has an ordered list to walk.
+  final bool dnsSrvFailover;
+
+  /// How to treat an ICE call on handover; see [IceHandover].
+  final IceHandover netIceHandover;
 
   // ── Quality / observability ────────────────────────────────────────────
   /// Emit [MediaStatsEvent] every N ms; 0 = disabled.
@@ -231,6 +342,7 @@ class BareSDKConfig {
     this.speakerGainDb = 0,
     this.opus = const OpusConfig(),
     this.platformAudioActivate = true,
+    this.appOwnedAudio = false,
     this.jitterBufferType = JitterBufferType.adaptive,
     this.jitterBufferMinMs = 0,
     this.jitterBufferMaxMs = 0,
@@ -241,10 +353,25 @@ class BareSDKConfig {
     this.regRetryMaxMs = 0,
     this.regRetryBackoff = 0,
     this.regRetryMaxAttempts = 0,
-    this.statsIntervalMs = 0,
-    this.mosAlertThreshold = 0,
-    this.lossAlertThreshold = 0,
-    this.jitterAlertThreshold = 0,
+    this.statsIntervalMs = 2000,
+    this.mosAlertThreshold = 3.5,
+    this.lossAlertThreshold = 5.0,
+    this.jitterAlertThreshold = 40.0,
+    this.regRetryJitter = 0,
+    this.sipTimerBMs = 0,
+    this.sipTimerFMs = 0,
+    this.rtpTimeoutSeconds = 0,
+    this.mediaStallMs = 4000,
+    this.adaptiveBitrate = false,
+    this.adaptMinBitrate = 0,
+    this.adaptMaxBitrate = 0,
+    this.adaptLossDownPct = 0,
+    this.adaptLossUpPct = 0,
+    this.adaptRecoverTicks = 0,
+    this.opusExpectedLossPct = 0,
+    this.keepaliveReregister = true,
+    this.dnsSrvFailover = true,
+    this.netIceHandover = IceHandover.bestEffort,
     this.tmpDir,
     this.traceSip = false,
     this.traceSdpDiff = false,
@@ -292,6 +419,7 @@ class BareSDKConfig {
       speakerGainDb: speakerGainDb,
       opus: opus,
       platformAudioActivate: platformAudioActivate,
+      appOwnedAudio: appOwnedAudio,
       jitterBufferType: jitterBufferType,
       jitterBufferMinMs: jitterBufferMinMs,
       jitterBufferMaxMs: jitterBufferMaxMs,
@@ -306,6 +434,21 @@ class BareSDKConfig {
       mosAlertThreshold: mosAlertThreshold,
       lossAlertThreshold: lossAlertThreshold,
       jitterAlertThreshold: jitterAlertThreshold,
+      regRetryJitter: regRetryJitter,
+      sipTimerBMs: sipTimerBMs,
+      sipTimerFMs: sipTimerFMs,
+      rtpTimeoutSeconds: rtpTimeoutSeconds,
+      mediaStallMs: mediaStallMs,
+      adaptiveBitrate: adaptiveBitrate,
+      adaptMinBitrate: adaptMinBitrate,
+      adaptMaxBitrate: adaptMaxBitrate,
+      adaptLossDownPct: adaptLossDownPct,
+      adaptLossUpPct: adaptLossUpPct,
+      adaptRecoverTicks: adaptRecoverTicks,
+      opusExpectedLossPct: opusExpectedLossPct,
+      keepaliveReregister: keepaliveReregister,
+      dnsSrvFailover: dnsSrvFailover,
+      netIceHandover: netIceHandover,
       tmpDir: tmpDir ?? this.tmpDir,
       traceSip: traceSip,
       traceSdpDiff: traceSdpDiff,
@@ -352,7 +495,9 @@ class AccountConfig {
   final String? pushToken;
   final String? pushParam;
 
-  /// Ordered codec preference by name; empty = global config codecs.
+  /// Ordered codec preference by name — `opus`, `ulaw`/`pcmu`, `alaw`/`pcma`.
+  /// Empty = global config codecs, falling back to `['opus', 'ulaw', 'alaw']`
+  /// when those are empty too.
   final List<String> audioCodecs;
   final DtmfMode dtmfMode;
 
@@ -514,6 +659,30 @@ NativeScope fillNativeConfig(
   r.mos_alert_threshold = conf.mosAlertThreshold;
   r.loss_alert_threshold = conf.lossAlertThreshold;
   r.jitter_alert_threshold = conf.jitterAlertThreshold;
+
+  // Degraded-link handling.  Fields whose Dart default is 0 are assigned only
+  // when set, so baresdk_config_init()'s value survives — the same convention
+  // the registration block above uses.  mediaStallMs and the two booleans
+  // carry meaningful non-zero defaults and are always written.
+  if (conf.regRetryJitter > 0) r.reg_retry_jitter = conf.regRetryJitter;
+  if (conf.sipTimerBMs > 0) r.sip_timer_b_ms = conf.sipTimerBMs;
+  if (conf.sipTimerFMs > 0) r.sip_timer_f_ms = conf.sipTimerFMs;
+  r.rtp_timeout_s = conf.rtpTimeoutSeconds;
+  r.media_stall_ms = conf.mediaStallMs;
+  r.adaptive_bitrate = conf.adaptiveBitrate;
+  if (conf.adaptMinBitrate > 0) r.adapt_min_bitrate = conf.adaptMinBitrate;
+  if (conf.adaptMaxBitrate > 0) r.adapt_max_bitrate = conf.adaptMaxBitrate;
+  if (conf.adaptLossDownPct > 0) {
+    r.adapt_loss_down_pct = conf.adaptLossDownPct;
+  }
+  if (conf.adaptLossUpPct > 0) r.adapt_loss_up_pct = conf.adaptLossUpPct;
+  if (conf.adaptRecoverTicks > 0) {
+    r.adapt_recover_ticks = conf.adaptRecoverTicks;
+  }
+  r.opus_expected_loss_pct = conf.opusExpectedLossPct;
+  r.keepalive_reregister = conf.keepaliveReregister;
+  r.dns_srv_failover = conf.dnsSrvFailover;
+  r.net_ice_handover = conf.netIceHandover.raw;
 
   r.tmp_dir = scope.str(conf.tmpDir);
   r.trace_sip = conf.traceSip;

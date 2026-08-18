@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef __ANDROID__
+#include <dirent.h>
+#endif
 #ifdef _WIN32
 #include <winsock2.h>
 #include <windows.h>
@@ -158,6 +161,7 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->reg_retry_initial_ms  = 2000;
 	cfg->reg_retry_max_ms      = 300000;
 	cfg->reg_retry_backoff     = 2.0f;
+	cfg->reg_retry_jitter      = 0.2f;
 	cfg->sip_t1_ms             = 500;
 	cfg->sip_t2_ms             = 4000;
 	cfg->sip_timer_b_ms        = 32000;
@@ -175,6 +179,31 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->platform_audio_activate = true;
 	cfg->opus.complexity       = -1;
 	/* mic_gain_db and speaker_gain_db default to 0.0f (unity) from memset */
+
+	/* Degraded-link handling.  Stats polling is on by default because
+	 * everything below reads from it: with stats_interval_ms at 0 baresip
+	 * does not even accumulate RTCP, so quality alerts, media-stall
+	 * detection and bitrate adaptation all silently do nothing.  The three
+	 * alert thresholds are set to the values the field docs recommend.
+	 *
+	 * rtp_timeout_s stays 0 — ending a call is destructive and belongs to
+	 * the app.  media_stall_ms gives the same information without it. */
+	cfg->stats_interval_ms     = 2000;
+	cfg->mos_alert_threshold   = 3.5f;
+	cfg->loss_alert_threshold  = 5.0f;
+	cfg->jitter_alert_threshold = 40.0f;
+	cfg->media_stall_ms        = 4000;
+	cfg->keepalive_reregister  = true;
+	cfg->dns_srv_failover      = true;
+	/* adaptive_bitrate defaults to false; the adapt_* bounds below are the
+	 * values used once it is switched on. */
+	cfg->adapt_min_bitrate     = 12000;
+	cfg->adapt_max_bitrate     = 32000;
+	cfg->adapt_loss_down_pct   = 5.0f;
+	cfg->adapt_loss_up_pct     = 1.0f;
+	cfg->adapt_recover_ticks   = 5;
+	/* rtp_timeout_s, opus_expected_loss_pct, adaptive_bitrate and
+	 * net_ice_handover (= BEST_EFFORT) all default to 0/false from memset */
 
 	/* Network handover — poll as a safety net on platforms with no OS
 	 * connectivity callback; mobile apps should set this to 0 and drive
@@ -206,6 +235,83 @@ static void bsdk_resolve_tmpdir(const char *override, char *buf, size_t sz)
 	str_ncpy(buf, (t && *t) ? t : "/tmp", sz);
 #endif
 }
+
+#ifdef __ANDROID__
+/* ── Android CA bundle ───────────────────────────────────────────────────────
+ *
+ * Android ships its trust store as one PEM per CA, named by the certificate's
+ * subject hash. Those names use OpenSSL's *old* MD5 hash; OpenSSL 1.0 switched
+ * to a SHA-1 based name, so handing the directory to OpenSSL as a CApath finds
+ * nothing and every server certificate fails with "unable to get local issuer
+ * certificate". There is no CA bundle file on Android to point at instead.
+ *
+ * Concatenating the directory into one PEM sidesteps the naming entirely — a
+ * CAfile is parsed start to end. Rebuilt on each init so OS trust-store
+ * updates (and user-removed CAs) are picked up.
+ *
+ * Returns a static path on success, or NULL to leave ca_cert_path unset.
+ */
+static const char *bsdk_android_ca_bundle(const char *dir)
+{
+	/* Conscrypt's copy is the live store on Android 14+, where the platform
+	 * one under /system can be stale. Prefer it, fall back for older. */
+	static const char *srcdirs[] = {
+		"/apex/com.android.conscrypt/cacerts",
+		"/system/etc/security/cacerts",
+	};
+	static char path[700];
+	size_t written = 0;
+
+	(void)re_snprintf(path, sizeof(path), "%s/android-ca-bundle.pem", dir);
+
+	FILE *out = fopen(path, "w");
+	if (!out)
+		return NULL;
+
+	for (size_t i = 0; i < RE_ARRAY_SIZE(srcdirs) && !written; i++) {
+		DIR *d = opendir(srcdirs[i]);
+		if (!d)
+			continue;
+
+		struct dirent *ent;
+		while ((ent = readdir(d)) != NULL) {
+			char cert[768];
+			char buf[4096];
+			size_t n;
+
+			if (ent->d_name[0] == '.')
+				continue;
+
+			(void)re_snprintf(cert, sizeof(cert), "%s/%s",
+			                  srcdirs[i], ent->d_name);
+
+			FILE *in = fopen(cert, "r");
+			if (!in)
+				continue;
+
+			while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+				if (fwrite(buf, 1, n, out) != n)
+					break;
+				written += n;
+			}
+			fclose(in);
+			/* Each file ends without a guaranteed newline. */
+			fputc('\n', out);
+		}
+		closedir(d);
+	}
+
+	fclose(out);
+
+	if (!written) {
+		warning("baresdk: no Android system CAs found; TLS server "
+		        "verification will fail unless ca_cert_path is set\n");
+		return NULL;
+	}
+
+	return path;
+}
+#endif
 
 /* ── baresdk_init ────────────────────────────────────────────────────────── */
 
@@ -279,8 +385,45 @@ int baresdk_init(const baresdk_config_t *cfg)
 		(void)re_snprintf(_confdir, sizeof(_confdir), "%s/.baresdk", _tmpbase);
 		(void)fs_mkdir(_confdir, 0700);
 		conf_path_set(_confdir);
+#ifdef __ANDROID__
+		if (!g_bsdk.cfg.ca_cert_path)
+			g_bsdk.cfg.ca_cert_path = bsdk_android_ca_bundle(_confdir);
+#endif
 	}
 	conf_configure_buf((const uint8_t *)"#\n", 2);
+
+#ifdef __ANDROID__
+	/* Android has no /etc/resolv.conf and stopped exposing net.dns* in
+	 * Oreo, so re's resolver comes up with zero nameservers and every
+	 * dnsc_query() returns ENOTSUP — registration fails with "Operation
+	 * not supported on transport endpoint [95]" before a packet is sent.
+	 *
+	 * Route A/AAAA through bionic's getaddrinfo() instead: it goes via
+	 * netd, so it honours the per-network resolver, VPNs and Private DNS.
+	 * re handles the rest — with getaddrinfo on and no nameservers,
+	 * dnsc_getaddrinfo_only() is true and sip_request_send() resolves the
+	 * host directly instead of trying an SRV lookup it cannot perform.
+	 *
+	 * Must precede baresip_init(), which is what allocates the resolver.
+	 */
+	conf_config()->net.use_getaddrinfo = true;
+#endif
+
+	/* Ignore v4/v6 link-local addresses (baresip defaults them on).
+	 *
+	 * A link-local address can bind a socket but cannot reach an off-link
+	 * registrar, so it is useless to a registrar-based SIP client — and it
+	 * is worse than useless on a phone. Android devices carry virtual
+	 * interfaces (a Samsung handset has dummy0 with an fe80:: address) that
+	 * appear and disappear independently of real connectivity. netmon.c
+	 * reconciles baresip's address list against the kernel's every poll, so
+	 * those addresses got added and removed in a loop: each flip looked like
+	 * a network change, fired a handover, and reset the SIP transports and
+	 * the audio path every few seconds. Mid-call that means silence.
+	 *
+	 * Must precede baresip_init(), which is what snapshots the interfaces.
+	 */
+	conf_config()->net.use_linklocal = false;
 
 	BSDK_TRACE("[bsdk] step 5: baresip_init (cfg=%p)\n", (void*)conf_config());
 #ifdef _WIN32
@@ -388,6 +531,18 @@ int baresdk_init(const baresdk_config_t *cfg)
 			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen, "opus_dtx yes\n");
 		if (op->fec)
 			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen, "opus_inbandfec yes\n");
+		/* opus_inbandfec only permits FEC; opus_packet_loss is what makes
+		 * it do anything.  The encoder sizes its redundant LBRR frame from
+		 * this percentage, and baresip's opus decoder gates FEC
+		 * reconstruction on `opus_packet_loss > 0` — so with it unset,
+		 * `opus.fec` alone conceals nothing. */
+		if (g_bsdk.cfg.opus_expected_loss_pct) {
+			uint32_t pl = g_bsdk.cfg.opus_expected_loss_pct;
+			if (pl > 100)
+				pl = 100;
+			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen,
+			                    "opus_packet_loss %u\n", pl);
+		}
 		if (op->stereo)
 			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen, "opus_stereo yes\n");
 		if (olen > 0)
@@ -448,6 +603,7 @@ fail:
 	warning("baresdk: init failed: %m\n", err);
 	bsdk_re_loop_stop();
 	bsdk_netmon_close();
+	bsdk_call_setup_watch_close();
 	bsdk_stats_close();
 	bsdk_trace_close();
 	bsdk_event_close();
@@ -566,6 +722,8 @@ void baresdk_shutdown(void)
 		struct baresdk_account *acct = le->data;
 		acct->destroyed = true;
 		tmr_cancel(&acct->retry_tmr);
+		tmr_cancel(&acct->reg_watch_tmr);
+		tmr_cancel(&acct->ka_tmr);
 		if (acct->ua)
 			bsdk_dispatch_sync(hangup_ua_fn, &acct->ua);
 		bsdk_acct_cfg_deep_free(acct);
@@ -579,11 +737,18 @@ void baresdk_shutdown(void)
 	/* After the loop has stopped so no handover timer can fire mid-teardown. */
 	BSDK_TRACE("[bsdk] shutdown: netmon_close\n");
 	bsdk_netmon_close();
+	bsdk_call_setup_watch_close();
 
 	BSDK_TRACE("[bsdk] shutdown: ua_close\n");
 	ua_close();
 	BSDK_TRACE("[bsdk] shutdown: module_app_unload\n");
 	module_app_unload();
+	BSDK_TRACE("[bsdk] shutdown: audio_external_close\n");
+	/* After ua_close/module unload — every audio stream is gone, so no
+	 * device of ours can still be open — and before baresip_close(), whose
+	 * baresip_init() counterpart re-inits ausrcl/auplayl and would strand
+	 * a registration we still believe we hold. */
+	bsdk_audio_external_close();
 #ifdef __ANDROID__
 	/* After ua_close/module unload — all audio streams are gone, the
 	 * OpenSLES engine can be destroyed. */

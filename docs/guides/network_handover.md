@@ -188,7 +188,8 @@ bool up = baresdk_network_is_up();            /* false = no routable address */
 | Both networks briefly down | `DOWN` emitted, handover held with exponential backoff (1→32 s), applied when an address returns. Transports are never flushed into a void |
 | Interface still coming up (address burst) | Debounced — the handover runs once, on the final address set |
 | Route changed, addresses unchanged | `baresdk_network_changed()` still re-checks each call's source address and re-INVITEs only what actually moved |
-| Address changed but a call's path did not | That call is skipped — no pointless re-INVITE |
+| Address changed but a call's path did not | That call is skipped — no pointless re-INVITE. **Except over WS/WSS**, see the row below |
+| WS/WSS call, path unchanged | Still re-INVITEd. A WebSocket client has no listening port, so its Contact is the RFC 7118 placeholder `sip:user@<ip>:9;transport=wss` and the server reaches it by remembering which WebSocket the dialog's requests arrived on. A transport reset always builds a new WebSocket, so without the re-INVITE that association is stale: media keeps flowing and your own BYE still gets out, but an **inbound BYE can never be delivered** and the call hangs in `ESTABLISHED`. The re-INVITE re-binds the dialog to the live connection |
 | IPv4 ↔ IPv6 | Handled; the address family follows the new source address |
 | DNS servers changed | Resolvers refreshed, unless you pinned your own nameservers |
 | Dead TCP/TLS/WSS sockets | Dropped by the transport flush, so the next request opens a fresh connection instead of stalling to Timer B |
@@ -209,7 +210,7 @@ the SDP has to change.
 
 ---
 
-## Limitation: ICE
+## ICE calls
 
 **ICE calls get best-effort recovery, not a true ICE restart.**
 
@@ -230,3 +231,35 @@ Practically:
 
 If your deployment is mobile-first, prefer STUN plus symmetric RTP over ICE and
 let the handover do its work.
+
+### Making the failure visible and quick
+
+Since the limitation cannot be engineered away from outside baresip, the SDK
+stops pretending otherwise. Every such call emits `BARESDK_NET_CALL_ICE_STALE`
+once per handover, *before* the re-INVITE, so you can tell the user something
+useful while the attempt is in flight rather than after it has failed.
+
+`cfg.net_ice_handover` then decides how long to keep trying:
+
+| Value | Behaviour |
+|---|---|
+| `BARESDK_ICE_HANDOVER_BEST_EFFORT` (default) | The full `net_verify_ms` × `net_max_attempts` budget — 24 s at the defaults. Right when calls often are direct or TURN-relayed, because those do recover |
+| `BARESDK_ICE_HANDOVER_FAIL_FAST` | One attempt, then `CALL_MIGRATION_FAILED`. Right when calls are ICE+TURN over cellular: re-offering the same wrong candidates cannot succeed, and 24 s of silence is worse for the user than a prompt "reconnecting…" |
+
+`max_attempts` in the event reflects the budget the call is actually held to, so
+a fail-fast call renders as `1/1` rather than promising retries it will not make.
+
+```c
+case BARESDK_NET_CALL_ICE_STALE:
+    /* Recovery may not work; say so now, not in 24 seconds. */
+    ui_show_reconnecting(n->call);
+    break;
+
+case BARESDK_NET_CALL_MIGRATION_FAILED:
+    if (n->ice)
+        redial(n->call);   /* a fresh call gathers fresh candidates */
+    break;
+```
+
+Re-placing the call is the only complete remedy: a new call allocates a new
+media session, which gathers candidates on the network you are actually on.

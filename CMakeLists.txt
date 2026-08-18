@@ -9,6 +9,39 @@ include(ExternalProject)
 # into baresdk_core and returns; the outer build then merges it with re + baresip.
 # ---------------------------------------------------------------------------
 option(BARESDK_SRC_MODE "Compile baresdk sources only (internal use)" OFF)
+
+# ---------------------------------------------------------------------------
+# HAVE_UNIXSOCK is an ABI switch, not a feature flag — it MUST be identical in
+# re, baresip and baresdk_core. Set here, above the BARESDK_SRC_MODE branch,
+# because the core sources are configured by a *separate* CMake invocation
+# from the one that configures re and baresip: anything set inside a branch
+# reaches only one of them.
+#
+# re's `struct sa` embeds `struct sockaddr_un` in its union only when
+# HAVE_UNIXSOCK != 0, which changes sizeof(struct sa) from ~32 to ~112 bytes.
+# `struct sip_msg` opens with two `struct sa` (src, dst), so a disagreement
+# shifts every field after them by ~160 bytes. This does not fail to link and
+# does not crash — it builds, runs, and silently reads the other library's
+# structs at the wrong offsets. Android used to pass USE_UNIXSOCK=OFF to re
+# alone: re read scode=200 from a REGISTER response while baresip read 55857
+# from the very same message, so registration completed on the wire and no
+# event was ever emitted. The app sat in "registering" forever, Android only.
+#
+# The default is "on" in three separate places: re's own
+# option(USE_UNIXSOCK ... ON), baresip's inherited copy, and the header guard
+# `#if !defined(HAVE_UNIXSOCK) || HAVE_UNIXSOCK == 1` — so a target that never
+# hears about the flag at all still gets the *large* struct. Set it explicitly
+# on all three rather than trusting any of those defaults to agree.
+set(BARESDK_USE_UNIXSOCK ON CACHE BOOL
+    "Include AF_UNIX in re's struct sa (ABI-critical; must match everywhere)")
+if(BARESDK_USE_UNIXSOCK)
+  set(_BSDK_UNIXSOCK_CM "ON")
+  set(_BSDK_UNIXSOCK_DEF "HAVE_UNIXSOCK=1")
+else()
+  set(_BSDK_UNIXSOCK_CM "OFF")
+  set(_BSDK_UNIXSOCK_DEF "HAVE_UNIXSOCK=0")
+endif()
+
 if(BARESDK_SRC_MODE)
   cmake_minimum_required(VERSION 3.19)
   project(baresdk_core VERSION 1.0.0 LANGUAGES C)
@@ -59,6 +92,9 @@ if(BARESDK_SRC_MODE)
   else()
     target_compile_definitions(baresdk_core PRIVATE BARESDK_PROFILE_DESKTOP=1)
   endif()
+
+  # ABI-critical: must match re and baresip — see the HAVE_UNIXSOCK note above.
+  target_compile_definitions(baresdk_core PRIVATE ${_BSDK_UNIXSOCK_DEF})
 
   # WebRTC AEC opt-in
   if(BARESDK_WITH_WEBRTC_AEC)
@@ -112,6 +148,16 @@ add_custom_target(gen_hpp ALL
 
 set(BARESDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
 set(BARESDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
+# Desktop targets link the platform's own libssl/libcrypto. Android has no
+# system OpenSSL, so cross-compiled targets build it from third_party/openssl.
+if(ANDROID_ABI AND BARESDK_TLS STREQUAL "openssl")
+  set(_build_openssl_default ON)
+else()
+  set(_build_openssl_default OFF)
+endif()
+option(BARESDK_BUILD_OPENSSL
+       "Cross-build OpenSSL from third_party/openssl instead of using a system one"
+       ${_build_openssl_default})
 option(BARESDK_SHARED "Also produce a shared library (.so/.dylib/.dll) from the merged archive" OFF)
 if(WIN32 OR ANDROID_ABI OR CMAKE_SYSTEM_NAME MATCHES "iOS")
   set(_aec_default OFF)
@@ -163,6 +209,8 @@ endif()
 
 set(BARESDK_MBEDTLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls"
     CACHE PATH "Path to mbedTLS source tree (required when BARESDK_TLS=mbedtls)")
+set(BARESDK_OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openssl"
+    CACHE PATH "Path to OpenSSL source tree (required when BARESDK_BUILD_OPENSSL=ON)")
 set(BARESDK_OPUS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus"
     CACHE PATH "Path to libopus source tree (required when opus module is enabled)")
 set(BARESDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist"
@@ -271,6 +319,133 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# Phase 0.5 (Android): cross-build OpenSSL
+#
+# libre implements TLS *only* over OpenSSL — src/tls/ has an openssl/ backend
+# and nothing else; USE_MBEDTLS there only swaps the hmac/md5/sha primitives.
+# Without OpenSSL, re compiles src/tls/stub.c and src/aes/stub.c, so tls_alloc,
+# dtls_listen and aes_alloc are all no-ops. That silently costs the whole
+# secure stack: baresip's SIP/TLS and SIP/WSS transports are behind
+# #ifdef USE_TLS (which re-config.cmake defines only for OpenSSL), and its
+# dtls_srtp module returns early on `NOT USE_OPENSSL`. Android has no system
+# OpenSSL, so build one here.
+# ---------------------------------------------------------------------------
+set(OPENSSL_ARGS "")
+set(OPENSSL_EXTRA_LIBS "")
+set(OPENSSL_DEPENDS "")
+set(BARESDK_OPENSSL_LINK "")
+
+if(BARESDK_BUILD_OPENSSL)
+  if(NOT EXISTS "${BARESDK_OPENSSL_SOURCE_DIR}/Configure")
+    message(FATAL_ERROR
+      "BARESDK_BUILD_OPENSSL=ON but OpenSSL sources not found at "
+      "${BARESDK_OPENSSL_SOURCE_DIR}. "
+      "Run: BARESDK_OPENSSL_SRC=1 scripts/fetch-third-party.sh")
+  endif()
+
+  find_package(Perl REQUIRED)   # OpenSSL's Configure is a perl script
+
+  # OpenSSL names its Android targets by architecture, not by Android ABI.
+  if(ANDROID_ABI STREQUAL "arm64-v8a")
+    set(_OSSL_TARGET "android-arm64")
+  elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(_OSSL_TARGET "android-arm")
+  elseif(ANDROID_ABI STREQUAL "x86_64")
+    set(_OSSL_TARGET "android-x86_64")
+  elseif(ANDROID_ABI STREQUAL "x86")
+    set(_OSSL_TARGET "android-x86")
+  else()
+    message(FATAL_ERROR "No OpenSSL target mapping for ANDROID_ABI=${ANDROID_ABI}")
+  endif()
+
+  # Configure needs the NDK root plus its clang wrappers on PATH. Derive both
+  # from the compiler CMake already resolved rather than trusting an env var:
+  # <ndk>/toolchains/llvm/prebuilt/<host>/bin/clang.
+  get_filename_component(_OSSL_LLVM_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
+  if(DEFINED ANDROID_NDK)
+    set(_OSSL_NDK "${ANDROID_NDK}")
+  else()
+    get_filename_component(_OSSL_NDK "${_OSSL_LLVM_BIN}/../../../.." ABSOLUTE)
+  endif()
+
+  if(DEFINED ANDROID_PLATFORM_LEVEL)
+    set(_OSSL_API "${ANDROID_PLATFORM_LEVEL}")
+  else()
+    set(_OSSL_API "${CMAKE_SYSTEM_VERSION}")
+  endif()
+
+  set(_SSL_A    "${SYSROOT}/lib/libssl.a")
+  set(_CRYPTO_A "${SYSROOT}/lib/libcrypto.a")
+
+  include(ProcessorCount)
+  ProcessorCount(_OSSL_JOBS)
+  if(_OSSL_JOBS EQUAL 0)
+    set(_OSSL_JOBS 1)
+  endif()
+
+  # --libdir=lib: without it OpenSSL picks lib64 on 64-bit targets and the
+  # BUILD_BYPRODUCTS paths below would never appear.
+  # no-apps/no-docs/no-tests: we only ever consume the static libraries.
+  #
+  # The trim list below is about size. OpenSSL 3's default provider registers
+  # every algorithm in one table, so a static link drags in essentially all of
+  # libcrypto whatever the app calls — several MB per ABI. None of these
+  # ciphers/digests is negotiable by a SIP registrar or a DTLS-SRTP peer, so
+  # dropping them costs no interoperability. Deliberately left enabled: md5
+  # (SIP digest auth), all of DTLS (dtls_srtp), and psk/dsa, which a stray
+  # deployment could still pick.
+  set(_OSSL_TRIM
+    no-legacy no-engine no-comp no-ssl3 no-ssl3-method no-weak-ssl-ciphers
+    no-srp no-ec2m
+    no-idea no-rc2 no-rc4 no-rc5 no-bf no-cast no-seed no-camellia no-aria
+    no-md2 no-md4 no-mdc2 no-whirlpool
+    no-sm2 no-sm3 no-sm4 no-gost)
+  ExternalProject_Add(openssl_project
+    SOURCE_DIR "${BARESDK_OPENSSL_SOURCE_DIR}"
+    BINARY_DIR "${CMAKE_BINARY_DIR}/openssl-build"
+    CONFIGURE_COMMAND
+      ${CMAKE_COMMAND} -E env
+        "ANDROID_NDK_ROOT=${_OSSL_NDK}"
+        "PATH=${_OSSL_LLVM_BIN}:$ENV{PATH}"
+        "${PERL_EXECUTABLE}" "${BARESDK_OPENSSL_SOURCE_DIR}/Configure"
+        ${_OSSL_TARGET}
+        "-D__ANDROID_API__=${_OSSL_API}"
+        no-shared no-tests no-apps no-docs
+        ${_OSSL_TRIM}
+        "--prefix=${SYSROOT}"
+        "--openssldir=${SYSROOT}/ssl"
+        "--libdir=lib"
+    BUILD_COMMAND
+      ${CMAKE_COMMAND} -E env
+        "ANDROID_NDK_ROOT=${_OSSL_NDK}"
+        "PATH=${_OSSL_LLVM_BIN}:$ENV{PATH}"
+        make -j${_OSSL_JOBS} build_libs
+    INSTALL_COMMAND
+      ${CMAKE_COMMAND} -E env
+        "ANDROID_NDK_ROOT=${_OSSL_NDK}"
+        "PATH=${_OSSL_LLVM_BIN}:$ENV{PATH}"
+        make install_dev
+    BUILD_BYPRODUCTS "${_SSL_A}" "${_CRYPTO_A}"
+  )
+
+  # Pre-seed FindOpenSSL's cache variables so re/baresip resolve the archives
+  # we just built. The NDK toolchain restricts find_library() to the NDK
+  # sysroot, so an unaided find_package(OpenSSL) would come up empty.
+  set(OPENSSL_ARGS
+    "-DOPENSSL_USE_STATIC_LIBS=ON"
+    "-DOPENSSL_ROOT_DIR=${SYSROOT}"
+    "-DOPENSSL_INCLUDE_DIR=${SYSROOT}/include"
+    "-DOPENSSL_SSL_LIBRARY=${_SSL_A}"
+    "-DOPENSSL_CRYPTO_LIBRARY=${_CRYPTO_A}"
+  )
+  set(OPENSSL_EXTRA_LIBS "${_SSL_A}" "${_CRYPTO_A}")
+  set(OPENSSL_DEPENDS openssl_project)
+  # Same rationale as BARESDK_MBEDTLS_LINK: hand baresip the archives directly
+  # instead of relying on FindOpenSSL re-running in its cmake context.
+  set(BARESDK_OPENSSL_LINK "|${_SSL_A}|${_CRYPTO_A}")
+endif()
+
+# ---------------------------------------------------------------------------
 # Phase 1 (mobile only): build mbedTLS
 # ---------------------------------------------------------------------------
 set(MBEDTLS_ARGS "")
@@ -344,6 +519,20 @@ if("opus" IN_LIST BARESDK_MODULES)
 
   set(_OPUS_A "${SYSROOT}/lib/${_LPFX}opus${_EXT}")
 
+  set(_OPUS_PLATFORM_ARGS "")
+  if(ANDROID_ABI STREQUAL "armeabi-v7a"
+     AND (NOT DEFINED ANDROID_ARM_NEON OR ANDROID_ARM_NEON))
+    # opus compiles dnn/arm/arm_dnn_map.c whenever OPUS_ARM_MAY_HAVE_NEON is
+    # set, but the compute_activation_*/compute_conv2d_* implementations its
+    # dispatch tables point at only exist when OPUS_DNN is on (DEEP_PLC / DRED
+    # / OSCE — all off here). Result: four dangling symbols in libbaresdk.so
+    # and a dlopen() failure on 32-bit devices. Those tables are compiled out
+    # under OPUS_ARM_PRESUME_NEON, which is what aarch64 already gets for free
+    # (OpusConfig.cmake forces it there) — that is why only v7a is affected.
+    # Safe to presume: the NDK builds armeabi-v7a with NEON on by default.
+    list(APPEND _OPUS_PLATFORM_ARGS "-DOPUS_PRESUME_NEON=ON")
+  endif()
+
   ExternalProject_Add(opus_project
     SOURCE_DIR "${BARESDK_OPUS_SOURCE_DIR}"
     BINARY_DIR "${CMAKE_BINARY_DIR}/opus-build"
@@ -355,6 +544,7 @@ if("opus" IN_LIST BARESDK_MODULES)
       -DOPUS_BUILD_SHARED_LIBRARY=OFF
       -DOPUS_BUILD_TESTING=OFF
       -DOPUS_INSTALL_PKG_CONFIG_MODULE=OFF
+      ${_OPUS_PLATFORM_ARGS}
       ${_NOTRACK_ARG}
       ${CROSS_ARGS}
     BUILD_BYPRODUCTS "${_OPUS_A}"
@@ -373,9 +563,7 @@ endif()
 # ---------------------------------------------------------------------------
 set(RE_PLATFORM_ARGS "")
 set(_RE_CFLAGS "")
-if(ANDROID_ABI)
-  list(APPEND RE_PLATFORM_ARGS "-DUSE_UNIXSOCK=OFF")
-endif()
+list(APPEND RE_PLATFORM_ARGS "-DUSE_UNIXSOCK=${_BSDK_UNIXSOCK_CM}")
 if(BARESDK_TLS STREQUAL "mbedtls" AND NOT MSVC)
   # Upstream re only adds OPENSSL_INCLUDE_DIR/ZLIB to re-objs includes —
   # never MBEDTLS_INCLUDE_DIR — so hand the header path to the compiler.
@@ -395,7 +583,7 @@ if(NOT _RE_CFLAGS STREQUAL "")
 endif()
 
 ExternalProject_Add(re_project
-  DEPENDS ${MBEDTLS_DEPENDS}
+  DEPENDS ${MBEDTLS_DEPENDS} ${OPENSSL_DEPENDS}
   SOURCE_DIR "${BARESDK_RE_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/re-build"
   LIST_SEPARATOR "|"
@@ -409,6 +597,7 @@ ExternalProject_Add(re_project
     -DHAVE_THREADS=OFF
     ${RE_PLATFORM_ARGS}
     ${MBEDTLS_ARGS}
+    ${OPENSSL_ARGS}
     ${_NOTRACK_ARG}
     ${CROSS_ARGS}
   BUILD_BYPRODUCTS "${_RE_A}"
@@ -431,7 +620,7 @@ endif()
 string(REPLACE ";" "|" BARESDK_MODULES_SEP "${BARESDK_MODULES}")
 
 ExternalProject_Add(baresip_project
-  DEPENDS re_project ${OPUS_DEPENDS}
+  DEPENDS re_project ${OPUS_DEPENDS} ${OPENSSL_DEPENDS}
   SOURCE_DIR "${BARESDK_BARESIP_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/baresip-build"
   LIST_SEPARATOR "|"
@@ -442,19 +631,30 @@ ExternalProject_Add(baresip_project
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     -DRE_INCLUDE_DIR=${SYSROOT}/include/re
     -DRE_INCLUDE_DIRS=${SYSROOT}/include/re
-    "-DRE_LIBRARY=${_RE_A}${BARESDK_MBEDTLS_LINK}"
-    "-DRE_LIBRARIES=${_RE_A}${BARESDK_MBEDTLS_LINK}"
+    "-DRE_LIBRARY=${_RE_A}${BARESDK_MBEDTLS_LINK}${BARESDK_OPENSSL_LINK}"
+    "-DRE_LIBRARIES=${_RE_A}${BARESDK_MBEDTLS_LINK}${BARESDK_OPENSSL_LINK}"
     -Dre_DIR=${SYSROOT}/lib/cmake/re
     -DSTATIC=ON
     "-DMODULES=${BARESDK_MODULES_SEP}"
     -DBUILD_TESTING=OFF
-    "-DCMAKE_C_FLAGS=-DJBUF_STAT=1"
+    # Must match re and baresdk_core — see the HAVE_UNIXSOCK note above.
+    -DUSE_UNIXSOCK=${_BSDK_UNIXSOCK_CM}
+    "-DCMAKE_C_FLAGS=-DJBUF_STAT=1 -D${_BSDK_UNIXSOCK_DEF}"
     -DHAVE_THREADS=OFF
     ${MBEDTLS_ARGS}
+    ${OPENSSL_ARGS}
     ${OPUS_ARGS}
     ${_NOTRACK_ARG}
     ${CROSS_ARGS}
   BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target baresip
+  # baresip adds test/ and webrtc/ to ALL unconditionally (BUILD_TESTING is not
+  # honoured), so the default install step ("--target install" => builds ALL)
+  # drags in selftest and baresip-webrtc. Neither ships in the SDK, and
+  # test/sip/user.c does not even compile on Android (its "struct user" clashes
+  # with the NDK's <sys/user.h>). Install the Development component directly:
+  # that is the static archive, the public headers and libbaresip.pc, all of
+  # which the BUILD_COMMAND above has already produced.
+  INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --component Development
   BUILD_BYPRODUCTS "${_BARE_A}"
 )
 
@@ -485,6 +685,13 @@ ExternalProject_Add(baresdk_core_project
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     ${_NOTRACK_ARG}
     ${CROSS_ARGS}
+  # BUILD_ALWAYS: this project compiles baresdk's *own* src/ and platform/.
+  # An ExternalProject build step is stamped and runs once, so without this an
+  # incremental build silently relinks the .so from a stale baresdk_core.a and
+  # local edits appear to have no effect. The inner ninja no-ops when nothing
+  # changed, so the cost is a directory scan. Third-party projects keep their
+  # stamps — their sources are pinned and only move when a revision changes.
+  BUILD_ALWAYS 1
   BUILD_BYPRODUCTS "${_CORE_A}"
   INSTALL_COMMAND ""
 )
@@ -502,7 +709,8 @@ endif()
 
 baresdk_merge(
   OUTPUT   "${_OUT}"
-  INPUTS   "${_CORE_A}" "${_RE_A}" "${_BARE_A}" ${MBEDTLS_EXTRA_LIBS} ${OPUS_EXTRA_LIBS}
+  INPUTS   "${_CORE_A}" "${_RE_A}" "${_BARE_A}" ${MBEDTLS_EXTRA_LIBS}
+           ${OPENSSL_EXTRA_LIBS} ${OPUS_EXTRA_LIBS}
   DEPENDS  baresdk_core_project
 )
 
@@ -521,6 +729,7 @@ if(BARESDK_SHARED)
       OUTPUT  "${_SHARED_OUT}"
       COMMAND "${CMAKE_C_COMPILER}" -dynamiclib
               -Wl,-all_load "${_OUT}" -Wl,-noall_load
+              -lz
               -framework CoreFoundation -framework Security
               -o "${_SHARED_OUT}"
       DEPENDS baresdk "${_OUT}"
@@ -550,26 +759,57 @@ if(BARESDK_SHARED)
       # lib prefix: Android's APK packager and dlopen conventions expect
       # lib<name>.so; the Dart loader opens "libbaresdk.so".
       set(_SHARED_OUT "${CMAKE_BINARY_DIR}/libbaresdk.so")
-      set(_SHARED_PLATFORM_LIBS -llog -lOpenSLES -landroid -lm)
+      # -lz: re's cmake defines USE_ZLIB whenever find_package(ZLIB) succeeds,
+      # which it does against the NDK sysroot, and re_crc32() then calls zlib's
+      # crc32() for the STUN FINGERPRINT attribute. Upstream re expects
+      # ZLIB::ZLIB on the link line; this command links the merged archive by
+      # hand, so it has to say so itself. Omitting it shipped a .so with a
+      # dangling `crc32` that dlopen() rejected at load (BIND_NOW). libz.so is
+      # one of Android's stable public system libraries.
+      set(_SHARED_PLATFORM_LIBS -llog -lOpenSLES -landroid -lm -lz)
       # The custom command invokes the bare clang driver, so the Android
       # target triple + sysroot must be passed explicitly (the toolchain
       # file only wires them into CMake-managed targets).
       # -Wl,-z,max-page-size=16384: Google Play 16 KB page requirement.
+      # -Wl,--no-undefined: a -shared link happily leaves strong undefined
+      # symbols dangling and the failure only surfaces as a dlopen() error on
+      # a real device. Fail at link time instead (weak undefs, e.g.
+      # memfd_create below the target API level, are still allowed).
       set(_SHARED_LINK_EXTRA
           --target=${CMAKE_C_COMPILER_TARGET}
           --sysroot=${CMAKE_SYSROOT}
-          -Wl,-z,max-page-size=16384)
+          -Wl,-z,max-page-size=16384
+          -Wl,--no-undefined)
     else()
       set(_SHARED_OUT "${CMAKE_BINARY_DIR}/baresdk.so")
       set(_SHARED_PLATFORM_LIBS -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv -lpulse)
+    endif()
+    # --whole-archive exists for the baresip modules: each registers itself
+    # from a constructor, so nothing references it and on-demand extraction
+    # would drop them all. OpenSSL has no such objects — it is only ever
+    # called directly — so keep it outside the group and let the linker take
+    # what it needs. Inside, --whole-archive would add ~6 MB of unreferenced
+    # libcrypto to every ABI. The merged baresdk.a still bundles OpenSSL, so
+    # static consumers keep getting one self-contained archive.
+    if(OPENSSL_EXTRA_LIBS)
+      set(_WHOLE_LIBS "${_CORE_A}" "${_RE_A}" "${_BARE_A}"
+                      ${MBEDTLS_EXTRA_LIBS} ${OPUS_EXTRA_LIBS})
+      set(_ONDEMAND_LIBS ${OPENSSL_EXTRA_LIBS})
+    else()
+      set(_WHOLE_LIBS "${_OUT}")
+      set(_ONDEMAND_LIBS "")
     endif()
     # opus is already merged into baresdk.a via OPUS_EXTRA_LIBS — no -lopus needed
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
       COMMAND "${CMAKE_C_COMPILER}" -shared
               -Wl,--wrap=websock_connect
+              # Reuses the one WebSocket for in-dialog requests; see the
+              # in-dialog reuse note in src/ws_path.c.
+              -Wl,--wrap=sip_transp_send
               ${_SHARED_LINK_EXTRA}
-              -Wl,--whole-archive "${_OUT}" -Wl,--no-whole-archive
+              -Wl,--whole-archive ${_WHOLE_LIBS} -Wl,--no-whole-archive
+              ${_ONDEMAND_LIBS}
               ${_SHARED_PLATFORM_LIBS}
               -o "${_SHARED_OUT}"
       DEPENDS baresdk "${_OUT}"

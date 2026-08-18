@@ -180,10 +180,17 @@ class PresenceStateEvent:
 class QualityAlertEvent:
     type: str = field(init=False, default="quality_alert")
     call: object
-    issue: str           # "mos" | "loss" | "jitter" | "rtt"
+    # "mos" | "loss" | "jitter" | "rtt" | "media_stall"
+    #
+    # "media_stall" means no inbound RTP for configure(media_stall_ms=...) —
+    # the link is up and the call is nominally fine, but no audio is arriving.
+    # `value` is the stall duration in ms.  Non-fatal; it fires again with
+    # recovering=True when packets resume.  Use configure(rtp_timeout_s=...)
+    # to end such a call instead of just reporting it.
+    issue: str
     value: float
     threshold: float
-    recovering: bool
+    recovering: bool   # True = the value came back across the threshold
 
 
 @dataclass
@@ -193,7 +200,14 @@ class NetworkEvent:
     stage is one of:
       change_detected, down, up, transport_reset, reregistering,
       call_migrating, call_migrate_accepted, call_migrated,
-      call_migration_failed, call_deferred, handover_failed
+      call_migration_failed, call_deferred, handover_failed,
+      call_ice_stale
+
+    call_ice_stale says this call negotiated ICE, so its gathered candidates
+    are now wrong and cannot be re-gathered mid-call.  The re-INVITE is still
+    sent — it recovers a direct or TURN-relayed path — but if it fails the
+    remedy is to re-place the call.  configure(net_ice_handover=1) makes the
+    SDK give up after one attempt rather than retrying.
 
     Typical logging:
         if ev.stage == "call_migrating":

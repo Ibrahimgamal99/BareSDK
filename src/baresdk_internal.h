@@ -105,6 +105,11 @@ int bsdk_trace_enabled(void);
 
 /* ── Account ───────────────────────────────────────────────────────────── */
 
+/* Cap on SRV targets kept per account for failover.  dns.c returns up to 16;
+ * walking more than a handful of dead proxies is slower than backing off and
+ * retrying the first one. */
+#define BSDK_SRV_MAX_TARGETS 4
+
 struct baresdk_account {
 	struct le                 le;
 	struct ua                *ua;
@@ -130,11 +135,19 @@ struct baresdk_account {
 	uint16_t                  parsed_port;
 	baresdk_transport_t       parsed_transport;
 	char                      auto_server_url[512];
+	/* WS/WSS connection pinning claimed at create time and released in the
+	 * destructor — see bsdk_ws_set_server(). ws_port 0 = nothing claimed. */
+	char                      ws_host[256];
+	char                      ws_pin_path[256];
+	uint16_t                  ws_port;
 	baresdk_reg_state_t       reg_state;
 	baresdk_error_t           reg_error;
 	char                      reg_error_str[256];
 	uint32_t                  retry_attempt;
 	struct tmr                retry_tmr;
+	/* Registration watchdog — see bsdk_account_watch_registration(). */
+	struct tmr                reg_watch_tmr;
+	uint32_t                  reg_watch_elapsed_ms;
 	bool                      retry_policy_set;
 	uint32_t                  retry_initial_ms;
 	uint32_t                  retry_max_ms;
@@ -146,6 +159,20 @@ struct baresdk_account {
 	 * a created-but-never-registered account is left alone on handover. */
 	bool                      reg_wanted;
 	struct list               custom_hdrs;
+
+	/* ── RFC 3263 SRV failover (account.c; re_main thread only) ──────
+	 * Outbound-proxy URIs for this account's SRV targets, in the order a
+	 * client must try them.  Populated once, asynchronously, on first
+	 * register; srv_idx advances one target per failed attempt. */
+	char                      srv_uri[BSDK_SRV_MAX_TARGETS][320];
+	uint8_t                   srv_count;
+	uint8_t                   srv_idx;
+	bool                      srv_pending;   /* lookup in flight */
+	bool                      srv_tried;     /* lookup already attempted */
+
+	/* ── Keepalive / reachability probe (account.c) ──────────────────── */
+	struct tmr                ka_tmr;
+	bool                      ka_in_flight;
 };
 
 /* ── Call ──────────────────────────────────────────────────────────────── */
@@ -201,6 +228,18 @@ struct baresdk_call {
 	uint32_t                   net_rx_at_mig;  /* rx packets when re-INVITE sent */
 	uint64_t                   net_mig_start;  /* tmr_jiffies() when migration began */
 	struct sa                  net_mig_laddr;  /* target local address */
+	bool                       net_ice_stale_sent; /* ICE_STALE emitted this gen */
+	/* ── Degraded-link adaptation (adapt.c; re_main thread only) ────── */
+	uint32_t                   adapt_bitrate;     /* applied bps; 0 = negotiated */
+	uint32_t                   adapt_clean_ticks; /* consecutive low-loss ticks */
+	uint32_t                   stall_rx_packets;  /* rx count at last advance */
+	uint64_t                   stall_since;       /* tmr_jiffies() of last advance */
+	bool                       stall_active;      /* MEDIA_STALL alert outstanding */
+	/* Call-setup watchdog (call.c).  tmr_jiffies() when the INVITE went
+	 * out, 0 once the call has left CALLING.  A timestamp rather than a
+	 * per-call struct tmr: the sweep timer is global, so there is no timer
+	 * to cancel from the destructor (which does not run on re_main). */
+	uint64_t                   setup_start;
 };
 
 /* Per-call migration state machine (struct baresdk_call.net_mig_state). */
@@ -257,6 +296,28 @@ void bsdk_re_loop_stop(void);
 
 int modules_init(void);
 
+/* True when the platform audio driver that modules_init() settled on captures
+ * through the OS voice path, so the device has already cancelled the echo
+ * before we see a sample (Android sles_vc, iOS audiounit).  Valid only after
+ * modules_init(); false everywhere else, including the stock opensles
+ * fallback and every desktop driver. */
+bool bsdk_platform_has_aec(void);
+
+/* Name of the platform device module modules_init() selected ("sles_vc",
+ * "audiounit", "pulse", ...), or NULL when this build has none.  Used to
+ * restore the SDK-owned device after baresdk_audio_use_external(false). */
+const char *bsdk_platform_audio_mod(void);
+
+/* ── audio_external.c ──────────────────────────────────────────────────── */
+
+int  bsdk_audio_external_init(void);
+void bsdk_audio_external_close(void);
+
+/* True while the app-owned device is the one selected, i.e. between
+ * baresdk_audio_use_external(true) and (false).  Reads conf_config(), so it
+ * must be called on the re thread.  Defined in audio.c next to the switch. */
+bool bsdk_audio_external_selected(void);
+
 #ifdef __ANDROID__
 /* platform/android/sles_vc.c — OpenSLES driver with the Android
  * voice-communication recording preset (platform AEC/NS) and voice
@@ -280,6 +341,15 @@ int bsdk_platform_audio_init(bool activate);
 
 struct baresdk_account *bsdk_account_find_by_ua(const struct ua *ua);
 void bsdk_account_schedule_retry(struct baresdk_account *acct);
+void bsdk_account_watch_registration(struct baresdk_account *acct);
+
+/* Keepalive / reachability probe — cfg.keepalive_interval.  _arm() on a
+ * successful registration, _cancel() when the account stops being
+ * registered. */
+void bsdk_account_keepalive_arm(struct baresdk_account *acct);
+void bsdk_account_keepalive_cancel(struct baresdk_account *acct);
+/* Kick off the one-shot SRV lookup that feeds failover, if eligible. */
+void bsdk_account_srv_resolve(struct baresdk_account *acct);
 
 /* ── call.c ────────────────────────────────────────────────────────────── */
 
@@ -293,6 +363,12 @@ struct baresdk_call *bsdk_call_find(const struct call *bc);
 void bsdk_call_register(struct baresdk_call *lc);
 void bsdk_call_unregister(struct baresdk_call *lc);
 void bsdk_call_foreach(void (*fn)(struct baresdk_call *, void *), void *arg);
+
+/* Call-setup watchdog — cfg.sip_timer_b_ms.  _start() on a fresh outgoing
+ * call, _cancel() once it is answered or gone; _close() at shutdown. */
+void bsdk_call_setup_watch_start(struct baresdk_call *lc);
+void bsdk_call_setup_watch_cancel(struct baresdk_call *lc);
+void bsdk_call_setup_watch_close(void);
 
 /* ── timers.c ──────────────────────────────────────────────────────────── */
 
@@ -338,6 +414,10 @@ void bsdk_audio_processing_init(bool ns, bool agc,
                                 float mic_db, float spk_db);
 void bsdk_audio_processing_close(void);
 
+/* Whether the half-duplex TX suppressor should run: SUPPRESSOR mode AND no
+ * platform echo canceller underneath us (see bsdk_platform_has_aec). */
+bool bsdk_aec_suppressor_wanted(baresdk_aec_mode_t mode);
+
 /* Atomic gain accessors used by the setters in audio.c. */
 void bsdk_mic_gain_store(float linear);
 void bsdk_spk_gain_store(float linear);
@@ -348,6 +428,25 @@ void bsdk_aec_floor_store(float floor);
 int  bsdk_stats_init(void);
 void bsdk_stats_close(void);
 void bsdk_stats_collect_final(struct baresdk_call *lc);
+void bsdk_post_quality_alert(struct baresdk_call *lc,
+                             baresdk_quality_issue_t issue,
+                             float value, float threshold, bool recovering);
+
+/* ── Degraded-link adaptation (adapt.c) ────────────────────────────────── */
+
+/* Reset per-call adaptation state; call when the call reaches established. */
+void bsdk_adapt_call_start(struct baresdk_call *lc);
+/* Evaluate stall detection and bitrate adaptation for one stats sample. */
+void bsdk_adapt_tick(struct baresdk_call *lc,
+                     const baresdk_ev_media_stats_t *s);
+/* Re-run the encoder update with `bitrate` (bps; 0 = negotiated rate).
+ * Returns 0, or ENOTSUP for a codec with no encoder-update handler. */
+int  bsdk_adapt_apply_bitrate(struct baresdk_call *lc, uint32_t bitrate);
+/* Rewrite an SDP fmtp string with a new maxaveragebitrate (0 = strip only).
+ * Internal to adapt.c; exposed for test/unit/test_fmtp_bitrate.c.
+ * Returns 0, or EINVAL when the result would not fit in `sz`. */
+int  bsdk_adapt_fmtp_set_bitrate(char *buf, size_t sz, const char *src,
+                                 uint32_t bitrate);
 
 /* ── netmon.c ──────────────────────────────────────────────────────────── */
 
@@ -380,6 +479,14 @@ int  bsdk_dns_resolve(const char *domain,
                       uint16_t port_hint,
                       bsdk_dns_done_h *done_h, void *arg);
 
+/* Result accessors — targets are ordered lowest-priority-value first, then
+ * highest weight, i.e. the order a client must try them in (RFC 2782 §3). */
+size_t bsdk_dns_result_count(const struct bsdk_dns_result *res);
+int    bsdk_dns_result_err(const struct bsdk_dns_result *res);
+int    bsdk_dns_result_get(const struct bsdk_dns_result *res, size_t idx,
+                           baresdk_transport_t *transport,
+                           char *host, size_t host_sz, uint16_t *port);
+
 /* ── transport.c ───────────────────────────────────────────────────────── */
 
 int bsdk_parse_server_url(const char *url,
@@ -401,11 +508,14 @@ const char *bsdk_mediaenc_str(baresdk_media_enc_t enc);
 extern char g_bsdk_ws_path[256];
 extern char g_bsdk_ws_server[288];
 
-/* Record the WebSocket server to pin outbound connections to.  Call once per
- * WS/WSS account; a second account naming a different server disables pinning
- * process-wide. */
+/* Record/release the WebSocket server to pin outbound connections to.  Call
+ * once per WS/WSS account on create, and the matching unset on destroy — the
+ * servers are refcounted, and pinning is only active while all live accounts
+ * agree on one server. */
 void bsdk_ws_set_server(baresdk_transport_t tp, const char *host,
-                         uint16_t port);
+                         uint16_t port, const char *path);
+void bsdk_ws_unset_server(baresdk_transport_t tp, const char *host,
+                           uint16_t port, const char *path);
 
 /* ── Utility macros ────────────────────────────────────────────────────── */
 

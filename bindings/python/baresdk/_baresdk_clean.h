@@ -18,7 +18,6 @@ typedef enum {
  BARESDK_MEDIA_ENC_SDES,
  BARESDK_MEDIA_ENC_DTLS_SRTP,
 } baresdk_media_enc_t;
-
 typedef enum {
  BARESDK_CODEC_OPUS = 0,
  BARESDK_CODEC_PCMU,
@@ -31,11 +30,7 @@ typedef enum {
  BARESDK_MOS_EMODEL = 0,
  BARESDK_MOS_SIMPLIFIED,
 } baresdk_mos_method_t;
-typedef enum {
- BARESDK_AEC_OFF = 0,
- BARESDK_AEC_SUPPRESSOR = 1,
- BARESDK_AEC_WEBRTC = 2,
-} baresdk_aec_mode_t;
+typedef uint8_t baresdk_aec_mode_t;
 typedef enum {
  BARESDK_MEDIA_DIR_RX = 0,
  BARESDK_MEDIA_DIR_TX,
@@ -51,6 +46,11 @@ typedef enum {
  BARESDK_JBUF_ADAPTIVE = 0,
  BARESDK_JBUF_FIXED = 1,
 } baresdk_jbuf_type_t;
+typedef enum {
+
+ BARESDK_ICE_HANDOVER_BEST_EFFORT = 0,
+ BARESDK_ICE_HANDOVER_FAIL_FAST,
+} baresdk_ice_handover_t;
 
 typedef struct {
  int bitrate;
@@ -141,6 +141,8 @@ typedef enum {
  BARESDK_NET_CALL_MIGRATION_FAILED,
  BARESDK_NET_CALL_DEFERRED,
  BARESDK_NET_HANDOVER_FAILED,
+
+ BARESDK_NET_CALL_ICE_STALE,
 } baresdk_net_event_t;
 typedef struct {
  baresdk_net_event_t event;
@@ -291,6 +293,7 @@ typedef enum {
  BARESDK_QUALITY_LOSS,
  BARESDK_QUALITY_JITTER,
  BARESDK_QUALITY_RTT,
+ BARESDK_QUALITY_MEDIA_STALL,
 } baresdk_quality_issue_t;
 
 typedef struct {
@@ -367,7 +370,6 @@ typedef struct {
  bool ice_enabled;
  bool rtcp_mux;
  baresdk_media_enc_t media_enc;
-
  baresdk_codec_t audio_codecs[8];
  int audio_codec_count;
  uint8_t dscp_sip;
@@ -390,9 +392,11 @@ typedef struct {
  uint32_t reg_retry_max_ms;
  float reg_retry_backoff;
  uint32_t reg_retry_max_attempts;
+ float reg_retry_jitter;
  uint32_t sip_t1_ms;
  uint32_t sip_t2_ms;
  uint32_t sip_timer_b_ms;
+
  uint32_t sip_timer_f_ms;
  bool session_timer_enabled;
  uint32_t session_expires_s;
@@ -421,6 +425,19 @@ typedef struct {
  char audio_codec_names[8][32];
  int audio_codec_name_count;
  bool platform_audio_activate;
+ uint32_t rtp_timeout_s;
+ uint32_t media_stall_ms;
+ bool adaptive_bitrate;
+ uint32_t adapt_min_bitrate;
+ uint32_t adapt_max_bitrate;
+ float adapt_loss_down_pct;
+ float adapt_loss_up_pct;
+ uint32_t adapt_recover_ticks;
+ uint32_t opus_expected_loss_pct;
+ bool keepalive_reregister;
+ bool dns_srv_failover;
+
+ baresdk_ice_handover_t net_ice_handover;
 
 } baresdk_config_t;
 
@@ -537,6 +554,12 @@ typedef void (*baresdk_call_iter_fn)(baresdk_call_handle_t call, void *arg);
 
  int baresdk_account_set_100rel(baresdk_account_handle_t account,
                                 baresdk_100rel_mode_t mode);
+ int baresdk_audio_use_external(bool enable);
+ int baresdk_audio_external_push(const int16_t *pcm, size_t nsamp);
+ int baresdk_audio_external_pull(int16_t *pcm, size_t nsamp);
+ int baresdk_audio_external_format(uint32_t *srate, uint8_t *ch,
+                                                  uint32_t *ptime);
+ bool baresdk_audio_external_is_active(void);
 
 typedef struct {
  char name[128];
@@ -562,6 +585,15 @@ typedef struct {
                                               uint8_t dscp);
  void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
  void baresdk_set_jitter_buffer_type(baresdk_jbuf_type_t type);
+ int baresdk_call_set_rtp_timeout(baresdk_call_handle_t call,
+                                                 uint32_t seconds);
+ int baresdk_call_set_bitrate(baresdk_call_handle_t call,
+                                             uint32_t bitrate_bps);
+ void baresdk_set_adaptive_bitrate(bool enabled,
+                                                  uint32_t min_bps,
+                                                  uint32_t max_bps);
+ int baresdk_account_keepalive_now(
+                                        baresdk_account_handle_t account);
  int baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
  bool baresdk_audio_is_muted(baresdk_call_handle_t call);
  int baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);

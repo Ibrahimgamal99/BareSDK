@@ -225,12 +225,12 @@ Accepted codec name aliases:
 | `"opus"` | Opus 48 kHz stereo |
 | `"ulaw"` / `"pcmu"` / `"g711u"` | G.711 µ-law |
 | `"alaw"` / `"pcma"` / `"g711a"` | G.711 A-law |
-| `"g722"` | G.722 wideband |
-| `"g729"` | G.729 |
-| `"g726"` / `"g726-32"` | G.726 32 kbps |
 | anything else | passed as-is to baresip |
 
+Opus and G.711 are the only codecs compiled into the library.
+
 Priority: per-account string names → per-account enum (`audio_codecs[]`) → global `cfg.audio_codecs`.
+Setting none of them offers `opus, PCMU, PCMA` — the cross-platform default.
 
 **C++**
 ```cpp

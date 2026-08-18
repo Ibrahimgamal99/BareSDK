@@ -202,6 +202,31 @@ call.fetch_stats(existing_stats)      # updates an existing CallStats in-place
 
 ---
 
+## App-owned audio device
+
+The SDK opens the microphone and speaker by default. To own them yourself —
+feeding PCM in and taking it out, while SIP/ICE/SRTP/codecs/jitter stay with the
+SDK:
+
+```python
+sdk.use_external_audio(True)
+
+fmt = sdk.external_audio_format()          # (48000, 2, 20) or None before media
+if fmt:
+    srate, ch, ptime = fmt
+    n = srate * ch * ptime // 1000
+    sdk.external_audio_push(mic_pcm)       # bytes / array('h') / numpy int16
+    spk = sdk.external_audio_pull(n)       # always exactly n samples
+```
+
+`examples/external_audio.py` is a complete runnable version: it pushes a
+synthesised tone as the microphone and writes the far end to a WAV, so the whole
+path can be verified on a desktop with no audio hardware. See
+[App-owned audio device](../api/media.md#app-owned-audio-device) for the
+contract, including that you own echo cancellation once you own the device.
+
+---
+
 ## Runtime audio quality controls
 
 ```python

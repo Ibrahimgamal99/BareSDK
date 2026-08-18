@@ -28,7 +28,10 @@ API="${ANDROID_PLATFORM:-android-24}"  # re requires >= 24 for getifaddrs
 BUILD_ROOT="${BARESDK_BUILD_ROOT:-${ROOT}/build}"
 
 # Fetch third-party sources (idempotent — skips dirs that already exist).
-BARESDK_TLS=mbedtls "${SCRIPT_DIR}/fetch-third-party.sh"
+# OpenSSL, not mbedTLS: libre only implements TLS/DTLS over OpenSSL, so an
+# mbedTLS build silently loses SIP/TLS, SIP/WSS, DTLS-SRTP and AES (see the
+# Phase 0.5 comment in CMakeLists.txt).
+BARESDK_TLS=openssl BARESDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
 
 # Locate NDK
 NDK="${ANDROID_NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_LATEST_HOME:-}}}"
@@ -57,7 +60,7 @@ for ABI in ${ABIS}; do
     -DANDROID_ABI="${ABI}" \
     -DANDROID_PLATFORM="${API}" \
     -DANDROID_STL=c++_static \
-    -DBARESDK_TLS=mbedtls \
+    -DBARESDK_TLS=openssl \
     -DBARESDK_MODULES_PROFILE=mobile \
     -DBARESDK_SHARED=ON
 
@@ -79,11 +82,42 @@ for ABI in ${ABIS}; do
   if ! grep -q '__wrap_websock_connect' <<<"${DEFINED}"; then
     echo "ERROR: websock_connect wrapper missing (--wrap not applied?)" >&2; exit 1
   fi
+  if ! grep -q '__wrap_sip_transp_send' <<<"${DEFINED}"; then
+    echo "ERROR: sip_transp_send wrapper missing (--wrap not applied?)" >&2; exit 1
+  fi
   UNDEF=$("${LLVM_BIN}/llvm-nm" -D --undefined-only "${SO}" \
-          | grep -E ' (mbedtls_|opus_|__real_websock_connect|AAudio)' || true)
+          | grep -E ' (mbedtls_|opus_|SSL_|EVP_|X509_|__real_websock_connect|__real_sip_transp_send|AAudio)' || true)
   if [ -n "${UNDEF}" ]; then
     echo "ERROR: unresolved symbols in ${SO}:" >&2
     echo "${UNDEF}" >&2; exit 1
+  fi
+  # Every *strong* undefined symbol must be exported by something in DT_NEEDED.
+  # The whitelist above only catches names we thought to look for: a dangling
+  # `crc32` (re's USE_ZLIB path, no -lz on the link line) sailed past it and
+  # only failed at dlopen() on a device. -Wl,--no-undefined now catches this at
+  # link time; this re-checks the shipped artifact. Weak undefs (nm prints 'w',
+  # e.g. memfd_create above our API level) are legal and skipped.
+  case "${ABI}" in
+    arm64-v8a)   TRIPLE=aarch64-linux-android ;;
+    armeabi-v7a) TRIPLE=arm-linux-androideabi ;;
+    x86_64)      TRIPLE=x86_64-linux-android  ;;
+    x86)         TRIPLE=i686-linux-android    ;;
+    *) echo "ERROR: no triple mapping for ABI ${ABI}" >&2; exit 1 ;;
+  esac
+  STUBS="${NDK}/toolchains/llvm/prebuilt/${NDK_HOST_TAG}/sysroot/usr/lib/${TRIPLE}/${API#android-}"
+  NEEDED=$("${LLVM_BIN}/llvm-readelf" -d "${SO}" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p')
+  PROVIDED=$(for lib in ${NEEDED}; do
+               [ -f "${STUBS}/${lib}" ] &&
+                 "${LLVM_BIN}/llvm-nm" -D --defined-only "${STUBS}/${lib}" |
+                 awk '{print $NF}'
+             done | sed 's/@.*//' | sort -u)
+  WANTED=$("${LLVM_BIN}/llvm-nm" -D --undefined-only "${SO}" |
+           awk '$1 == "U" {print $2}' | sed 's/@.*//' | sort -u)
+  MISSING=$(comm -23 <(printf '%s\n' "${WANTED}") <(printf '%s\n' "${PROVIDED}"))
+  if [ -n "${MISSING}" ]; then
+    echo "ERROR: ${SO} references symbols no DT_NEEDED library provides" >&2
+    echo "       (dlopen would fail on device). NEEDED: ${NEEDED//$'\n'/ }" >&2
+    printf '         %s\n' ${MISSING} >&2; exit 1
   fi
   BAD_ALIGN=$("${LLVM_BIN}/llvm-readelf" -l "${SO}" | awk '/LOAD/ {print $NF}' \
               | grep -v '0x4000' || true)

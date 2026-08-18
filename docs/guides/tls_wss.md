@@ -116,6 +116,42 @@ baresdk config:
 .server_url = "wss://asterisk.example.com:8089/ws",
 ```
 
+#### Asterisk behind a reverse proxy
+
+A WebSocket client has exactly one connection and every request travels over it
+(RFC 7118 §5). Asterisk behind nginx/HAProxy does not know its public address, so
+it advertises its own loopback in `Record-Route` — `sip:127.0.0.1:8088;transport=ws`
+— and that becomes the dialog target for in-dialog ACK/BYE/re-INVITE.
+
+libre routes by address and looks up connections by peer address, so that target
+matches nothing and a **second** WebSocket gets opened per call. The SDK handles
+this for you: a loopback WS destination is rewritten to the address the
+registration is already connected to, so the existing connection is reused. With
+`log_level` at debug you will see
+
+```
+baresdk: ws in-dialog target 127.0.0.1:8088 is loopback; reusing the registration flow to <server>
+```
+
+Nothing to configure. Two caveats:
+
+- It rides the same `--wrap` link mechanism as the WebSocket path workaround, so
+  it applies on **Linux and Android only** — Windows and Apple's linkers have no
+  `--wrap`.
+- It is switched off while two accounts name different WS servers, for the same
+  reason URI pinning is: a rewrite cannot tell which account a request belongs
+  to, and guessing wrong would route one account's signalling to the other's
+  server. Destroy accounts you are no longer using.
+
+The server-side fix is better if you control the deployment — tell Asterisk its
+public address so `Record-Route` is routable:
+
+```ini
+; pjsip.conf, on the ws/wss transport
+external_signaling_address = pbx.example.com
+external_signaling_port    = 443
+```
+
 ### Kamailio with TLS
 
 `kamailio.cfg`:

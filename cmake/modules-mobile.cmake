@@ -13,7 +13,6 @@
 set(BARESDK_MOBILE_MODULES_BASE
   "opus"
   "g711"
-  "g722"
   "srtp"
   "dtls_srtp"
   "stun"

@@ -118,6 +118,34 @@ static void add_result(struct dns_lookup *lk, baresdk_transport_t t,
 	tgt->weight   = weight;
 }
 
+/**
+ * Order the targets the way a client is required to try them: lowest
+ * priority value first, and within one priority, highest weight first
+ * (RFC 2782 §3 — weight is a share of load, and taking the heaviest first is
+ * the deterministic approximation of the random selection the RFC describes).
+ *
+ * The handlers append results in whatever order the DNS answers arrive, so
+ * without this the "first" target is an accident of packet timing — which
+ * makes a failover walk through the list meaningless.  Insertion sort: the
+ * list is at most MAX_TARGETS entries and this runs once per lookup.
+ */
+static void sort_targets(struct bsdk_dns_result *res)
+{
+	for (size_t i = 1; i < res->count; i++) {
+		struct bsdk_dns_target tmp = res->targets[i];
+		size_t j = i;
+
+		while (j > 0 &&
+		       (res->targets[j-1].priority > tmp.priority ||
+		        (res->targets[j-1].priority == tmp.priority &&
+		         res->targets[j-1].weight   < tmp.weight))) {
+			res->targets[j] = res->targets[j-1];
+			j--;
+		}
+		res->targets[j] = tmp;
+	}
+}
+
 static void lookup_finish(struct dns_lookup *lk)
 {
 	if (lk->done)
@@ -125,6 +153,8 @@ static void lookup_finish(struct dns_lookup *lk)
 	lk->done = true;
 	if (lk->result.count == 0)
 		lk->result.err = ENOENT;
+	else
+		sort_targets(&lk->result);
 	lk->done_h(&lk->result, lk->done_arg);
 	mem_deref(lk);
 }
@@ -349,6 +379,45 @@ int bsdk_dns_resolve(const char *domain,
 		mem_deref(lk);
 		return err;
 	}
+
+	return 0;
+}
+
+
+/* ── Result accessors ────────────────────────────────────────────────────────
+ *
+ * struct bsdk_dns_result is opaque outside this file so the target array stays
+ * an implementation detail.  account.c needs to walk it for SRV failover, so
+ * expose exactly the three things a walk needs.
+ */
+
+size_t bsdk_dns_result_count(const struct bsdk_dns_result *res)
+{
+	return res ? res->count : 0;
+}
+
+int bsdk_dns_result_err(const struct bsdk_dns_result *res)
+{
+	return res ? res->err : EINVAL;
+}
+
+int bsdk_dns_result_get(const struct bsdk_dns_result *res, size_t idx,
+                        baresdk_transport_t *transport,
+                        char *host, size_t host_sz, uint16_t *port)
+{
+	const struct bsdk_dns_target *t;
+
+	if (!res || idx >= res->count)
+		return EINVAL;
+
+	t = &res->targets[idx];
+
+	if (transport)
+		*transport = t->transport;
+	if (host && host_sz)
+		str_ncpy(host, t->host, host_sz);
+	if (port)
+		*port = t->port;
 
 	return 0;
 }

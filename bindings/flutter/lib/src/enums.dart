@@ -104,6 +104,22 @@ enum AecMode {
       values.firstWhere((v) => v.raw == raw, orElse: () => suppressor);
 }
 
+/// What to do with an ICE call whose candidates went stale on handover.
+enum IceHandover {
+  /// Send the re-INVITE and let media verification decide (default).
+  bestEffort(c.baresdk_ice_handover_t.BARESDK_ICE_HANDOVER_BEST_EFFORT),
+
+  /// Try once, then report `callMigrationFailed`.  Preferred when calls are
+  /// ICE+TURN over cellular: repeating an offer built from the wrong
+  /// candidates only lengthens the silence before the app can redial.
+  failFast(c.baresdk_ice_handover_t.BARESDK_ICE_HANDOVER_FAIL_FAST);
+
+  final int raw;
+  const IceHandover(this.raw);
+  static IceHandover fromRaw(int raw) =>
+      values.firstWhere((v) => v.raw == raw, orElse: () => bestEffort);
+}
+
 /// Jitter buffer type.
 enum JitterBufferType {
   adaptive(c.baresdk_jbuf_type_t.BARESDK_JBUF_ADAPTIVE),
@@ -129,7 +145,14 @@ enum QualityIssue {
   mos(c.baresdk_quality_issue_t.BARESDK_QUALITY_MOS),
   loss(c.baresdk_quality_issue_t.BARESDK_QUALITY_LOSS),
   jitter(c.baresdk_quality_issue_t.BARESDK_QUALITY_JITTER),
-  rtt(c.baresdk_quality_issue_t.BARESDK_QUALITY_RTT);
+  rtt(c.baresdk_quality_issue_t.BARESDK_QUALITY_RTT),
+
+  /// No inbound RTP for `BareSDKConfig.mediaStallMs` while the call is not on
+  /// hold — the link is up and the dialog is healthy, but no audio is
+  /// arriving.  `value` is the stall duration in ms.  Non-fatal: it fires
+  /// again with `recovering = true` when packets resume.  Use
+  /// `BareSDKConfig.rtpTimeoutSeconds` to end such a call instead.
+  mediaStall(c.baresdk_quality_issue_t.BARESDK_QUALITY_MEDIA_STALL);
 
   final int raw;
   const QualityIssue(this.raw);
@@ -163,7 +186,14 @@ enum NetworkStage {
   callMigrated(c.baresdk_net_event_t.BARESDK_NET_CALL_MIGRATED),
   callMigrationFailed(c.baresdk_net_event_t.BARESDK_NET_CALL_MIGRATION_FAILED),
   callDeferred(c.baresdk_net_event_t.BARESDK_NET_CALL_DEFERRED),
-  handoverFailed(c.baresdk_net_event_t.BARESDK_NET_HANDOVER_FAILED);
+  handoverFailed(c.baresdk_net_event_t.BARESDK_NET_HANDOVER_FAILED),
+
+  /// This call negotiated ICE, so its gathered candidates are now stale and
+  /// cannot be re-gathered mid-call.  The re-INVITE is still sent — it
+  /// recovers a direct or still-valid TURN-relayed path — but if media does
+  /// not resume, the remedy is to re-place the call.
+  /// `BareSDKConfig.netIceHandover` decides whether to keep retrying.
+  callIceStale(c.baresdk_net_event_t.BARESDK_NET_CALL_ICE_STALE);
 
   final int raw;
   const NetworkStage(this.raw);

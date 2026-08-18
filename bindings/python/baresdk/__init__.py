@@ -119,6 +119,16 @@ def _ensure_init():
             pass
         cfg = ffi.new("baresdk_config_t *")
         lib.baresdk_config_init(cfg)
+        # configure() documents the enum options in their string form, and
+        # create_account() already translates the global "transport" that way.
+        # Without the same translation here the string reaches setattr() as a
+        # char[] destined for an int field, which cffi rejects outright — so
+        # configure(transport="udp") raised a TypeError from inside
+        # _ensure_init() rather than doing what it says.
+        _config_enums = {"transport": _STR_TRANSPORT, "media_enc": _STR_MEDIA_ENC}
+        for key, table in _config_enums.items():
+            if isinstance(_config.get(key), str):
+                _config[key] = table[_config[key]]
         for key, val in _config.items():
             if isinstance(val, str):
                 ref = ffi.new("char[]", val.encode())
@@ -212,12 +222,12 @@ def _global_event_cb(ev_ptr, _userdata):
         _CALL_STATES = ("calling", "ringing", "established", "held",
                         "ended", "cancelled", "failed")
         _PRESENCE    = ("unknown", "open", "closed", "busy")
-        _QUALITY     = ("mos", "loss", "jitter", "rtt")
+        _QUALITY     = ("mos", "loss", "jitter", "rtt", "media_stall")
         _NET_STAGE   = ("change_detected", "down", "up", "transport_reset",
                         "reregistering", "call_migrating",
                         "call_migrate_accepted", "call_migrated",
                         "call_migration_failed", "call_deferred",
-                        "handover_failed")
+                        "handover_failed", "call_ice_stale")
 
         acct_handle = ffi.NULL
         call_handle = ffi.NULL
@@ -412,7 +422,10 @@ def configure(**kwargs):
 
     Common options:
       log_level         — int (0=off, 1=error, 2=warning, 3=info, 4=debug)
-      stats_interval_ms — how often media_stats events fire (default 5000)
+      stats_interval_ms — how often media_stats events fire (default 2000;
+                          0 disables RTCP accounting entirely, which also
+                          disables quality alerts, media-stall detection and
+                          adaptive bitrate)
       verify_server     — bool, validate TLS certificates (default True)
       transport         — "udp" | "tcp" | "tls" | "ws" | "wss"
 
@@ -423,6 +436,39 @@ def configure(**kwargs):
       net_verify_ms          — wait for RTP before retrying (default 4000)
       net_max_attempts       — retry ceiling (default 6)
       net_hangup_on_migration_failure — default False
+      net_ice_handover       — 0 best-effort (default), 1 fail fast.  An ICE
+                               call cannot re-gather candidates mid-call, so
+                               1 reports failure after one attempt instead of
+                               retrying an offer that cannot succeed.
+
+    Degraded links — the address stays put and the link goes bad.  Handover
+    cannot see this; these can:
+      media_stall_ms         — warn after this long with no inbound RTP,
+                               as a quality_alert with issue "media_stall"
+                               (default 4000; 0 = off).  Non-fatal.
+      rtp_timeout_s          — END the call after this long with no inbound
+                               RTP (default 0 = never).  The fatal version.
+      keepalive_interval     — SIP OPTIONS probe period in ms (default 30000).
+                               Refreshes the NAT binding and detects a
+                               black-holed path; see keepalive_now().
+      keepalive_reregister   — re-REGISTER when a probe fails (default True)
+      dns_srv_failover       — walk the SRV target list on retry (default True)
+      adaptive_bitrate       — lower the Opus bitrate under loss and raise it
+                               on recovery, with no re-INVITE (default False)
+      adapt_min_bitrate      — bps floor (default 12000)
+      adapt_max_bitrate      — bps ceiling (default 32000)
+      adapt_loss_down_pct    — step down above this loss %% (default 5.0)
+      adapt_loss_up_pct      — step up below this loss %% (default 1.0)
+      adapt_recover_ticks    — clean stats ticks before a step up (default 5)
+      opus_expected_loss_pct — Opus in-band FEC redundancy %% (default 0 = off;
+                               10-20 suits mobile).  Set opus.fec too.
+      reg_retry_jitter       — randomise retry delays by this fraction
+                               (default 0.2), so a fleet coming back from an
+                               outage does not hit the registrar in one burst
+      sip_timer_b_ms         — fail an unanswered outgoing INVITE after this
+                               long (default 32000; 8000-12000 to fail fast)
+      sip_timer_f_ms         — fail an unanswered REGISTER after this long
+                               (default 32000)
     """
     global _config_locked
     if _config_locked:
@@ -723,6 +769,70 @@ def set_speaker_gain(db: float):
     lib.baresdk_set_speaker_gain_db(float(db))
 
 
+# ── App-owned audio device ───────────────────────────────────────────────────
+
+
+def use_external_audio(enable: bool):
+    """Hand the microphone and speaker to the app.
+
+    The SDK then opens no capture or playback device of its own; you supply and
+    consume PCM with external_audio_push/pull. SIP, ICE, SRTP, codecs and the
+    jitter buffer stay with the SDK. Takes effect immediately, including on a
+    call that is already up.
+
+    Not sticky across shutdown/configure: the device is re-derived from the
+    platform on init, so ask again after a restart.
+
+    Echo cancellation follows the device — the platform cancellers the SDK
+    relies on belong to the drivers being displaced, so you own AEC too.
+    """
+    _ensure_init()
+    _check(lib.baresdk_audio_use_external(bool(enable)), "use_external_audio")
+
+
+def external_audio_format() -> Optional[tuple]:
+    """(sample_rate, channels, ptime_ms) once the call has media, else None.
+
+    There is no "media is up" event to wait on, so poll this: it reports both
+    that the device opened and that a re-INVITE changed the codec.
+    """
+    srate = ffi.new("uint32_t *")
+    ch = ffi.new("uint8_t *")
+    ptime = ffi.new("uint32_t *")
+    if lib.baresdk_audio_external_format(srate, ch, ptime) != 0:
+        return None
+    return srate[0], ch[0], ptime[0]
+
+
+def external_audio_active() -> bool:
+    """True while a call is capturing or playing through the app-owned device."""
+    return bool(lib.baresdk_audio_external_is_active())
+
+
+def external_audio_push(pcm) -> int:
+    """Push captured microphone audio. This is what the far end hears.
+
+    `pcm` is any S16LE buffer — bytes, bytearray, memoryview, array('h'),
+    numpy int16 — at the rate and channel count from external_audio_format().
+    Any size is accepted; the stack re-frames internally.
+
+    Returns 0, or errno.ENODEV between calls, which is not worth acting on.
+    """
+    buf = ffi.from_buffer("int16_t[]", pcm)
+    return lib.baresdk_audio_external_push(buf, len(buf))
+
+
+def external_audio_pull(nsamp: int) -> bytes:
+    """Take decoded audio to play. This is what the local user hears.
+
+    Always returns exactly `nsamp` S16LE samples — silence when no call is up —
+    so the result can go straight to the speaker without checking.
+    """
+    buf = ffi.new("int16_t[]", nsamp)
+    lib.baresdk_audio_external_pull(buf, nsamp)
+    return bytes(ffi.buffer(buf))
+
+
 def network_changed():
     """Tell the SDK the network may have changed (Wi-Fi <-> 4G/5G, VPN, dock).
 
@@ -765,6 +875,17 @@ def network_is_up() -> bool:
 
 def set_jitter_buffer(min_ms: int, max_ms: int):
     lib.baresdk_set_jitter_buffer(min_ms, max_ms)
+
+
+def set_adaptive_bitrate(enabled: bool, min_bps: int = 0, max_bps: int = 0):
+    """Turn link-adaptive bitrate on or off at runtime, with optional bounds.
+
+    Pass 0 for either bound to keep the configured value.  Disabling leaves
+    every call at its current rate; use call.set_bitrate(0) to restore the
+    negotiated one.
+    """
+    _ensure_init()
+    lib.baresdk_set_adaptive_bitrate(enabled, min_bps, max_bps)
 
 
 def pcap_start(path: str):
@@ -822,6 +943,26 @@ class Call:
 
     def set_dscp_rtp(self, dscp: int):
         _check(lib.baresdk_call_set_dscp_rtp(self._h, dscp), "set_dscp_rtp")
+
+    def set_rtp_timeout(self, seconds: int):
+        """End this call after *seconds* with no inbound RTP; 0 = never.
+
+        Per-call override of configure(rtp_timeout_s=...).  Only sendrecv
+        streams are checked, so a held call is never torn down by it.
+        """
+        _check(lib.baresdk_call_set_rtp_timeout(self._h, seconds),
+               "set_rtp_timeout")
+
+    def set_bitrate(self, bitrate_bps: int):
+        """Set the audio encoder bitrate; 0 restores the negotiated rate.
+
+        Applied through the codec's encoder-update path — no re-INVITE and no
+        audio gap — so it does nothing for a fixed-rate codec like G.711.
+        With configure(adaptive_bitrate=True) the controller will override
+        this on its next decision.
+        """
+        _check(lib.baresdk_call_set_bitrate(self._h, bitrate_bps),
+               "set_bitrate")
 
     def stats(self) -> CallStats:
         """Return a fresh CallStats snapshot (synchronous, one-shot)."""
@@ -942,6 +1083,16 @@ class Account:
     def retry_now(self):
         lib.baresdk_account_retry_now(self._h)
 
+    def keepalive_now(self):
+        """Send a reachability probe (SIP OPTIONS) for this account now.
+
+        Worth doing from an app-foreground or push-wake handler: it answers
+        "is my registration still reachable?" before the user tries to place a
+        call.  Nothing is reported on success; on failure the account goes to
+        reg_failed and, with configure(keepalive_reregister=True), re-registers.
+        """
+        _check(lib.baresdk_account_keepalive_now(self._h), "keepalive_now")
+
     def set_100rel(self, mode: int):
         lib.baresdk_account_set_100rel(self._h, mode)
 
@@ -979,6 +1130,9 @@ __all__ = [
     "set_aec", "set_aec_mode", "set_aec_suppression_level",
     "set_ns", "set_agc", "set_mic_gain", "set_speaker_gain",
     "set_jitter_buffer", "pcap_start", "pcap_stop",
+    # App-owned audio device
+    "use_external_audio", "external_audio_format", "external_audio_active",
+    "external_audio_push", "external_audio_pull",
     # Network handover
     "network_changed", "network_set_monitor_interval",
     "network_set_handover_policy", "network_local_addr", "network_is_up",

@@ -6,7 +6,188 @@ All notable changes to baresdk are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Degraded-link handling** — the SDK already recovered from a *changed*
+  address (network handover); it had nothing for a link that keeps its address
+  and stops working. That is the ordinary mobile failure: one bar of signal, a
+  saturated uplink, a cell that stops forwarding packets without dropping the
+  PDP context, a carrier NAT that quietly expires a UDP binding. In every case
+  the local IP is unchanged so handover sees nothing, the dialog is healthy so
+  the stack reports the call as up, and the user hears silence. New guide:
+  [Degraded links](guides/degraded_links.md).
+
+  - `cfg.media_stall_ms` (default 4000) fires `BARESDK_QUALITY_MEDIA_STALL`
+    when inbound RTP stops advancing and again with `recovering` when it
+    resumes. Non-fatal, and the only way this condition becomes observable at
+    all — when RTP stops, every other metric simply stops changing.
+    Suppressed on held calls and during a handover migration, where
+    `BARESDK_EV_NETWORK` already narrates the outage in more detail.
+  - `cfg.rtp_timeout_s` (default 0 = off) wires baresip's `avt.rtp_timeout`,
+    which was never set: the fatal counterpart that ends such a call. Left off
+    because ending a call is destructive and some deployments run legitimate
+    one-way media. Per-call override: `baresdk_call_set_rtp_timeout()`.
+  - `cfg.adaptive_bitrate` steps the Opus encoder down under the loss the
+    *peer* reports over RTCP and back up on recovery — halve down, +25% up,
+    with a dead band between `adapt_loss_down_pct` and `adapt_loss_up_pct` so a
+    link hovering near a threshold does not oscillate, and
+    `adapt_recover_ticks` clean ticks required before any increase. Applied
+    through the codec's encoder-update path, so there is no re-INVITE, no
+    renegotiation and no gap in the audio. Runtime control:
+    `baresdk_set_adaptive_bitrate()`, `baresdk_call_set_bitrate()`.
+  - `cfg.opus_expected_loss_pct` supplies the `opus_packet_loss` the opus
+    module needs. `cfg.opus.fec` alone only *permitted* in-band FEC: the
+    encoder sizes its redundant LBRR frame from this percentage and baresip's
+    decoder gates FEC reconstruction on it being non-zero, so `opus.fec` on its
+    own concealed nothing.
+
+- **Keepalive is a real mechanism instead of a dead config field** —
+  `cfg.keepalive_interval` had a documented default of 30000 and was read by no
+  code at all. It now drives a SIP OPTIONS probe on that period, which does two
+  jobs: it refreshes the UDP NAT binding — carrier NAT drops idle mappings
+  after 30–180 s, while the default `reg_expires` is 3600 — and its answer, or
+  absence, tests reachability. Any response counts, including 405: a proxy that
+  refuses OPTIONS still received it. On failure the account reports
+  `BARESDK_ERR_TIMEOUT` and, with the new `cfg.keepalive_reregister` (default
+  true), re-REGISTERs immediately rather than leaving an unreachable
+  registration nominally healthy for up to an hour. Suppressed while a call is
+  up on the account: RTP already holds the binding open, and an extra request
+  competing with media for a congested uplink is exactly wrong.
+  `baresdk_account_keepalive_now()` runs the same probe on demand, for a
+  foreground or push-wake handler.
+
+- **`cfg.sip_timer_b_ms` / `cfg.sip_timer_f_ms` now do something** — both were
+  dead fields. A request onto a black-holed link gets no response at all, and
+  RFC 3261 bounds that at 64·T1 = 32 s, which in libre is a compile-time
+  constant with no runtime knob — so an app that would rather fail in eight
+  seconds and offer to retry had nowhere to say so. `sip_timer_b_ms` now arms
+  an SDK-side watchdog that cancels an outgoing call still in `CALLING` with
+  408, surfacing as `BARESDK_CALL_FAILED` / `BARESDK_ERR_TIMEOUT`; only
+  `CALLING` is watched, because a call that reached `RINGING` has proven the
+  path works and how long to let it ring is a product decision.
+  `sip_timer_f_ms` now bounds the registration watchdog, which was hardcoded to
+  35 s. `sip_t1_ms` / `sip_t2_ms` remain compile-time in libre and are
+  documented as informational rather than left to look configurable.
+
+- **RFC 3263 SRV failover** — `src/dns.c` implemented the whole NAPTR→SRV chain
+  and `bsdk_dns_resolve()` had no callers, so every retry re-sent to the host
+  that had just timed out and a down primary proxy was never failed over to the
+  secondary the records exist to name. Registration now resolves the target
+  list once per account and advances one target per failed attempt, in
+  (priority, weight) order, wrapping at the end. `cfg.dns_srv_failover`
+  (default true) gates it; it is skipped when there is no ordered list to walk
+  or when an operator has already chosen — a pinned `outbound_proxy`, an IP
+  literal, an explicit port, or a WS/WSS URL. Results are now sorted, which
+  they were not: the handlers appended them in DNS-answer order, so the "first"
+  target was an accident of packet timing.
+
+- **`cfg.reg_retry_jitter`** (default 0.2) — the retry backoff was documented as
+  "exponential backoff with jitter" and had none. Every device that lost the
+  same network ran the same schedule from the same instant, so the fleet arrived
+  at the registrar as one burst, and because the schedules never diverged the
+  herd re-formed on every subsequent attempt.
+
+- **`cfg.net_ice_handover`** and `BARESDK_NET_CALL_ICE_STALE` — an ICE call
+  cannot re-gather candidates mid-call (baresip fixes the local ufrag/pwd when
+  the media session is allocated and its mnat update handler re-runs
+  `icem_update()` rather than re-gathering), so the handover re-INVITE
+  necessarily carries stale candidates. That cannot be fixed from outside the
+  library, so instead it is made visible and bounded: the event is emitted once
+  per call per handover *before* the offer goes out, and
+  `BARESDK_ICE_HANDOVER_FAIL_FAST` reports failure after one attempt rather
+  than spending `net_verify_ms` × `net_max_attempts` — 24 s of silence at the
+  defaults — on an offer that cannot succeed. `max_attempts` in the event now
+  reflects the budget the call is actually held to.
+
+- `test/unit/test_fmtp_bitrate.c` — 45 assertions over the fmtp rewriting that
+  makes adaptive bitrate safe, including that feeding its own output back in
+  reaches a fixed point rather than growing the string on every adaptation step.
+
+### Changed
+
+- **Media statistics are on by default** (`cfg.stats_interval_ms` 0 → 2000) and
+  the three quality-alert thresholds are set to the values their own field docs
+  recommended (`mos_alert_threshold` 3.5, `loss_alert_threshold` 5.0,
+  `jitter_alert_threshold` 40.0). `stats_interval_ms` is the master switch for
+  RTCP accounting in baresip, so at 0 the loss/jitter/RTT/MOS fields read back
+  as zero from `baresdk_call_get_stats()` too — an app that never set it got no
+  quality signal anywhere and nothing said so. Everything added above reads
+  from this tick. Set it to 0 to opt out.
+
+- A `408` on a call now maps to `BARESDK_ERR_TIMEOUT` rather than
+  `BARESDK_ERR_INVAL`. It is what the new setup watchdog cancels with, and what
+  a proxy sends when its own transaction timed out; neither is the
+  malformed-request sense of `INVAL`.
+
 ### Fixed
+
+- **Python: every config field after `cfg.aec_mode` was written to the wrong
+  offset.** `baresdk_aec_mode_t` is a packed 1-byte enum, and the cffi header
+  generator strips `__attribute__((packed))` along with every other attribute,
+  so cffi widened the field to 4 bytes and shifted the 29 members that follow —
+  `stats_interval_ms`, the whole `net_*` group, the retry policy, the session
+  timers. `sizeof` still matched by padding coincidence, which is why the
+  `struct_size` check in `baresdk_init()` never caught it.
+  `bindings/python/build.sh` now passes `-DBARESDK_NO_PACKED_ENUM=1`, selecting
+  the `uint8_t` typedef that preserves the layout, the same way
+  `bindings/flutter/ffigen.yaml` already did. Verified by comparing every field
+  offset and every struct size against the C compiler: 0 mismatches.
+
+- **Python: `configure(transport="udp")` raised `TypeError`.** The string form is
+  what `configure()` documents and what `create_account()` already accepted, but
+  the global path assigned it straight to an integer field, so the documented
+  call failed from inside `_ensure_init()`. `transport` and `media_enc` are now
+  translated there too.
+
+- `bindings/flutter`: `BareSDKConfig.statsIntervalMs` and the three alert
+  thresholds defaulted to 0 and were written unconditionally, which would have
+  overwritten the new native defaults with "disabled". They now mirror the
+  native defaults.
+
+- `test/unit/Makefile`: `test_ws_pin` did not link. Its own comment says to keep
+  `--wrap` and the flag was absent, so `make test` failed out of the box on the
+  first target that needs the sysroot.
+
+- **App-owned audio device** — `baresdk_audio_use_external(true)` stops the SDK opening any capture or playback device of its own (no OpenSL ES, no AudioUnit) and hands the microphone and speaker to the host app, which moves PCM across `baresdk_audio_external_push()` / `baresdk_audio_external_pull()` from whatever the platform gives it — `AudioRecord`/`AudioTrack`, `AVAudioEngine`, a WebRTC `AudioDeviceModule`, or a file for testing. `baresdk_audio_external_format()` reports the rate/channels/ptime the call negotiated. Switching is live, including mid-call, and `false` restores the platform device. Note it replaces the *device*: the platform echo cancellers the SDK relies on belong to the drivers being displaced, so an app that takes this over owns AEC too.
+
+- **App-owned audio reaches every binding** — Flutter: `BareSDK.useAppOwnedAudio()`, `appOwnedAudioFormat` (an `ExternalAudioFormat` with `samplesPerFrame`), `appOwnedAudioActive`. C++: `SDK::use_external_audio()`, `audio_push()`, `audio_pull()`, `audio_format()`, `audio_external_active()`. Python: `use_external_audio()`, `external_audio_push()` (any S16LE buffer — `bytes`, `array('h')`, numpy), `external_audio_pull()`, `external_audio_format()`, `external_audio_active()`. The Dart facade deliberately omits push/pull: the realtime loop belongs in the plugin's native layer, because a GC pause on the capture path is a dropped frame.
+
+- **The software echo suppressor is available again while the app owns the device** — it was vetoed wherever the platform driver cancels echo, but that driver is exactly what the app-owned device displaces, so the veto left mobile with no canceller anywhere in the chain and no way to ask for one. It is now offered as a fallback, still **off** by default (an app that takes the device is expected to capture through the platform voice path itself, and ducking its TX silently would be the SDK fighting the platform), and forced off again when the platform device returns so the two never stack.
+
+- `bindings/flutter/example/integration_test/app_owned_audio_test.dart` — on-device gate test for the app-owned device: registers, calls an echo service, and asserts on frame counters and capture level from the native engine rather than on call state, because "connected but silent" is the failure this feature exists to prevent and call state cannot see it. The engine reports `pushFrames`, `pullFrames`, `pushErrors`, `capturePeak` and `nonSilentFrames` through `appOwnedAudioStatus()` for exactly this purpose.
+
+- `bindings/python/examples/external_audio.py` — pushes a synthesised tone as the microphone and writes the far end to a WAV, so the app-owned device can be verified end to end on a desktop with no audio hardware.
+- `test/unit/test_audio_external.c` and `test/audio_external_test.c` — unit and gate tests for the device, covering each of the regressions below.
+
+### Fixed
+
+- **After a reconnect, a WebSocket call could never be ended by the far end** — handover skips the re-INVITE when the local address has not changed ("same path"), which is correct for address-routed transports. A WebSocket client has no listening port, though: its Contact is the RFC 7118 placeholder `sip:user@<ip>:9;transport=wss` and the server reaches it by remembering which WebSocket the dialog's requests arrived on. A transport reset always builds a *new* WebSocket, so that association went stale on every reconnect even when the IP never moved — media kept flowing and the app's own BYE still got out (it is routed, not received), but an inbound BYE had nowhere to be delivered and the call hung in `ESTABLISHED` for the rest of the session. WS/WSS calls now re-INVITE on a transport reset regardless of the address, which re-binds the dialog to the live connection. Address-routed transports keep the shortcut and gain no extra signalling. Verified on device: reconnect mid-call, then the far end hangs up → `CALL_MIGRATING` → `CALL_MIGRATED` → inbound BYE delivered → `ENDED`.
+
+- **Every remote hangup was reported as a call failure** — libre signals a peer-initiated termination by passing `ECONNRESET` to the session close handler: its BYE handler answers 200 OK and then calls `sipsess_terminate(sess, ECONNRESET, NULL)` (`re/src/sipsess/listen.c`), and the peer-CANCEL path does the same. baresip's close handler tests `err` before `msg`, so a perfectly normal hangup arrived as `"Connection reset by peer [104]"` and was classified `BARESDK_CALL_FAILED` with `BARESDK_ERR_TRANSPORT`. Apps that branch on `ENDED` left the call on screen, and every hangup looked like a network fault. A call that was ESTABLISHED and closes with a transport error is now reported as `BARESDK_CALL_ENDED` with the reason `"Remote hangup"`; SIP failures (486, 603, 4xx/5xx/6xx) and pre-answer errors are untouched. Verified on device against a live PBX: remote BYE → `ended`, 486 → `failed`, 603 → `failed`, local hangup → `ended`.
+
+- **WebSocket calls opened a second connection for every dialog** — RFC 7118 gives a WS client one connection and routes everything over it, but libre routes by address: for an in-dialog request it resolves the dialog's Route/Contact and looks the connection up by peer address, so a target that is not the registration peer gets a whole new WebSocket. Behind a reverse proxy that target is the server's own loopback address (Asterisk advertises `127.0.0.1:8088` in Record-Route), so every call opened a second socket that existed only for the life of the dialog. A loopback WS destination is now rewritten to the address the registration is already connected to, so libre finds and reuses the existing connection. Linux/Android only — the fix rides the same `--wrap` mechanism as the WebSocket path workaround, which Windows and Apple's linkers do not have.
+
+- **Android app-owned audio captured near-silence on every stereo call** — the reference engine asked `AudioRecord` for the channel count the codec negotiated, and Opus routinely negotiates 48 kHz **stereo**. Phones have no stereo voice-communication capture path: `CHANNEL_IN_STEREO` yields an `AudioRecord` that initialises, reads without error and returns audio roughly 36x too quiet — a call that looks perfectly healthy by frame count and that the far end cannot hear. Capture is now always mono and up-mixed to the negotiated layout before `push()`. Found on a Galaxy A54 (Android 16) against a live Asterisk echo test; peak capture level went from 0.0017 to 0.062 of full scale on the same call.
+
+- **App-owned audio: `push()` never returned when the call negotiated a ptime under 20 ms** — the capture buffer's pre-fill threshold was a fixed 20 ms while the drain loop released one *ptime* at a time. Below the threshold `aubuf_read_auframe()` returns silence without draining, so the loop's condition stayed true forever: the app's realtime capture thread spun holding the device lock, and the SIP thread then deadlocked behind it on teardown. A peer offering `a=ptime:10` was enough. The threshold is now one frame, and the loop also breaks if a read fails to drain — a spin there is too expensive to leave to one invariant.
+
+- **App-owned audio: microphone audio was discarded at the start of every call** — the capture FIFO was left in `aubuf`'s live mode, whose first read drops the whole backlog down to one frame to cut latency. That is right for a playback jitter buffer and wrong for a capture path, where the backlog is microphone audio the app has already handed over: the first ~4 frames of every call went missing. Live mode is now off for capture.
+
+- **App-owned audio: ending the second of two calls took the microphone for the rest of the session** — the selected device was a bare pointer, cleared only when the closing device was the selected one. Closing the newer of two open devices therefore left the older one alive but unreachable and `push()` returned `ENODEV` forever, so call-waiting and hold/resume both silenced the surviving call. Devices are tracked in a list now: the newest still wins, and closing it falls back to whichever is still open.
+
+- **App-owned audio did not survive a stack restart** — nothing called `bsdk_audio_external_close()` at shutdown, while `baresip_init()` re-initialises the device lists on the way back up. The driver believed it was still registered, skipped re-registering, and `baresdk_audio_use_external(true)` went on **returning 0** while the module name resolved to nothing — every call after a restart came up with no audio at all, with no error anywhere. Shutdown now closes the driver, and the lock is created once per process and never destroyed, so an app's realtime thread racing shutdown cannot land on a destroyed mutex.
+
+- **The microphone was processed by filters the app had switched off** — `aufilt_register()` enables what it registers, and the SDK's TX filters were then enabled with `if (flag) aufilt_enable(name, true)`. A one-way enable never disables, so `bsdk_ns`, `bsdk_agc` and `bsdk_aec` all ran regardless of config: noise suppression and AGC ran with `ns`/`agc` at their default `false`, and the echo suppressor ran under `BARESDK_AEC_OFF`. Stacked on the TX path that is a −20 dB noise gate, a normaliser with a 0.1 gain floor, and a 16.5 dB duck whenever the far end has audio — worst case a caller the other end cannot hear. All five filters now take the flag directly.
+
+- **Mobile: the software echo suppressor fought the hardware one** — Android captures through the `VOICE_COMMUNICATION` recording preset and iOS through `VoiceProcessingIO`, so the device cancels the echo before the SDK sees a sample. `aec_mode` still defaulted to `SUPPRESSOR` there (in C and in Flutter), which ducked TX by 16.5 dB every time the far end had any audio above roughly −44 dBFS and took ~0.85 s to release — removing no echo that was still present, and half-duplexing a call the hardware had already made full-duplex. The suppressor is now skipped wherever the platform driver cancels echo, including the runtime `baresdk_set_aec_mode()` path; the stock `opensles` fallback (generic preset, no platform AEC) still gets it.
+
+- **Android: calls came up with audio in one direction only** — the platform was put into `MODE_IN_COMMUNICATION` from the call-established event, over an async method-channel hop, while the native core opened its OpenSL streams the moment media started. Android fixes a stream's routing when it is *created*, so whenever the mode landed second the playback stream stayed on the voice-call domain with nothing routing it: RTP flowed both ways, the far end heard everything, and the local user heard silence. `Account.call()` and `Call.answer()` now claim the audio session before starting media (`answer()` returns a `Future`, awaiting it is optional), and the event path is only a backstop.
+
+- **WebSocket calls dropped after ~32 seconds once a second account had existed** — connection pinning (which keeps in-dialog requests on the WebSocket flow instead of dialling the dialog's Record-Route, an unroutable `127.0.0.1:8088` behind a reverse proxy) switched off when two accounts named different servers, and stayed off for the life of the process. One stale account — the mistyped login attempt an app forgot to destroy — was enough to lose the ACK for every later call and have the server tear each dialog down on its ~32 s timer with media still flowing. Servers are refcounted now: pinning returns as soon as one is left, and while they are ambiguous a target that cannot work (a loopback address belonging to no account) is redirected rather than dialled. Covered by `test/unit/test_ws_pin.c`.
+
+- **Android: gaps in the audio the far end heard** — the OpenSL capture queue was primed with one buffer instead of both, so the recorder had nowhere to write between a completion callback and the next `Enqueue` and AudioFlinger dropped that slice of input, ~10 ms at a time, for the whole call.
+
+- **Flutter example re-registered by leaking accounts** — tapping Register built a new account and dropped the old one on the floor, still retrying its own registration forever and still counting against WebSocket pinning. It destroys the previous account first.
 
 - **iOS: init seized the audio session from CallKit** — `baresdk_init()` called `[AVAudioSession setActive:YES]` unconditionally, so merely starting the SDK (at app launch, or on a PushKit wake while CallKit was still reporting the call) took the exclusive PlayAndRecord route. Apple requires `CXProvider` to be the only activator, in `provider(_:didActivateAudioSession:)`. Activation is now controlled by `platform_audio_activate`; CallKit apps set it to `false` and get category + mode without activation.
 

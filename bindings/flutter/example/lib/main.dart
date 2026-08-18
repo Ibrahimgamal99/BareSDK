@@ -58,7 +58,7 @@ class _PhonePageState extends State<PhonePage>
   MediaEncryption _mediaEnc = MediaEncryption.none;
   bool _ice = false;
   bool _verifyTls = true;
-  final List<String> _codecPrefs = ['opus', 'g722', 'ulaw', 'alaw'];
+  final List<String> _codecPrefs = ['opus', 'ulaw', 'alaw'];
   final Set<String> _enabledCodecs = {'opus', 'ulaw'};
 
   // ── live state ─────────────────────────────────────────────────────────
@@ -69,6 +69,7 @@ class _PhonePageState extends State<PhonePage>
   bool _muted = false;
   bool _held = false;
   bool _speaker = false;
+  bool _appAudio = false;
   MediaStats? _stats;
   final List<String> _alerts = [];
   final List<String> _handover = [];
@@ -89,6 +90,8 @@ class _PhonePageState extends State<PhonePage>
   }
 
   void _logLine(String s) {
+    // ignore: avoid_print
+    print('BSDKLOG $s');
     setState(() {
       _log.add(s.trimRight());
       if (_log.length > 500) _log.removeRange(0, _log.length - 500);
@@ -98,12 +101,21 @@ class _PhonePageState extends State<PhonePage>
   // ── registration ───────────────────────────────────────────────────────
 
   Future<void> _register() async {
-    await Permission.microphone.request();
+    // Check the result. Without RECORD_AUDIO the OpenSL recorder still starts
+    // and reports success — it just never delivers a buffer, so the call comes
+    // up, the far end hears silence, and nothing anywhere says why. A denied
+    // mic has to be said out loud.
+    final mic = await Permission.microphone.request();
+    if (!mic.isGranted) {
+      _snack('Microphone denied — calls will have no outgoing audio');
+      _logLine('microphone permission: $mic (calls will be one-way)');
+    }
 
     try {
       _sdk ??= await BareSDK.start(
         config: const BareSDKConfig(
-          logLevel: 2,
+          logLevel: 3,
+          traceSip: true,
           statsIntervalMs: 2000,
           traceSdpDiff: true,
           mosAlertThreshold: 3.5,
@@ -122,6 +134,14 @@ class _PhonePageState extends State<PhonePage>
       _snack('WS/WSS needs a server URL, e.g. wss://pbx:8089/ws');
       return;
     }
+
+    // Registering again replaces the account — the old one must go, not just
+    // be forgotten. A left-behind account keeps retrying its own registration
+    // forever (a mistyped domain never resolves, so it never gives up) and
+    // counts as a second SIP server for as long as it lives, which switches
+    // off the SDK's WebSocket connection pinning for the account that works.
+    _account?.destroy();
+    _account = null;
 
     final account = _sdk!.createAccount(
       _user.text,
@@ -198,6 +218,18 @@ class _PhonePageState extends State<PhonePage>
 
       case MediaStatsEvent e:
         setState(() => _stats = e.stats);
+        // Also to the log: the two audio levels are what distinguish "the mic
+        // is dead" from "nothing is coming back" from "it is all working and
+        // you are holding it wrong", and reading them off a live call is
+        // easier from a log than from the Diagnostics tab.
+        // remoteAddr is where the stack is actually sending RTP. If that is a
+        // private address the phone cannot route to, every packet is counted
+        // as sent and then dropped by the local router — which looks identical
+        // to a working transmitter from in here.
+        _logLine('level mic ${e.stats.micLevelDbov.toStringAsFixed(1)} dBov / '
+            'spk ${e.stats.audioLevelDbov.toStringAsFixed(1)} dBov  '
+            'tx ${e.stats.packetsSent} rx ${e.stats.packetsReceived}  '
+            'peer ${e.stats.remoteAddr}');
 
       case QualityAlertEvent e:
         final msg = e.recovering
@@ -240,6 +272,10 @@ class _PhonePageState extends State<PhonePage>
 
       case LogEvent e:
         _logLine(e.message);
+
+      case SipTraceEvent e:
+        _logLine('SIP ${e.direction.name} ${e.transport} ${e.remoteAddr}\n'
+            '${e.rawMessage.split('\r\n').take(3).join(' | ')}');
 
       default:
         break;
@@ -485,6 +521,25 @@ class _PhonePageState extends State<PhonePage>
             onPressed: () {
               _sdk?.setSpeakerphone(!_speaker);
               setState(() => _speaker = !_speaker);
+            },
+          ),
+          // Switchable mid-call on purpose: that is the interesting case, and
+          // the one worth having in front of you when a device misbehaves.
+          FilledButton.tonalIcon(
+            icon: Icon(_appAudio ? Icons.headset_mic : Icons.settings_voice),
+            label: Text(_appAudio ? 'SDK audio' : 'App audio'),
+            onPressed: () async {
+              final sdk = _sdk;
+              if (sdk == null) return;
+              try {
+                await sdk.useAppOwnedAudio(!_appAudio);
+                setState(() => _appAudio = !_appAudio);
+                _logLine(_appAudio
+                    ? 'App owns the mic and speaker'
+                    : 'SDK owns the mic and speaker');
+              } catch (e) {
+                _logLine('app-owned audio: $e');
+              }
             },
           ),
         ]),

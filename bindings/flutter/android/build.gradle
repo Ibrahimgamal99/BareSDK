@@ -1,43 +1,35 @@
+// No buildscript {} block on purpose. Flutter's plugin-loader
+// (dev.flutter.flutter-plugin-loader in the HOST app's settings.gradle)
+// supplies AGP and the Kotlin plugin on its classpath; a plugin that pins its
+// own AGP/Kotlin versions here drags a SECOND, usually older, toolchain into
+// the build and breaks host apps on newer Gradle (seen live: an AGP 9 /
+// Kotlin 2.x host failing on this plugin's AGP 8.3.2 classpath and
+// jvmTarget 11-vs-17 mismatch). The `plugins` DSL resolves whatever the host
+// already has — and must be the file's first statement (Gradle rule).
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
 group = 'dev.baresdk.flutter'
 version = '1.0.0'
 
-buildscript {
-    ext.kotlin_version = '1.9.24'
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:8.3.2'
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-    }
-}
-
-rootProject.allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
-
 android {
     namespace = 'dev.baresdk.flutter'
-    compileSdk = 34
+    // AGP 9 requires compileSdk >= 35; harmless on older AGP.
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 24
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = '11'
+        jvmTarget = '17'
     }
 
     // Prebuilt libbaresdk.so per ABI lives in src/main/jniLibs/<abi>/
@@ -50,6 +42,5 @@ android {
 }
 
 dependencies {
-    compileOnly "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     compileOnly 'androidx.annotation:annotation:1.7.1'
 }

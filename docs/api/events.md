@@ -62,7 +62,7 @@ State fields use strings instead of integer constants:
 | `reg_state` | `"unregistered"` `"registering"` `"registered"` `"failed"` `"unregistering"` |
 | `call_state` | `"calling"` `"ringing"` `"established"` `"held"` `"ended"` `"cancelled"` `"failed"` |
 | `presence_state` | `.status`: `"unknown"` `"open"` `"closed"` `"busy"` |
-| `quality_alert` | `.issue`: `"mos"` `"loss"` `"jitter"` `"rtt"` |
+| `quality_alert` | `.issue`: `"mos"` `"loss"` `"jitter"` `"rtt"` `"media_stall"` |
 | `sip_trace` | `.direction`: `"tx"` or `"rx"` |
 
 ---
@@ -123,13 +123,29 @@ Fires on every call state transition.
 | `CANCELLED` | CANCEL sent before answer |
 | `FAILED` | Error response (4xx, 5xx, 6xx) |
 
+> **A remote hangup is `ENDED`, not `FAILED`.** libre reports a peer-initiated
+> termination by passing `ECONNRESET` to its session close handler — its BYE
+> path answers 200 OK and then terminates the session with that errno — so a
+> normal hangup reaches the SDK looking exactly like a dead socket
+> (`"Connection reset by peer [104]"`). The SDK therefore treats a transport
+> error on a call that had reached `ESTABLISHED` as a remote hangup and reports
+> `ENDED` with `reason = "Remote hangup"` and `error = BARESDK_OK`.
+>
+> A consequence worth knowing: a genuine mid-call transport failure is also
+> reported as `ENDED`. The two are indistinguishable at this layer, and the call
+> is over either way — the transport itself is covered by `REG_STATE` and
+> `BARESDK_EV_NETWORK`, which a plain hangup never touches.
+>
+> Errors *before* answer are unaffected: 486, 603 and every other 4xx/5xx/6xx
+> still arrive as `FAILED` with the SIP reason phrase intact.
+
 | Field | Type | Description |
 |---|---|---|
 | `account` | handle | Owning account |
 | `call` | handle | The call |
 | `state` | `baresdk_call_state_t` | New state |
 | `error` | `baresdk_error_t` | Error code when FAILED |
-| `reason` | `const char *` | SIP reason phrase (may be NULL) |
+| `reason` | `const char *` | SIP reason phrase, `"Remote hangup"` for a peer BYE, or NULL |
 
 ---
 
@@ -349,4 +365,36 @@ See [Network handover](../guides/network_handover.md) for the full sequence.
 
 Stages: `CHANGE_DETECTED`, `DOWN`, `UP`, `TRANSPORT_RESET`, `REREGISTERING`,
 `CALL_MIGRATING`, `CALL_MIGRATE_ACCEPTED`, `CALL_MIGRATED`,
-`CALL_MIGRATION_FAILED`, `CALL_DEFERRED`, `HANDOVER_FAILED`.
+`CALL_MIGRATION_FAILED`, `CALL_DEFERRED`, `HANDOVER_FAILED`,
+`CALL_ICE_STALE`.
+
+`CALL_ICE_STALE` is emitted once per ICE call per handover, before the
+re-INVITE: the gathered candidates are now wrong and cannot be re-gathered
+mid-call. The offer still goes out — it recovers a direct or still-valid
+TURN-relayed path — but if media does not resume, the remedy is to re-place the
+call. `cfg.net_ice_handover` decides whether to keep retrying; see
+[Network handover](../guides/network_handover.md#ice-calls).
+
+---
+
+## BARESDK_EV_QUALITY_ALERT
+**`ev->u.quality_alert`** — `baresdk_ev_quality_alert_t`
+
+Fired when a quality metric crosses one of the configured thresholds, and
+again when it crosses back. Edge-triggered, so a call that stays bad produces
+one alert, not one per stats tick.
+
+| Field | Type | Description |
+|---|---|---|
+| `call` | handle | The affected call |
+| `issue` | `baresdk_quality_issue_t` | `MOS`, `LOSS`, `JITTER`, `RTT`, `MEDIA_STALL` |
+| `value` | `float` | The metric that crossed |
+| `threshold` | `float` | The threshold it crossed |
+| `recovering` | `bool` | true = the value came back across |
+
+`MEDIA_STALL` is the odd one out: it is not a metric threshold but the absence
+of inbound RTP for `cfg.media_stall_ms` while the call is neither held nor
+mid-handover — the link is up and the dialog is healthy, and no audio is
+arriving. `value` is the stall duration in ms. It is deliberately non-fatal;
+`cfg.rtp_timeout_s` is the setting that ends such a call instead. See
+[Degraded links](../guides/degraded_links.md).

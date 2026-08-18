@@ -6,13 +6,20 @@ baresdk provides built-in tools for monitoring call quality, tracing SIP traffic
 
 ## Media statistics (RTCP)
 
-Enable periodic stats with `cfg.stats_interval_ms`:
+Periodic stats are on by default at `cfg.stats_interval_ms = 2000`:
 
 ```c
-cfg.stats_interval_ms = 5000;  // every 5 seconds
+cfg.stats_interval_ms = 2000;  // default; 0 disables
 ```
 
 You will receive `BARESDK_EV_MEDIA_STATS` events at that interval during every active call.
+
+!!! warning "0 disables more than the events"
+    `stats_interval_ms` is also the master switch for RTCP accounting inside
+    baresip (`avt.rtp_stats`). With it at 0 the loss, jitter, RTT and MOS fields
+    read back as zero from `baresdk_call_get_stats()` too, and every feature
+    derived from them — quality alerts, media-stall detection and adaptive
+    bitrate — is inert.
 
 ### Key metrics
 
@@ -87,6 +94,47 @@ if (rc == BARESDK_OK) {
            stats.codec_name, stats.remote_addr, stats.ssrc_rx);
 }
 ```
+
+---
+
+## Quality alerts
+
+Rather than re-deriving thresholds from every stats tick, set them once and get
+an edge-triggered event when one is crossed — and another when it is crossed
+back. A call that stays bad produces one alert, not one per tick.
+
+```c
+cfg.mos_alert_threshold    = 3.5;    /* defaults */
+cfg.loss_alert_threshold   = 5.0;
+cfg.jitter_alert_threshold = 40.0;
+cfg.media_stall_ms         = 4000;
+```
+
+| Issue | Fires when | `value` |
+|---|---|---|
+| `BARESDK_QUALITY_MOS` | `mos_lq` drops below `mos_alert_threshold` | the MOS |
+| `BARESDK_QUALITY_LOSS` | `loss_pct` exceeds `loss_alert_threshold` | loss % |
+| `BARESDK_QUALITY_JITTER` | `jitter_ms` exceeds `jitter_alert_threshold` | jitter ms |
+| `BARESDK_QUALITY_MEDIA_STALL` | no inbound RTP for `media_stall_ms` | stall ms |
+
+`MEDIA_STALL` is not a metric threshold — it is the *absence* of inbound RTP
+while the call is neither held nor mid-handover. It is the one condition that no
+amount of reading the other metrics will reveal, because when RTP stops the
+metrics simply stop changing. Suppressed on held calls and during a handover
+migration, where `BARESDK_EV_NETWORK` narrates the same outage in more detail.
+
+```c
+case BARESDK_EV_QUALITY_ALERT: {
+    const baresdk_ev_quality_alert_t *a = &ev->u.quality_alert;
+    printf("%s %s: %.1f (threshold %.1f)\n",
+           a->recovering ? "recovered" : "degraded",
+           issue_name(a->issue), a->value, a->threshold);
+    break;
+}
+```
+
+Set any threshold to 0 to disable that alert. See
+[Degraded links](../guides/degraded_links.md) for what to do about each one.
 
 ---
 

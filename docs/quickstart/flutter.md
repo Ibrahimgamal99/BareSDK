@@ -23,9 +23,33 @@ dependencies:
     git:
       url: https://github.com/Ibrahimgamal99/BareSDK.git
       path: bindings/flutter
+      ref: <full-40-char-sha>   # pin for anything you ship
   # or, from a checkout:
   # baresdk:
   #   path: path/to/baresdk/bindings/flutter
+```
+
+`path:` is required either way — the plugin lives in a subdirectory, not at
+the repo root.
+
+**Pin a full SHA before you release.** Without `ref:` the dependency floats on
+the default branch, and with `path:` it floats on whatever native library that
+branch happened to carry. A `path:` checkout floats even harder: it tracks your
+working tree, so the app ships whatever `.so` is on your disk at build time —
+convenient while the two repos move together, wrong for a release. If the repo
+is private, CI needs an SSH deploy key or token; pub fetches git dependencies
+with a plain `git clone` and has no auth layer of its own.
+
+Gradle caches the plugin's build output, so a dependency change is not always
+enough to re-package the native library. After moving between refs (or after a
+local rebuild) run `flutter clean` before `flutter run`, and confirm what
+actually shipped:
+
+```bash
+# The two hashes must match; if they differ, the APK carries a stale library.
+unzip -p build/app/outputs/flutter-apk/app-release.apk \
+  lib/arm64-v8a/libbaresdk.so | md5sum
+md5sum bindings/flutter/android/src/main/jniLibs/arm64-v8a/libbaresdk.so
 ```
 
 Android needs nothing else — the plugin already carries the native libraries
@@ -139,7 +163,7 @@ final account = sdk.createAccount('alice@pbx.example.com', 'secret',
       serverUrl: 'wss://pbx.example.com:8089/ws',
       mediaEnc: MediaEncryption.dtlsSrtp,   // typical for WebRTC gateways
       iceEnabled: true,
-      audioCodecs: ['opus', 'g722', 'ulaw'],  // ordered preference
+      audioCodecs: ['opus', 'ulaw', 'alaw'],  // ordered preference (also the default)
     ));
 
 account.register();
@@ -213,6 +237,75 @@ Android capture/playback uses baresip's OpenSLES module (works on every
 supported API level). Opus can be tuned via `BareSDKConfig.opus`
 (`OpusConfig(bitrate: 32000, fec: true, dtx: true, ...)`).
 
+### Taking over the microphone and speaker
+
+The SDK owns the audio device by default, and that is the tested path. Turn it
+around when the platform and the SDK's driver disagree — Bluetooth routing that
+will not follow, CallKit owning the session, a call that comes up one-way:
+
+```dart
+final sdk = await BareSDK.start(
+  config: const BareSDKConfig(appOwnedAudio: true),
+);
+
+// or at runtime, including mid-call:
+await sdk.useAppOwnedAudio(true);
+
+sdk.appOwnedAudioErrors.listen((e) {
+  // mic-permission | unsupported-rate | device-open | capture-dead | ...
+  // Nothing else reports these: the SDK is no longer holding the device.
+  print(e);
+});
+```
+
+The plugin ships a working capture/playback engine for both platforms, so most
+apps need nothing further —
+[`AppOwnedAudioEngine.kt`](../../bindings/flutter/android/src/main/kotlin/dev/baresdk/flutter/AppOwnedAudioEngine.kt)
+(`AudioRecord`/`AudioTrack` on `VOICE_COMMUNICATION`) and
+[`BaresdkExternalAudio.m`](../../bindings/flutter/ios/Classes/BaresdkExternalAudio.m)
+(a `VoiceProcessingIO` AudioUnit).
+
+**The realtime loop is native on purpose.** `push`/`pull` are reachable from
+Dart FFI but deliberately absent from the `BareSDK` API: they run on a
+10-20 ms deadline, and a GC pause on the capture path is a dropped frame. Dart
+flips the mode and reads the format; Kotlin and Objective-C move the samples.
+
+To write your own loop instead of using the shipped one, call the C directly —
+`baresdk_audio_external_push/pull/format` — from your own audio thread. On
+Android the JNI entry points are already exported from `libbaresdk.so` as
+`dev.baresdk.ExternalAudio`, so no NDK build is needed:
+
+```kotlin
+val fmt = IntArray(3)
+if (ExternalAudio.nativeFormat(fmt) == 0) {
+    val (srate, ch, ptime) = Triple(fmt[0], fmt[1], fmt[2])
+    // direct ByteBuffers only — a heap buffer has no address to hand C
+    ExternalAudio.nativePush(captureBuf, samples)
+    ExternalAudio.nativePull(playBuf, samples)
+}
+```
+
+Two things to get right, both covered by the shipped engine:
+
+- **Capture through the platform voice path.** The SDK's mobile echo canceller
+  *is* the capture preset of the driver you just displaced, so it leaves with
+  it. Use `MediaRecorder.AudioSource.VOICE_COMMUNICATION` under
+  `MODE_IN_COMMUNICATION`, or `VoiceProcessingIO` — otherwise the call echoes.
+- **Poll the format; don't wait for an event.** There is no "media is up"
+  event. `CallState.established` is a SIP state and races the device, and a
+  mid-call re-INVITE can change the codec with no state change at all.
+
+CallKit hosts must also forward session activation, since they own it:
+
+```dart
+// in CXProviderDelegate
+await sdk.notifyCallKitAudioActive(true);   // didActivate
+await sdk.notifyCallKitAudioActive(false);  // didDeactivate
+```
+
+See [App-owned audio device](../api/media.md#app-owned-audio-device) for the
+full contract.
+
 ## 7 — Logging & tracing
 
 The SDK never writes to stdout/stderr. Everything arrives as events:
@@ -255,6 +348,18 @@ cd bindings/flutter && dart run ffigen --config ffigen.yaml
 
 `BARESDK_BUILD_ROOT` should point at a native filesystem when the repo
 lives on NTFS — incremental builds there silently reuse stale objects.
+
+`build-android.sh` refreshes `bindings/flutter/android/src/main/jniLibs/`
+itself, by calling `sync-flutter-jnilibs.sh` on the way out — there is no
+second command to run. Those `.so` files are tracked in git, and **a rebuild
+reaches consumers only once they are committed and pushed**: apps pin a git
+SHA, so an uncommitted rebuild leaves every consumer on the previous library
+while your own `path:` checkout quietly uses the new one. That split is
+invisible from the Dart side and presents as the SDK behaving differently on
+device than it does in the example app or the Python binding. Commit the
+refreshed `jniLibs` in the same commit as the C change that motivated it, and
+hand consumers the new SHA.
+
 The desktop smoke test for the binding is
 `bindings/flutter/test/baresdk_smoke_test.dart` (needs
 `scripts/build-linux.sh` first); the C-side owned-events gate is

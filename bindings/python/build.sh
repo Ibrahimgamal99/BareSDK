@@ -14,7 +14,15 @@ if [[ ! -f "${DIST_DIR}/baresdk.so" ]]; then
 fi
 
 echo "==> Regenerating clean header..."
+# BARESDK_NO_PACKED_ENUM is required, not cosmetic.  baresdk_aec_mode_t is a
+# packed (1-byte) enum in the real ABI, and -D'__attribute__(x)=' below strips
+# the packed attribute — so cffi widens the field to 4 bytes and every struct
+# member after cfg.aec_mode lands at the wrong offset.  The total size can
+# still match by padding coincidence, which is why the struct_size check in
+# baresdk_init() does not catch it.  The define selects the uint8_t typedef
+# that preserves the layout, the same way bindings/flutter/ffigen.yaml does.
 gcc -E \
+    -DBARESDK_NO_PACKED_ENUM=1 \
     -D'__extension__=' \
     -D'__attribute__(x)=' \
     -D'__restrict=' \

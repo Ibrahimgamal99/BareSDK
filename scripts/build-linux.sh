@@ -32,6 +32,7 @@ echo "=== Linking ${SO} ==="
 # glibc_symver.c is already compiled into baresdk.a via the SRC_MODE build.
 gcc -shared \
   -Wl,--wrap=websock_connect \
+  -Wl,--wrap=sip_transp_send \
   -Wl,--whole-archive "${DIST_DIR}/baresdk.a" -Wl,--no-whole-archive \
   -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl -lstdc++ \
   -lpulse \

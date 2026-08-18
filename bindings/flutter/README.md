@@ -11,8 +11,8 @@ ships no UI and imposes no call flow.
 
 | | |
 |---|---|
-| **Android** | arm64-v8a · armeabi-v7a · x86_64 · `minSdk` 24. Prebuilt `libbaresdk.so` ships in the package; Kotlin shim handles cache dir, audio focus, speakerphone, network callbacks. |
-| **iOS** | 13.0+, device + simulator. Vendors `baresdk.xcframework`; Swift shim handles `AVAudioSession`, speaker routing, `NWPathMonitor`. Capture uses VoiceProcessingIO (hardware AEC). |
+| **Android** | arm64-v8a · armeabi-v7a · x86_64 · `minSdk` 24. Prebuilt `libbaresdk.so` ships in the package; Kotlin shim handles cache dir, audio focus, speakerphone, network callbacks, and an app-owned audio device (`AudioRecord`/`AudioTrack` on `VOICE_COMMUNICATION`). |
+| **iOS** | 13.0+, device + simulator. Vendors `baresdk.xcframework`; Swift shim handles `AVAudioSession`, speaker routing, `NWPathMonitor`. Capture uses VoiceProcessingIO (hardware AEC), also for the optional app-owned audio device. |
 | **Linux / macOS / Windows** | Works as a plain FFI binding — the app bundles the native library itself, or passes `BareSDK(libPath: ...)`. |
 
 ## Install
@@ -63,7 +63,7 @@ final account = sdk.createAccount(
   config: const AccountConfig(
     serverUrl: 'wss://pbx.example.com:8089/ws',  // WS/WSS need a URL
     mediaEnc: MediaEncryption.dtlsSrtp,
-    audioCodecs: ['opus', 'g722', 'ulaw'],
+    audioCodecs: ['opus', 'ulaw', 'alaw'],
   ),
 );
 account.register();

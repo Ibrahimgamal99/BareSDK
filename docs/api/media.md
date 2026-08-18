@@ -15,15 +15,21 @@ cfg.audio_codec_count = 2;
 | Opus | `BARESDK_CODEC_OPUS` | Wideband / fullband, preferred for WebRTC |
 | G.711 µ-law | `BARESDK_CODEC_PCMU` | 8 kHz, universal PSTN compatibility |
 | G.711 A-law | `BARESDK_CODEC_PCMA` | 8 kHz, European PSTN |
-| G.722 | `BARESDK_CODEC_G722` | Wideband, good for HD voice |
-| G.726 32 kbit/s | `BARESDK_CODEC_G726_32` | 8 kHz, legacy ADPCM |
+
+These three are the only codecs compiled into the library, on every platform.
+Leaving `audio_codec_count` at 0 offers all three, Opus first — see
+[Default codec list](#default-codec-list).
+
+`BARESDK_CODEC_G722` and `BARESDK_CODEC_G726_32` still exist as enum
+constants for ABI compatibility, but no module provides them; selecting one
+has no effect beyond a warning.
 
 ### By name
 
-Codecs can also be listed by name, which reaches codecs with no enum constant
-(`"g729"`) and any codec a loaded baresip module registers. Names are matched
-case-insensitively; aliases: `opus`, `ulaw`/`g711u`/`pcmu`, `alaw`/`g711a`/`pcma`,
-`g722`, `g729`, `g726`/`g726-32`.
+Codecs can also be listed by name, which reaches any codec a loaded baresip
+module registers. Names are matched case-insensitively; aliases: `opus`,
+`ulaw`/`g711u`/`pcmu`, `alaw`/`g711a`/`pcma`. An unrecognized name is passed
+through to baresip as-is.
 
 ```c
 strcpy(cfg.audio_codec_names[0], "ulaw");
@@ -38,6 +44,20 @@ Both lists exist on `baresdk_config_t` (global) and
 2. account `audio_codecs`
 3. global `audio_codec_names`
 4. global `audio_codecs`
+
+### Default codec list
+
+When all four are empty — the default — the SDK offers a fixed list that is
+identical on desktop and mobile:
+
+```
+opus/48000/2, PCMU/8000/1, PCMA/8000/1
+```
+
+This is pinned in `src/account.c` rather than left to baresip, which would
+otherwise offer whatever codecs the linked modules happen to register. If a
+build ever ships without Opus or G.711, the SDK logs `codec list "…" matched
+no loaded codec` at account setup instead of silently offering something else.
 
 In Flutter both levels are `List<String>` and use the name form:
 `BareSDKConfig(audioCodecs: ['ulaw', 'opus'])` globally,
@@ -123,19 +143,209 @@ sdk.set_mic_gain(6.0)                  # TX gain dB [-20, +20]; 0 = unity (bypas
 sdk.set_speaker_gain(-3.0)             # RX gain dB [-20, +20]; 0 = unity (bypass)
 ```
 
-**AEC mode comparison**
+### AEC mode comparison
 
 | | Suppressor (mode=1, default) | WebRTC (mode=2, opt-in) |
 |--|--|--|
 | Duplex | Half — ducks mic when far-end is loud | Full — both sides speak simultaneously |
 | Double-talk | One side goes quiet | Both parties heard |
 | CPU | Negligible | Moderate |
-| Platform | All | Desktop only |
+| Platform | Desktop | Desktop only |
 | Build | None | `cmake -DBARESDK_WITH_WEBRTC_AEC=ON` + `libwebrtc-audio-processing-1-dev` |
 
 > **WebRTC AEC** must be selected at init time via `sdk.configure(aec_mode=2)`. Only `off ↔ init_mode` transitions are valid at runtime — switching between SUPPRESSOR and WEBRTC returns an error.
 >
-> **Mobile (Android / iOS):** full-duplex AEC is handled automatically by the OS audio driver. No SDK flag needed.
+> **Mobile (Android / iOS):** full-duplex AEC is handled by the OS audio driver — Android captures through the `VOICE_COMMUNICATION` recording preset, iOS through `VoiceProcessingIO`. The echo is gone before the SDK sees a sample, so the software suppressor is **not** run there even when `aec_mode` is left at `SUPPRESSOR`: ducking the mic another 16.5 dB would only half-duplex a call the hardware had already made full-duplex. No SDK flag needed, and setting one changes nothing.
+
+---
+
+## App-owned audio device
+
+By default the SDK opens the platform's capture and playback devices itself.
+An app that would rather own them — because it already runs its own audio
+engine, needs the mic for something else at the same time, or wants the OS
+integration its platform team has already built — can take them over:
+
+```c
+baresdk_audio_use_external(true);   /* SDK stops touching the hardware */
+```
+
+From then on the app supplies and consumes PCM. Nothing else about the call
+changes; SIP, ICE, SRTP, codecs and the jitter buffer stay with the SDK.
+
+```c
+uint32_t srate, ptime;
+uint8_t  ch;
+baresdk_audio_external_format(&srate, &ch, &ptime);   /* e.g. 8000, 1, 20 */
+
+/* capture thread — this is what the far end hears */
+baresdk_audio_external_push(mic_pcm, nsamp);
+
+/* playback thread — this is what the local user hears */
+baresdk_audio_external_pull(spk_pcm, nsamp);
+```
+
+PCM is S16LE interleaved. Any buffer size is accepted — the stack re-frames to
+the call's ptime internally. `pull()` always fills the buffer completely,
+writing silence when no call is up, so it can feed the speaker unconditionally.
+Call both from the app's own audio threads, never from inside a baresdk event
+callback.
+
+`baresdk_audio_use_external(false)` gives the devices back. Both directions
+take effect immediately, including on a call already in progress.
+
+Python:
+
+```python
+sdk.use_external_audio(True)
+
+fmt = sdk.external_audio_format()        # (8000, 1, 20) or None before media
+if fmt:
+    srate, ch, ptime = fmt
+    nsamp = srate * ch * ptime // 1000
+
+    sdk.external_audio_push(mic_pcm)     # bytes / bytearray / array('h') / numpy
+    spk_pcm = sdk.external_audio_pull(nsamp)   # always exactly nsamp samples
+```
+
+Dart:
+
+```dart
+sdk.useAppOwnedAudio(true);
+
+final fmt = sdk.appOwnedAudioFormat;     // null until the call has media
+if (fmt != null) {
+  print('${fmt.sampleRate}Hz ${fmt.channels}ch, ${fmt.samplesPerFrame}/frame');
+}
+```
+
+A complete working example is
+[`bindings/python/examples/external_audio.py`](../../bindings/python/examples/external_audio.py):
+it pushes a synthesised tone as the microphone and writes the far end to a WAV,
+so the whole feature can be verified on a desktop with no audio hardware.
+
+### Full API surface
+
+C (`include/baresdk.h`):
+
+| | |
+|---|---|
+| `baresdk_audio_use_external(bool)` | take/return the device; live, incl. mid-call |
+| `baresdk_audio_external_push(pcm, nsamp)` | captured mic audio → far end |
+| `baresdk_audio_external_pull(pcm, nsamp)` | far end → speaker; always fills |
+| `baresdk_audio_external_format(&srate, &ch, &ptime)` | negotiated format, `ENODEV` until media |
+| `baresdk_audio_external_is_active()` | is a call using the app-owned device |
+
+Flutter (`BareSDK`):
+
+| | |
+|---|---|
+| `Future<void> useAppOwnedAudio(bool)` | throws `StateError` if the stack is down |
+| `ExternalAudioFormat? appOwnedAudioFormat` | null until the call has media; `.samplesPerFrame` sizes your buffers |
+| `bool appOwnedAudioActive` | false between calls even with the mode on |
+| `Future<Map> appOwnedAudioStatus()` | native engine diagnostics — see below |
+| `Stream<AppOwnedAudioError> appOwnedAudioErrors` | **handle this** — see below |
+| `Future<void> notifyCallKitAudioActive(bool)` | iOS + CallKit only |
+
+C++ (`SDK`): `use_external_audio`, `audio_push`, `audio_pull`,
+`audio_format(AudioFormat&)`, `audio_external_active`. `audio_push`/`audio_pull`
+deliberately do not throw — `ENODEV` is the normal state between calls and they
+run on a realtime thread.
+
+Python: `use_external_audio`, `external_audio_push` (any S16LE buffer),
+`external_audio_pull`, `external_audio_format`, `external_audio_active`.
+
+### Handle the error stream
+
+Once the app owns the device the SDK is not holding it and **cannot see it
+fail**. Nothing else reports these, and unhandled they present as a call that
+connects with silence in one or both directions:
+
+```dart
+sdk.appOwnedAudioErrors.listen((e) => log('$e'));
+```
+
+| Code | Meaning |
+|---|---|
+| `mic-permission` | `RECORD_AUDIO` not granted — `AudioRecord` would not initialise |
+| `unsupported-rate` | the device will not open the negotiated rate |
+| `device-open` | the platform refused to build the capture/playback device |
+| `capture-dead` / `playback-dead` | the stream died twice in a row and was given up on |
+| `unavailable` | the native library did not load |
+
+`appOwnedAudioStatus()` returns the native engine's own view, which is how you
+tell "the device opened" from "audio is actually moving": `armed`, `paused`,
+`running`, `available`, `sampleRate`, `channels`, `ptimeMs`, `pushFrames`,
+`pullFrames`, `pushErrors`, `capturePeak`, `nonSilentFrames`, `lastError`.
+A healthy 20 ms loop advances `pushFrames`/`pullFrames` by ~50 per second.
+
+### Who calls push and pull
+
+On mobile, **the realtime loop belongs in the native layer** — Kotlin over JNI,
+Swift calling the C directly — not in Dart. A garbage-collection pause on the
+capture path is a dropped frame, and there is no way to schedule around it. The
+Dart API deliberately exposes only the mode switch and the format; there is no
+`push`/`pull` on `BareSDK` for that reason.
+
+Whatever runs the loop must capture through the platform's voice path —
+Android `MediaRecorder.AudioSource.VOICE_COMMUNICATION` with
+`AudioManager.MODE_IN_COMMUNICATION`, iOS `VoiceProcessingIO` — see the echo
+note below.
+
+### Capture channel count (Android)
+
+Opus commonly negotiates 48 kHz **stereo**, but no phone has a stereo
+voice-communication capture path. Asking `AudioRecord` for `CHANNEL_IN_STEREO`
+does not fail — it returns an initialised recorder that reads without error and
+delivers audio far too quiet to hear, which is indistinguishable from a working
+call by any frame-level check. Capture mono and up-mix to the negotiated channel
+count before `push()`; the shipped engine does this.
+
+### Quiet rooms read as digital silence
+
+The `VOICE_COMMUNICATION` path runs the platform noise suppressor, which emits
+*exact* digital silence rather than a noise floor when it decides there is no
+speech. So `micLevelDbov` in the media stats legitimately reads `-127` (the
+all-zero sentinel) for most frames of a quiet call, and the level is a 1 Hz
+snapshot of a single frame. Neither is evidence of a broken capture path — count
+frames that carried signal instead if you need to tell a gated microphone from a
+dead one.
+
+### Lifecycle
+
+The device opens when the call gets media, not when it is answered, so
+`baresdk_audio_external_format()` returns `ENODEV` until then. There is **no
+"media is up" event** to wait on: `CALL_ESTABLISHED` is a SIP state and races
+the device by a few milliseconds, and a mid-call re-INVITE can renegotiate the
+codec with no call-state change at all. Poll the format — it reports both that
+the device opened and that its format changed — and stop the loops when the
+call ends.
+
+`baresdk_audio_use_external()` is **not sticky across a restart**: `baresdk_init()`
+re-derives the device from the platform, so an app that shuts the stack down and
+brings it back up has to ask again.
+
+### One device, one call
+
+baresip opens a device per call, but the app has one microphone and one speaker.
+The most recently opened call owns them; a second concurrent call gets silence
+rather than a share of the mic, which is the honest outcome — the app cannot
+capture twice. Ending the newer call hands the devices back to the one still up.
+Mixing two calls together is conferencing, and out of scope here.
+
+> **Echo cancellation follows the device.** The SDK's AEC on mobile *is* the
+> platform capture path — Android's `VOICE_COMMUNICATION` preset, iOS's
+> `VoiceProcessingIO` — and those belong to the drivers this displaces. An app
+> that takes the device over owns AEC with it: capture through the equivalent
+> voice path on its own side, or expect echo. See
+> [AEC mode comparison](#aec-mode-comparison).
+>
+> The SDK's own half-duplex suppressor does become *available* again while the
+> app owns the device, since the hardware canceller is out of the path — but it
+> stays **off** unless asked for with
+> `baresdk_set_aec_mode(BARESDK_AEC_SUPPRESSOR)`. Switching it on automatically
+> would silently duck the TX of an app that is already cancelling properly. It
+> is forced back off when the platform device returns, so the two never stack.
 
 ---
 

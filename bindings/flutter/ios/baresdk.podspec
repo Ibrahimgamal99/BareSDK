@@ -23,6 +23,9 @@ over dart:ffi.
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'
   s.source_files     = 'Classes/**/*'
+  # BaresdkExternalAudio.h must reach the generated umbrella header so the
+  # Swift shim can instantiate the Objective-C audio engine.
+  s.public_header_files = 'Classes/**/*.h'
   s.dependency 'Flutter'
 
   # Prebuilt native core. Missing? Run scripts/build-ios.sh on macOS (or

@@ -13,7 +13,7 @@
 ///   config: const AccountConfig(
 ///     serverUrl: 'wss://pbx.example.com:8089/ws',   // WS/WSS need a URL
 ///     mediaEnc: MediaEncryption.dtlsSrtp,
-///     audioCodecs: ['opus', 'g722', 'ulaw'],
+///     audioCodecs: ['opus', 'ulaw', 'alaw'],
 ///   ),
 /// );
 /// account.register();
@@ -40,7 +40,8 @@ import 'src/sdk.dart' as internal;
 
 export 'src/config.dart' show BareSDKConfig, AccountConfig, OpusConfig;
 export 'src/enums.dart';
-export 'src/platform_channel.dart' show BareSDKPlatform;
+export 'src/platform_channel.dart'
+    show AudioRoute, AudioRouteKind, BareSDKPlatform;
 
 // ── Event types ─────────────────────────────────────────────────────────────
 
@@ -82,6 +83,53 @@ class AudioDevice {
   final String description;
   final bool isDefault;
   AudioDevice(this.name, this.description, this.isDefault);
+}
+
+/// A failure inside the app-owned audio engine.
+///
+/// These have no other reporting path: once the app owns the device, the SDK
+/// is not holding it and cannot see it fail. Left unhandled they surface as a
+/// call that connects with silence in one or both directions.
+///
+/// Codes: `mic-permission` (RECORD_AUDIO not granted), `unsupported-rate` (the
+/// device will not open the negotiated rate), `device-open`, `capture-dead`,
+/// `playback-dead`, `unavailable` (the native library did not load).
+class AppOwnedAudioError {
+  final String code;
+  final String message;
+
+  const AppOwnedAudioError(this.code, this.message);
+
+  @override
+  String toString() => 'AppOwnedAudioError($code): $message';
+}
+
+/// What the current call negotiated, for sizing the app's own audio device.
+/// PCM across the app-owned boundary is always S16LE interleaved.
+/// See [BareSDK.appOwnedAudioFormat].
+class ExternalAudioFormat {
+  final int sampleRate;
+  final int channels;
+  final int ptimeMs;
+
+  const ExternalAudioFormat(this.sampleRate, this.channels, this.ptimeMs);
+
+  /// Total samples (frames x channels) in one ptime — the natural buffer size
+  /// for the app's capture and playback loops.
+  int get samplesPerFrame => sampleRate * channels * ptimeMs ~/ 1000;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ExternalAudioFormat &&
+      other.sampleRate == sampleRate &&
+      other.channels == channels &&
+      other.ptimeMs == ptimeMs;
+
+  @override
+  int get hashCode => Object.hash(sampleRate, channels, ptimeMs);
+
+  @override
+  String toString() => '${sampleRate}Hz ${channels}ch ${ptimeMs}ms';
 }
 
 /// Periodic per-call media statistics (see `baresdk_ev_media_stats_t`).
@@ -333,7 +381,18 @@ class Call {
 
   Call._(this._handle, this.account);
 
-  void answer() => internal.nativeBindings.baresdk_call_answer(_handle);
+  /// Accept an incoming call.
+  ///
+  /// Awaits the voice audio session before answering — media starts the moment
+  /// the 200 OK is out, and on Android the platform must already be in
+  /// `MODE_IN_COMMUNICATION` when the audio devices open or the call comes up
+  /// with audio flowing one way only. The wait is a single platform-channel
+  /// hop; awaiting the result is optional (`call.answer()` on its own is fine).
+  Future<void> answer() async {
+    await BareSDK.instance?._audioSession(true);
+    internal.nativeBindings.baresdk_call_answer(_handle);
+  }
+
   void hangup() => internal.nativeBindings.baresdk_call_hangup(_handle);
 
   /// Terminate with an explicit SIP status code — for an unanswered
@@ -426,6 +485,22 @@ class Call {
     internal.nativeBindings.baresdk_call_set_dscp_rtp(_handle, dscp);
   }
 
+  /// End this call after [seconds] with no inbound RTP; 0 = never.
+  ///
+  /// Per-call override of `BareSDKConfig.rtpTimeoutSeconds`.  Only sendrecv
+  /// streams are checked, so a held call is never torn down by it.
+  int setRtpTimeout(int seconds) => internal.nativeBindings
+      .baresdk_call_set_rtp_timeout(_handle, seconds);
+
+  /// Set the audio encoder bitrate in bps; 0 restores the negotiated rate.
+  ///
+  /// Applied through the codec's encoder-update path — no re-INVITE and no
+  /// audio gap — so it does nothing for a fixed-rate codec such as G.711.
+  /// With `BareSDKConfig.adaptiveBitrate` on, the controller overrides this on
+  /// its next decision.
+  int setBitrate(int bitrateBps) =>
+      internal.nativeBindings.baresdk_call_set_bitrate(_handle, bitrateBps);
+
   Pointer<baresdk_call> get handle => _handle;
 }
 
@@ -478,10 +553,15 @@ class Account {
   Call call(String uri) {
     final uriPtr = uri.toNativeUtf8().cast<Char>();
     final out = calloc<Pointer<baresdk_call>>();
+    // Claim the voice audio session before the INVITE: the native side opens
+    // the audio devices when media starts, and on Android their routing is
+    // fixed at that moment (see BareSDK._audioSession).
+    unawaited(_sdk._audioSession(true));
     try {
       final err = internal.nativeBindings
           .baresdk_call_invite(_handle, uriPtr, out);
       if (err != 0 || out.value == nullptr) {
+        if (_sdk._calls.isEmpty) unawaited(_sdk._audioSession(false));
         throw StateError(
             'baresdk_call_invite failed: ${_sdk.strerror(err)} ($err)');
       }
@@ -512,6 +592,16 @@ class Account {
   /// Skip the current backoff delay and re-register immediately.
   int retryNow() =>
       internal.nativeBindings.baresdk_account_retry_now(_handle);
+
+  /// Send a reachability probe (SIP OPTIONS) for this account now.
+  ///
+  /// Worth calling when the app returns to the foreground or wakes on a push:
+  /// it answers "is my registration still reachable?" before the user tries to
+  /// place a call.  Nothing is reported on success; on failure the account
+  /// goes to `RegState.failed` and, with
+  /// `BareSDKConfig.keepaliveReregister`, re-registers.
+  int keepaliveNow() =>
+      internal.nativeBindings.baresdk_account_keepalive_now(_handle);
 
   // ── Push ────────────────────────────────────────────────────────────────
 
@@ -621,6 +711,11 @@ class BareSDK {
           Void Function(Pointer<baresdk_event_t>, Pointer<Void>)> _nativeCb;
   final bool _manageAudioSession;
   bool _audioSessionActive = false;
+
+  /// Whether the app owns the microphone and speaker. Drives whether
+  /// [_audioSession] also starts and stops the native realtime loops.
+  bool _appOwnedAudio = false;
+  StreamController<AppOwnedAudioError>? _appOwnedAudioErrors;
   bool _reattached = false;
 
   /// Every event from the stack, including the ones that belong to no
@@ -683,6 +778,9 @@ class BareSDK {
     final sdk = BareSDK._(config, manageAudioSession, libPath,
         reattachIfRunning: reattachIfRunning);
     BareSDKPlatform.onNetworkChanged = sdk.networkChanged;
+    // Applied after init, not through baresdk_config_t: the device switch is a
+    // runtime call, and there is no config field for it.
+    if (config.appOwnedAudio) await sdk.useAppOwnedAudio(true);
     return sdk;
   }
 
@@ -911,9 +1009,164 @@ class BareSDK {
   void setJitterBufferType(JitterBufferType type) =>
       internal.nativeBindings.baresdk_set_jitter_buffer_type(type.raw);
 
-  /// Route audio to loudspeaker (Android; no-op elsewhere).
+  /// Turn link-adaptive bitrate on or off at runtime, with optional bounds in
+  /// bps (0 keeps the configured value).  Disabling leaves every call at its
+  /// current rate; use [Call.setBitrate] with 0 to restore the negotiated one.
+  void setAdaptiveBitrate(bool enabled, {int minBps = 0, int maxBps = 0}) =>
+      internal.nativeBindings
+          .baresdk_set_adaptive_bitrate(enabled, minBps, maxBps);
+
+  /// Route audio to the loudspeaker (true) or back to the best non-speaker
+  /// route (false — Bluetooth, then wired, then earpiece). Android + iOS;
+  /// no-op on desktop. Sugar over [setAudioRoute].
   Future<void> setSpeakerphone(bool on) =>
       BareSDKPlatform.setSpeakerphone(on);
+
+  // ── App-owned audio device ──────────────────────────────────────────────
+  //
+  // Takes the SDK off the platform capture/playback device so the app owns the
+  // microphone and speaker, while SIP, ICE, SRTP, codecs and the jitter buffer
+  // stay here. Use it when the platform fights the SDK's own drivers — routing
+  // that will not follow Bluetooth, CallKit owning the session, one-way audio.
+  //
+  // The realtime PCM loop belongs in the NATIVE layer — Kotlin over JNI, Swift
+  // calling the C directly — never in Dart: a GC pause on the capture path is
+  // a dropped frame. Dart's job is to flip the mode and read the format;
+  // push/pull are not exposed here on purpose.
+  //
+  // Owning the device means owning echo cancellation too: capture through
+  // VOICE_COMMUNICATION (Android) or VoiceProcessingIO (iOS), because the
+  // cancellers the SDK relied on belong to the drivers being displaced.
+
+  /// Hand the microphone and speaker to the app; `false` gives them back.
+  ///
+  /// Takes effect immediately, including on a call that is already up. Not
+  /// sticky across [shutdown] — call it again after a restart.
+  ///
+  /// Throws [StateError] if the stack is not running. That is worth failing
+  /// loudly on rather than ignoring: an app that misses it starts its own
+  /// capture while the SDK still holds the microphone, and Android gives you
+  /// one-way audio for it.
+  Future<void> useAppOwnedAudio(bool enable) async {
+    final err = internal.nativeBindings.baresdk_audio_use_external(enable);
+    if (err != 0) {
+      throw StateError(
+          'baresdk_audio_use_external($enable) failed: '
+          '${strerror(err)} ($err)');
+    }
+    _appOwnedAudio = enable;
+
+    // Only touch the loops when a session is already up — otherwise
+    // [_audioSession] starts them at the right point in the call sequence,
+    // after focus and MODE_IN_COMMUNICATION are in force.
+    if (_audioSessionActive) {
+      if (enable) {
+        await BareSDKPlatform.startAppOwnedAudio();
+      } else {
+        await BareSDKPlatform.stopAppOwnedAudio();
+      }
+    }
+  }
+
+  /// iOS + CallKit: forward `provider(_:didActivate:)` /
+  /// `provider(_:didDeactivate:)` so the app-owned audio engine knows when the
+  /// session is usable.
+  ///
+  /// Only needed by hosts that own activation themselves — `CXProvider` apps
+  /// running with `platformAudioActivate: false` and
+  /// `manageAudioSession: false`. Everyone else gets this from the SDK's own
+  /// session handling. No-op on Android and desktop.
+  Future<void> notifyCallKitAudioActive(bool active) =>
+      BareSDKPlatform.notifyCallKitAudioActive(active);
+
+  /// Diagnostics from the native audio engine — `armed`, `running`,
+  /// `sampleRate`, `channels`, `ptimeMs`, `lastError`. Empty on desktop, where
+  /// the loops are the app's own business.
+  Future<Map<String, Object?>> appOwnedAudioStatus() =>
+      BareSDKPlatform.appOwnedAudioStatus();
+
+  /// Failures from the native audio engine — missing mic permission, a
+  /// negotiated rate the device will not open, a dead stream. Nothing else
+  /// reports these: the SDK is no longer holding the device, so its own error
+  /// paths cannot see them.
+  Stream<AppOwnedAudioError> get appOwnedAudioErrors {
+    final ctrl = _appOwnedAudioErrors ??=
+        StreamController<AppOwnedAudioError>.broadcast(
+      onCancel: () => BareSDKPlatform.onAppOwnedAudioError = null,
+    );
+    BareSDKPlatform.ensureHandler();
+    BareSDKPlatform.onAppOwnedAudioError =
+        (code, message) => ctrl.add(AppOwnedAudioError(code, message));
+    return ctrl.stream;
+  }
+
+  /// True while a call is actually capturing or playing through the app-owned
+  /// device — false between calls, even with the mode on.
+  bool get appOwnedAudioActive =>
+      internal.nativeBindings.baresdk_audio_external_is_active();
+
+  /// The format the current call negotiated, or null until it has media.
+  ///
+  /// There is no "media is up" event to wait on — [CallState.established] is a
+  /// SIP state and races the device, and a mid-call re-INVITE can change the
+  /// codec with no state change at all — so poll this to learn both that the
+  /// device opened and that its format changed.
+  ExternalAudioFormat? get appOwnedAudioFormat {
+    final srate = calloc<Uint32>();
+    final ch = calloc<Uint8>();
+    final ptime = calloc<Uint32>();
+    try {
+      final err = internal.nativeBindings
+          .baresdk_audio_external_format(srate, ch, ptime);
+      if (err != 0) return null;
+      return ExternalAudioFormat(srate.value, ch.value, ptime.value);
+    } finally {
+      calloc.free(srate);
+      calloc.free(ch);
+      calloc.free(ptime);
+    }
+  }
+
+  // ── Audio routes (mobile) ───────────────────────────────────────────────
+  //
+  // These delegate to the platform shim and also work WITHOUT a running
+  // stack (see BareSDKPlatform) — instance sugar lives here because a
+  // softphone built on BareSDK almost always wants them next to the calls.
+
+  /// The audio-output routes the system currently offers for a call
+  /// (earpiece / speaker / Bluetooth / wired). Empty on desktop — use
+  /// [listOutputDevices] there.
+  Future<List<AudioRoute>> listAudioRoutes() =>
+      BareSDKPlatform.listAudioRoutes();
+
+  /// Point call audio at a route from [listAudioRoutes]. Returns the
+  /// refreshed list — the route ACTUALLY in force (selection can fail or
+  /// complete asynchronously; watch [audioRoutes] for the settle).
+  Future<List<AudioRoute>> setAudioRoute(String id) =>
+      BareSDKPlatform.setAudioRoute(id);
+
+  /// Report-only mode for hosts whose call surface owns routing (Android
+  /// self-managed Telecom, CallKit). Enumeration and change events keep
+  /// flowing; selection stops applying.
+  Future<void> setExternalRouting(bool on) =>
+      BareSDKPlatform.setExternalRouting(on);
+
+  /// Route-set changes, pushed by the platform (headset plugged/unplugged,
+  /// Bluetooth connected, system-initiated moves). Each event carries the
+  /// fresh route list.
+  Stream<List<AudioRoute>> get audioRoutes {
+    _audioRoutesController ??= StreamController<List<AudioRoute>>.broadcast(
+      onListen: () {
+        BareSDKPlatform.onAudioRoutesChanged = () async {
+          _audioRoutesController?.add(await BareSDKPlatform.listAudioRoutes());
+        };
+      },
+      onCancel: () => BareSDKPlatform.onAudioRoutesChanged = null,
+    );
+    return _audioRoutesController!.stream;
+  }
+
+  StreamController<List<AudioRoute>>? _audioRoutesController;
 
   // ── pcap ────────────────────────────────────────────────────────────────
 
@@ -981,11 +1234,24 @@ class BareSDK {
     _accounts.clear();
     _calls.clear();
     BareSDKPlatform.onNetworkChanged = null;
+    _audioRoutesController?.close();
+    _audioRoutesController = null;
+    BareSDKPlatform.onAudioRoutesChanged = null;
+    _appOwnedAudioErrors?.close();
+    _appOwnedAudioErrors = null;
+    BareSDKPlatform.onAppOwnedAudioError = null;
+    // The app-owned audio loops are threads in the plugin, not in this
+    // isolate, and the calls they are feeding stay up across a detach — so
+    // they keep running. Only the Dart-side reporting goes away.
     if (identical(_instance, this)) _instance = null;
   }
 
   /// Tear down the stack. All accounts and calls are terminated.
   void shutdown() {
+    // Stop the app-owned loops before the stack goes: they are plugin threads
+    // and would otherwise keep pushing into a torn-down device.
+    if (_appOwnedAudio) unawaited(BareSDKPlatform.stopAppOwnedAudio());
+    _appOwnedAudio = false;
     internal.nativeBindings.baresdk_shutdown();
     _nativeCb.close();
     _ctrl.close();
@@ -995,6 +1261,12 @@ class BareSDK {
     _accounts.clear();
     _calls.clear();
     BareSDKPlatform.onNetworkChanged = null;
+    _audioRoutesController?.close();
+    _audioRoutesController = null;
+    BareSDKPlatform.onAudioRoutesChanged = null;
+    _appOwnedAudioErrors?.close();
+    _appOwnedAudioErrors = null;
+    BareSDKPlatform.onAppOwnedAudioError = null;
     if (identical(_instance, this)) _instance = null;
   }
 
@@ -1005,11 +1277,33 @@ class BareSDK {
         handle.address, () => Call._(handle, account));
   }
 
-  void _audioSession(bool active) {
+  /// Activate/deactivate the voice audio session, at most once per transition.
+  ///
+  /// The returned future completes when the platform has actually applied it.
+  /// That matters on Android: `MODE_IN_COMMUNICATION` decides how the voice
+  /// streams are routed when they are *created*, and the native side creates
+  /// them as soon as media starts. Activating on the established event alone is
+  /// a race the app loses about as often as it wins — the streams open in
+  /// `MODE_NORMAL`, playback lands on the voice-call stream with nothing
+  /// routing it, and the call comes up with the far end audible only one way.
+  /// So callers that are about to start media ([Account.call], [Call.answer])
+  /// activate first, and the event path below is only a backstop.
+  ///
+  /// With [useAppOwnedAudio] on, the ordering stops being a race at all: the
+  /// app creates the streams itself, strictly after focus and mode are in
+  /// force, and strictly before them on the way down. That determinism is most
+  /// of why an app takes the device over.
+  Future<void> _audioSession(bool active) async {
     if (!_manageAudioSession || active == _audioSessionActive) return;
     _audioSessionActive = active;
-    // Fire and forget — never block the event dispatcher.
-    unawaited(BareSDKPlatform.configureAudioSession(active));
+
+    if (active) {
+      await BareSDKPlatform.configureAudioSession(true);
+      if (_appOwnedAudio) await BareSDKPlatform.startAppOwnedAudio();
+    } else {
+      if (_appOwnedAudio) await BareSDKPlatform.stopAppOwnedAudio();
+      await BareSDKPlatform.configureAudioSession(false);
+    }
   }
 
   void _dispatchEvent(Pointer<baresdk_event_t> ev) {
@@ -1049,7 +1343,7 @@ class BareSDK {
         target = _accounts[ic.account.address];
         final call = _trackCall(ic.call, target);
         call.state = CallState.ringing;
-        _audioSession(true);
+        unawaited(_audioSession(true));
         decoded = IncomingCallEvent(
             call, _str(ic.from_uri) ?? '', _str(ic.display_name));
         break;
@@ -1062,9 +1356,9 @@ class BareSDK {
         call.state = state;
         if (state.isTerminal) {
           _calls.remove(cs.call.address);
-          if (_calls.isEmpty) _audioSession(false);
+          if (_calls.isEmpty) unawaited(_audioSession(false));
         } else {
-          _audioSession(true);
+          unawaited(_audioSession(true));
         }
         decoded = CallStateEvent(
             call, state, BareSDKError.fromRaw(cs.error), _str(cs.reason));

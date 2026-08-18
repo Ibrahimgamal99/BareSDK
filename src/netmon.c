@@ -37,8 +37,20 @@
  *
  * Known limitation: with ICE enabled the re-INVITE carries the old gathered
  * candidates — a full ICE restart (new ufrag/pwd + re-gather against STUN on
- * the new path) is not performed.  Direct RTP and SDES/DTLS-SRTP migrate
- * correctly; ICE calls may need to be re-established.
+ * the new path) is not performed.  It cannot be, from here: baresip's ice
+ * module fixes the local ufrag/pwd when the media session is allocated, and
+ * its mnat update handler re-runs icem_update() rather than re-gathering, so
+ * there is no way to ask for RFC 8445 §9 behaviour through any public API.
+ * Direct RTP and SDES/DTLS-SRTP migrate correctly, and so does an ICE call
+ * whose selected pair is a still-reachable TURN relay.
+ *
+ * What is done about it is to stop pretending otherwise.  Such a call is
+ * announced with BARESDK_NET_CALL_ICE_STALE before the re-INVITE goes out,
+ * and cfg.net_ice_handover decides how long to keep trying:
+ * BEST_EFFORT runs the normal verify/retry budget, FAIL_FAST gives up after a
+ * single attempt so the app gets a prompt CALL_MIGRATION_FAILED it can answer
+ * by re-placing the call, instead of the user holding a silent handset for
+ * net_verify_ms × net_max_attempts.
  */
 
 #include "baresdk_internal.h"
@@ -78,6 +90,7 @@ struct bsdk_netmon {
 	uint32_t max_attempts;
 	bool     reinvite_calls;
 	bool     hangup_on_fail;
+	baresdk_ice_handover_t ice_handover;
 
 	char     cur_laddr[64];
 };
@@ -87,6 +100,7 @@ static struct bsdk_netmon g_nm;
 static void settle_handler(void *arg);
 static void verify_handler(void *arg);
 static void send_migration(struct baresdk_call *lc);
+static uint32_t max_attempts_for(const struct baresdk_call *lc);
 
 /* ── Events ──────────────────────────────────────────────────────────────── */
 
@@ -103,6 +117,29 @@ static baresdk_error_t map_err(int err)
 
 /* Does this call negotiate ICE?  Media recovery is best-effort when it does
  * — see the `ice` field doc in baresdk.h. */
+/* True when the call signals over WebSocket.
+ *
+ * It matters for handover because a WebSocket client has no listening port: its
+ * Contact is a placeholder ("sip:user@10.0.0.5:9;transport=wss", RFC 7118 §5.2)
+ * and the server reaches it by remembering which WebSocket the dialog's requests
+ * arrived on.  A transport reset always builds a *new* WebSocket, so that
+ * association is stale afterwards even when the local IP never moved: media
+ * keeps flowing, our own BYE still gets out (it is routed, not received), but an
+ * inbound BYE has nowhere to go and the call hangs in ESTABLISHED for the rest
+ * of the session.  Sending any in-dialog request over the new connection re-binds
+ * it, which is what the handover re-INVITE is for here.
+ *
+ * Address-routed transports do not have this problem: if the path is unchanged
+ * their Contact still resolves. */
+static bool call_signals_over_ws(const struct baresdk_call *lc)
+{
+	if (!lc || !lc->acct)
+		return false;
+
+	return lc->acct->parsed_transport == BARESDK_TRANSPORT_WS ||
+	       lc->acct->parsed_transport == BARESDK_TRANSPORT_WSS;
+}
+
 static bool call_uses_ice(const struct baresdk_call *lc)
 {
 	if (!lc || !lc->acct)
@@ -126,7 +163,13 @@ static void netmon_emit(baresdk_net_event_t what,
 	qev->ev.u.network.call         = lc;
 	qev->ev.u.network.account      = acct;
 	qev->ev.u.network.attempt      = attempt;
-	qev->ev.u.network.max_attempts = g_nm.max_attempts;
+	/* Report the offer budget this call is actually held to, so a FAIL_FAST
+	 * stale-ICE call renders as "1/1" rather than promising retries that will
+	 * never be attempted.  WAIT_ADDR and DEFERRED ticks share net_mig_tries
+	 * and keep the full budget, so `attempt` can exceed this on a call still
+	 * waiting for a route — a progress counter, not an invariant. */
+	qev->ev.u.network.max_attempts = lc ? max_attempts_for(lc)
+	                                    : g_nm.max_attempts;
 	qev->ev.u.network.error        = map_err(err);
 
 	if (lc) {
@@ -372,6 +415,30 @@ static uint32_t rx_packets(const struct baresdk_call *lc)
 	return strm ? stream_metric_get_rx_n_packets(strm) : 0;
 }
 
+/**
+ * Budget for *offers* on this call — how many times the re-INVITE itself may be
+ * re-sent before the migration is declared failed.
+ *
+ * One for a stale-ICE call under FAIL_FAST: the retries that help a non-ICE
+ * call (the peer's NAT rebinding, symmetric-RTP latching) cannot help when the
+ * offered candidates are the wrong ones, so repeating the same doomed offer
+ * only lengthens the silence before the app is told to redial.
+ *
+ * This is deliberately NOT applied to the WAIT_ADDR and DEFERRED retries.
+ * Those wait on local readiness — a default route that has not appeared yet, a
+ * dialog that cannot carry a second offer — and have nothing to do with ICE
+ * staleness.  Capping them at one would fail a FAIL_FAST call on the first
+ * verify tick without ever sending the single offer it is promised.
+ */
+static uint32_t max_attempts_for(const struct baresdk_call *lc)
+{
+	if (g_nm.ice_handover == BARESDK_ICE_HANDOVER_FAIL_FAST &&
+	    call_uses_ice(lc))
+		return 1;
+
+	return g_nm.max_attempts;
+}
+
 static uint32_t verify_tick_ms(void)
 {
 	uint32_t ms = g_nm.verify_ms ? g_nm.verify_ms : 2000;
@@ -435,6 +502,14 @@ static void send_migration(struct baresdk_call *lc)
 		return;
 	}
 
+	/* Announce once per call per handover, before the first offer, so the
+	 * app knows why recovery may not work before it has to wait for it. */
+	if (call_uses_ice(lc) && !lc->net_ice_stale_sent) {
+		lc->net_ice_stale_sent = true;
+		netmon_emit(BARESDK_NET_CALL_ICE_STALE, lc, lc->acct, 0,
+		            (uint32_t)lc->net_mig_tries + 1u);
+	}
+
 	lc->net_rx_at_mig = rx_packets(lc);
 	lc->net_mig_tries++;
 
@@ -442,7 +517,7 @@ static void send_migration(struct baresdk_call *lc)
 	 * glare or a 401/407 challenge is retried by libre's sipsess layer. */
 	err = call_reset_transp(lc->bc, &lc->net_mig_laddr);
 	if (err) {
-		if (lc->net_mig_tries >= g_nm.max_attempts)
+		if (lc->net_mig_tries >= max_attempts_for(lc))
 			fail_migration(lc, err);
 		else
 			lc->net_mig_state = BSDK_MIG_DEFERRED;
@@ -498,6 +573,7 @@ static void start_migration(struct baresdk_call *lc)
 	if (lc->net_mig_gen != g_nm.gen) {
 		lc->net_mig_gen   = g_nm.gen;
 		lc->net_mig_tries = 0;
+		lc->net_ice_stale_sent = false;
 		/* Clock the audio outage from the moment the network changed, not
 		 * from the re-INVITE — the gap the user hears starts earlier. */
 		lc->net_mig_start = g_nm.handover_start ? g_nm.handover_start
@@ -529,10 +605,17 @@ static void start_migration(struct baresdk_call *lc)
 	}
 
 	old = call_laddr(lc->bc);
-	if (old && sa_cmp(&laddr, old, SA_ADDR)) {
+	if (old && sa_cmp(&laddr, old, SA_ADDR) && !call_signals_over_ws(lc)) {
 		lc->net_mig_state = BSDK_MIG_IDLE;   /* same path — no re-INVITE */
 		return;
 	}
+
+	/* Over WebSocket the re-INVITE is needed even on an unchanged path: it is
+	 * what re-binds the dialog to the connection the transport reset just
+	 * created.  See call_signals_over_ws(). */
+	if (old && sa_cmp(&laddr, old, SA_ADDR))
+		debug("baresdk/netmon: same path but WS transport was reset —"
+		      " re-INVITE to refresh the Contact\n");
 
 	sa_cpy(&lc->net_mig_laddr, &laddr);
 	send_migration(lc);
@@ -581,7 +664,8 @@ static void verify_handler(void *arg)
 
 		case BSDK_MIG_WAIT_ADDR:
 			/* Re-run discovery, not send_migration(): net_mig_laddr was
-			 * never resolved, so there is nothing valid to offer yet. */
+			 * never resolved, so there is nothing valid to offer yet.
+			 * Full budget — see max_attempts_for(). */
 			if (++lc->net_mig_tries >= g_nm.max_attempts)
 				fail_migration(lc, EHOSTUNREACH);
 			else
@@ -606,7 +690,7 @@ static void verify_handler(void *arg)
 				netmon_emit(BARESDK_NET_CALL_MIGRATED, lc, lc->acct,
 				            0, lc->net_mig_tries);
 			}
-			else if (lc->net_mig_tries >= g_nm.max_attempts)
+			else if (lc->net_mig_tries >= max_attempts_for(lc))
 				fail_migration(lc, ETIMEDOUT);
 			else
 				send_migration(lc);   /* re-offer on the new path */
@@ -662,6 +746,7 @@ static void reregister_accounts(void)
 
 		netmon_emit(BARESDK_NET_REREGISTERING, NULL, a, 0, 0);
 		(void)ua_register(a->ua);
+		bsdk_account_watch_registration(a);
 	}
 }
 
@@ -841,6 +926,7 @@ int bsdk_netmon_init(void)
 	                                            : BSDK_NET_MAX_ATTEMPT;
 	g_nm.reinvite_calls = cfg->net_reinvite_calls;
 	g_nm.hangup_on_fail = cfg->net_hangup_on_migration_failure;
+	g_nm.ice_handover   = cfg->net_ice_handover;
 	g_nm.started        = true;
 
 	update_cur_laddr();

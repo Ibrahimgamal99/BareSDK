@@ -157,6 +157,79 @@ int baresdk_audio_set_output_device(const char *name)
 	return err ? err : ctx.result;
 }
 
+/* ── App-owned audio device ──────────────────────────────────────────────── */
+
+static void use_external_fn(void *arg)
+{
+	bool *enable = arg;
+	struct config *bc = conf_config();
+	const char *mod;
+
+	if (*enable) {
+		mod = "external";
+	}
+	else {
+		mod = bsdk_platform_audio_mod();
+		if (!mod) {
+			/* Nothing to go back to — this build has no platform
+			 * device compiled in. Leaving "external" in place beats
+			 * pointing the stack at a module that does not exist. */
+			warning("baresdk: no platform audio device to restore; "
+			        "staying on the app-owned device\n");
+			return;
+		}
+	}
+
+	str_ncpy(bc->audio.src_mod,  mod, sizeof(bc->audio.src_mod));
+	str_ncpy(bc->audio.play_mod, mod, sizeof(bc->audio.play_mod));
+
+	/* The device name is the platform module's business, not the app's. */
+	bc->audio.src_dev[0]  = '\0';
+	bc->audio.play_dev[0] = '\0';
+
+	/* Move any call that is already up, the same way a device switch does:
+	 * without this the change only takes effect on the next call. */
+	update_call_dev_ctx_t src = {
+		.mod = bc->audio.src_mod, .dev = bc->audio.src_dev,
+		.is_input = true,
+	};
+	bsdk_call_foreach(update_call_device, &src);
+
+	update_call_dev_ctx_t play = {
+		.mod = bc->audio.play_mod, .dev = bc->audio.play_dev,
+		.is_input = false,
+	};
+	bsdk_call_foreach(update_call_device, &play);
+
+	/* Going back to the platform device puts its hardware canceller back in
+	 * the path.  Leaving the software suppressor on would stack the two and
+	 * half-duplex a call the hardware had already made full-duplex.
+	 *
+	 * Deliberately one-directional: taking the device does NOT switch the
+	 * suppressor on.  An app that displaces our drivers is expected to
+	 * capture through VOICE_COMMUNICATION / VoiceProcessingIO itself, and
+	 * silently ducking its TX by 16.5 dB would be the SDK fighting the
+	 * platform — the exact failure this feature exists to avoid.  Apps that
+	 * want the fallback ask for it with baresdk_set_aec_mode(). */
+	if (!*enable && bsdk_platform_has_aec()) {
+		/* PROTECTED BY RE_MAIN — already on the re thread here. */
+		aufilt_enable(baresip_aufiltl(), "bsdk_aec", false);
+	}
+
+	info("baresdk: audio device -> '%s'\n", mod);
+}
+
+int baresdk_audio_use_external(bool enable)
+{
+	bool flag = enable;
+	return bsdk_dispatch_sync(use_external_fn, &flag);
+}
+
+bool bsdk_audio_external_selected(void)
+{
+	return 0 == str_cmp(conf_config()->audio.src_mod, "external");
+}
+
 /* ── Audio device enumeration ────────────────────────────────────────────── */
 
 /* Both struct ausrc and struct auplay start with: le, name, dev_list.
@@ -280,6 +353,19 @@ static void set_filter_fn(void *arg)
 	aufilt_enable(baresip_aufiltl(), ctx->name, ctx->enable);
 }
 
+static void set_aec_mode_fn(void *arg)
+{
+	baresdk_aec_mode_t mode = *(baresdk_aec_mode_t *)arg;
+	struct list *fl = baresip_aufiltl();
+
+	/* PROTECTED BY RE_MAIN */
+	aufilt_enable(fl, "bsdk_aec", bsdk_aec_suppressor_wanted(mode));
+
+#if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
+	aufilt_enable(fl, "webrtc_aec", mode == BARESDK_AEC_WEBRTC);
+#endif
+}
+
 void baresdk_set_aec(bool enable)
 {
 	/* Re-enables the aec_mode configured at init; disables all AEC backends
@@ -307,19 +393,10 @@ int baresdk_set_aec_mode(baresdk_aec_mode_t mode)
 	}
 #endif
 
-	bool suppressor_on = (mode == BARESDK_AEC_SUPPRESSOR);
-	struct { const char *name; bool enable; } ctx = { "bsdk_aec", suppressor_on };
-	/* PROTECTED BY RE_MAIN */
-	bsdk_dispatch_sync(set_filter_fn, &ctx);
-
-#if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
-	bool webrtc_on = (mode == BARESDK_AEC_WEBRTC);
-	struct { const char *name; bool enable; } wctx = { "webrtc_aec", webrtc_on };
-	/* PROTECTED BY RE_MAIN */
-	bsdk_dispatch_sync(set_filter_fn, &wctx);
-#endif
-
-	return 0;
+	/* One dispatch, not two: bsdk_aec_suppressor_wanted() now reads
+	 * conf_config() to see which device is selected, so it has to be
+	 * evaluated on the re thread rather than on the caller's. */
+	return bsdk_dispatch_sync(set_aec_mode_fn, &mode);
 }
 
 void baresdk_set_aec_suppression_level(float level)
