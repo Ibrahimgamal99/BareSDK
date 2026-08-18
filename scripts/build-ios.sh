@@ -5,6 +5,8 @@
 #   dist/ios/baresdk.xcframework    device (arm64) + simulator (arm64, x86_64)
 #   dist/ios/<slice>/baresdk.a      static archives (for non-Flutter consumers)
 #   dist/ios/include/               public headers
+# Also refreshes the Flutter plugin's vendored copy in
+# bindings/flutter/ios/Frameworks/ — no second command to run.
 #
 # A dynamic framework (not a static lib) is what the Flutter plugin vendors:
 # with a static archive, symbols reached only via dart:ffi dlsym() are
@@ -174,5 +176,15 @@ echo ""
 echo "Done. Output: ${DIST}/baresdk.xcframework"
 plutil -p "${DIST}/baresdk.xcframework/Info.plist" | grep -E "(Identifier|Library)" || true
 
-# Refresh the Flutter plugin's vendored copy.
-bash "${SCRIPT_DIR}/sync-flutter-xcframework.sh"
+# ---------------------------------------------------------------------------
+# Stage into the Flutter plugin, where the podspec vendors it.
+# ---------------------------------------------------------------------------
+PLUGIN_FRAMEWORKS="${ROOT}/bindings/flutter/ios/Frameworks"
+mkdir -p "${PLUGIN_FRAMEWORKS}"
+rm -rf "${PLUGIN_FRAMEWORKS}/baresdk.xcframework"
+cp -R "${DIST}/baresdk.xcframework" "${PLUGIN_FRAMEWORKS}/baresdk.xcframework"
+
+echo ""
+echo "Flutter plugin xcframework refreshed (commit it alongside the C change —"
+echo "apps pin a git SHA, so an uncommitted rebuild never reaches consumers):"
+du -sh "${PLUGIN_FRAMEWORKS}/baresdk.xcframework"

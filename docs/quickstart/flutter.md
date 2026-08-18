@@ -350,8 +350,9 @@ cd bindings/flutter && dart run ffigen --config ffigen.yaml
 lives on NTFS — incremental builds there silently reuse stale objects.
 
 `build-android.sh` refreshes `bindings/flutter/android/src/main/jniLibs/`
-itself, by calling `sync-flutter-jnilibs.sh` on the way out — there is no
-second command to run. Those `.so` files are tracked in git, and **a rebuild
+itself, as its last step per ABI (and `build-ios.sh` likewise stages
+`bindings/flutter/ios/Frameworks/baresdk.xcframework`) — there is no second
+command to run. Those `.so` files are tracked in git, and **a rebuild
 reaches consumers only once they are committed and pushed**: apps pin a git
 SHA, so an uncommitted rebuild leaves every consumer on the previous library
 while your own `path:` checkout quietly uses the new one. That split is

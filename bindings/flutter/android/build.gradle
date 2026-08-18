@@ -33,7 +33,7 @@ android {
     }
 
     // Prebuilt libbaresdk.so per ABI lives in src/main/jniLibs/<abi>/
-    // (populated by scripts/sync-flutter-jnilibs.sh at release time).
+    // (populated by scripts/build-android.sh).
     packagingOptions {
         jniLibs {
             useLegacyPackaging = false

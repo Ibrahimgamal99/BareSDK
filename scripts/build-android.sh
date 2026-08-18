@@ -4,6 +4,8 @@
 #   dist/android/<abi>/baresdk.a       merged static archive
 #   dist/android/<abi>/libbaresdk.so   shared library (16 KB page aligned)
 #   dist/android/<abi>/include/
+# Also refreshes the Flutter plugin's bundled (stripped) copies in
+# bindings/flutter/android/src/main/jniLibs/<abi>/ — no second command to run.
 #
 # Prerequisites:
 #   - Android NDK (set ANDROID_NDK or detected from ANDROID_NDK_ROOT /
@@ -46,6 +48,10 @@ if [ ! -f "${TOOLCHAIN}" ]; then
 fi
 NDK_HOST_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 LLVM_BIN="${NDK}/toolchains/llvm/prebuilt/${NDK_HOST_TAG}/bin"
+
+# The Flutter plugin ships prebuilt .so files from src/main/jniLibs/<abi>/ —
+# Gradle never compiles the native side. Staged below, per ABI.
+JNILIBS="${ROOT}/bindings/flutter/android/src/main/jniLibs"
 
 for ABI in ${ABIS}; do
   echo "=== Building Android ${ABI} ==="
@@ -125,13 +131,22 @@ for ABI in ${ABIS}; do
     echo "ERROR: LOAD segment not 16 KB aligned: ${BAD_ALIGN}" >&2; exit 1
   fi
 
+  # ── Stage into the Flutter plugin ─────────────────────────────────────────
+  # Stripped of debug info: these copies are tracked in git and shipped inside
+  # the pub package, while the dist/ ones keep full symbols for debugging.
+  mkdir -p "${JNILIBS}/${ABI}"
+  "${LLVM_BIN}/llvm-strip" --strip-unneeded -o "${JNILIBS}/${ABI}/libbaresdk.so" "${SO}"
+
   echo "  -> dist/android/${ABI}/baresdk.a"
   echo "  -> dist/android/${ABI}/libbaresdk.so"
+  echo "  -> bindings/flutter/android/src/main/jniLibs/${ABI}/libbaresdk.so (stripped)"
 done
 
 echo ""
 echo "Done. Outputs:"
 find "${ROOT}/dist/android" \( -name "baresdk.a" -o -name "libbaresdk.so" \) -exec ls -lh {} \;
 
-# Refresh the Flutter plugin's bundled (stripped) copies.
-bash "${SCRIPT_DIR}/sync-flutter-jnilibs.sh"
+echo ""
+echo "Flutter plugin jniLibs refreshed (commit these alongside the C change —"
+echo "apps pin a git SHA, so an uncommitted rebuild never reaches consumers):"
+find "${JNILIBS}" -name '*.so' -exec ls -lh {} \;

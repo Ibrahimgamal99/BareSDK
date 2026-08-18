@@ -2,8 +2,7 @@
 # baresdk Flutter plugin — iOS.
 #
 # Vendors the prebuilt dynamic baresdk.xcframework (built on macOS/CI by
-# scripts/build-ios.sh, copied here by scripts/sync-flutter-xcframework.sh)
-# and compiles the small Swift shim (audio session / speaker routing /
+# scripts/build-ios.sh, which stages it here itself) and compiles the small Swift shim (audio session / speaker routing /
 # NWPathMonitor network callbacks).
 #
 Pod::Spec.new do |s|
