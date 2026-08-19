@@ -219,6 +219,81 @@ static void test_no_servers_passthrough(void)
 	      "rewrote '%s' with no servers registered", g_used);
 }
 
+/* ── In-dialog routing (RFC 7118 §B.2) ───────────────────────────────────────
+ *
+ * The regression this covers: an incoming call arrives with no Record-Route and
+ * a Contact naming the PBX's internal address (`sip:asterisk@echo:5060`), so
+ * libre routes in-dialog requests to a host that resolves nowhere.  The BYE was
+ * accepted by sipsess_bye() and then died in DNS, asynchronously and silently —
+ * the caller stayed on a call the app had already reported as ended.
+ */
+
+/* The decision under test.  Exercised directly rather than through
+ * __wrap_sip_dialog_route(): --wrap makes __real_sip_dialog_route the linker's
+ * alias for libre's own accessor, so a test cannot stand in for it, and handing
+ * the real one a synthetic dialog is not safe. */
+const struct uri *bsdk_ws_route_override(const struct uri *route);
+
+static struct uri g_dlg_route;
+static char       g_dlg_buf[256];
+
+/* Parse `uri` as a dialog route and return whatever the SDK decides to use. */
+static const struct uri *route_for(const char *uri)
+{
+	struct pl pl;
+
+	str_ncpy(g_dlg_buf, uri, sizeof(g_dlg_buf));
+	pl_set_str(&pl, g_dlg_buf);
+	if (uri_decode(&g_dlg_route, &pl))
+		return NULL;
+
+	return bsdk_ws_route_override(&g_dlg_route);
+}
+
+static void test_indialog_route_follows_flow(void)
+{
+	const struct uri *r;
+
+	bsdk_ws_set_server(BARESDK_TRANSPORT_WSS, "pbx.example.com", 443, "/ws");
+
+	/* The failing case: Asterisk's own Contact, unroutable from here. */
+	r = route_for("sip:asterisk@echo:5060;transport=ws");
+	CHECK(r != NULL, "route was dropped entirely");
+	CHECK(r && !pl_strcmp(&r->host, "pbx.example.com"),
+	      "in-dialog route was not moved to the flow");
+	CHECK(r && r->port == 443, "port is %u", r ? r->port : 0);
+
+	/* Already on the flow — must be returned untouched, not rebuilt. */
+	r = route_for("sip:pbx.example.com:443;transport=wss;lr");
+	CHECK(r != NULL && !pl_strcmp(&r->host, "pbx.example.com"),
+	      "flow route was disturbed");
+
+	/* A non-WebSocket dialog is none of our business: a UDP or TLS account
+	 * routes by its own rules and must be passed through untouched. */
+	r = route_for("sip:proxy.example.com:5060;transport=udp");
+	CHECK(r != NULL && !pl_strcmp(&r->host, "proxy.example.com"),
+	      "a UDP dialog was rerouted onto the WebSocket flow");
+
+	/* No transport parameter at all — equally not ours to redirect. */
+	r = route_for("sip:proxy.example.com:5060");
+	CHECK(r != NULL && !pl_strcmp(&r->host, "proxy.example.com"),
+	      "a transport-less route was rerouted");
+
+	bsdk_ws_unset_server(BARESDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	                     "/ws");
+}
+
+/* With no pinned server there is no flow to prefer, so libre's own decision
+ * stands — the same reasoning that disables URI pinning when servers are
+ * ambiguous. */
+static void test_indialog_route_unpinned_passthrough(void)
+{
+	const struct uri *r = route_for("sip:asterisk@echo:5060;transport=ws");
+
+	CHECK(r != NULL && !pl_strcmp(&r->host, "echo"),
+	      "route was rewritten with no server pinned");
+}
+
 int main(void)
 {
 	printf("ws pinning tests\n");
@@ -230,6 +305,8 @@ int main(void)
 	test_conflicting_paths_disable_substitution();
 	test_own_loopback_server_untouched();
 	test_no_servers_passthrough();
+	test_indialog_route_follows_flow();
+	test_indialog_route_unpinned_passthrough();
 
 	printf("%d passed, %d failed\n", g_pass, g_fail);
 	return g_fail ? 1 : 0;

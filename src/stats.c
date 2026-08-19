@@ -410,6 +410,21 @@ static void getstats_fn(void *arg)
 	if (ac)
 		s->codec_name = ac->name;
 
+	/* Session history.  Read from the call, never advanced here: these
+	 * counters belong to the polling tick, and a getter that bumped
+	 * stats_tick or folded its own sample into the average would skew the
+	 * very numbers the app polled for.  Filling them matters because they
+	 * are the only per-call history the SDK keeps — without this the sync
+	 * getter reported 0 for all of them at every point in a call, however
+	 * many ticks had already run. */
+	s->mos_lq_min       = lc->stats_mos_min;
+	s->mos_lq_avg       = lc->stats_tick > 0
+	                    ? lc->stats_mos_sum / (float)lc->stats_tick : 0.f;
+	s->stats_tick       = lc->stats_tick;
+	s->call_duration_ms = lc->stats_call_start
+	                    ? (tmr_jiffies() - lc->stats_call_start) : 0u;
+	s->is_final         = false;
+
 	ctx->result = 0;
 }
 

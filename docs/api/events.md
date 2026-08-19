@@ -50,7 +50,7 @@ Valid event names for `@sdk.on()`:
 | `calling` · `ringing` · `established` · `held` · `ended` · `cancelled` · `call_failed` | Sub-states of `call_state` |
 | `incoming_call` · `dtmf` · `sdp_negotiation` · `sip_trace` | Direct events |
 | `media_stats` · `log` · `registrar_warning` | Direct events |
-| `transfer_request` · `mwi` · `message` · `presence_state` · `quality_alert` | Direct events |
+| `transfer_request` · `transfer_failed` · `mwi` · `message` · `presence_state` · `quality_alert` | Direct events |
 | `*` | Wildcard — every event |
 
 A sub-state handler and its umbrella handler both fire for the same event. An unknown name raises `ValueError` at decoration time (typo protection).
@@ -304,6 +304,25 @@ Incoming REFER request.
 
 ---
 
+## BARESDK_EV_TRANSFER_FAILED
+**`ev->u.transfer_failed`** — `baresdk_ev_transfer_failed_t`
+
+An *outgoing* REFER was refused. The call is **still established** — a refused
+transfer is not a call failure, and the stack does not close the leg. Resume the
+caller (they are usually on hold) and report the reason; do not hang up.
+
+There is no matching success event: an accepted REFER hands the call to the
+transfer target and closes our leg, which arrives as
+`BARESDK_EV_CALL_STATE` / `BARESDK_CALL_ENDED`.
+
+| Field | Type | Description |
+|---|---|---|
+| `account` | handle | |
+| `call` | handle | The call we tried to transfer away |
+| `reason` | `const char *` | Status line / cause, may be NULL |
+
+---
+
 ## BARESDK_EV_MWI
 **`ev->u.mwi`** — `baresdk_ev_mwi_t`
 
@@ -360,7 +379,7 @@ See [Network handover](../guides/network_handover.md) for the full sequence.
 | `local_addr` | `const char *` — new local IP, `""` when unknown |
 | `attempt` / `max_attempts` | `uint32_t` — retry counter, e.g. "3/6" |
 | `elapsed_ms` | `uint32_t` — on `CALL_MIGRATED`, how long audio was interrupted |
-| `ice` | `bool` — call uses ICE; media recovery is best-effort |
+| `ice` | `bool` — the call has a live ICE media-NAT; it is migrated with an ICE restart |
 | `error` | `baresdk_error_t` — `BARESDK_OK` unless a `*_FAILED` stage |
 
 Stages: `CHANGE_DETECTED`, `DOWN`, `UP`, `TRANSPORT_RESET`, `REREGISTERING`,
@@ -368,12 +387,17 @@ Stages: `CHANGE_DETECTED`, `DOWN`, `UP`, `TRANSPORT_RESET`, `REREGISTERING`,
 `CALL_MIGRATION_FAILED`, `CALL_DEFERRED`, `HANDOVER_FAILED`,
 `CALL_ICE_STALE`.
 
-`CALL_ICE_STALE` is emitted once per ICE call per handover, before the
-re-INVITE: the gathered candidates are now wrong and cannot be re-gathered
-mid-call. The offer still goes out — it recovers a direct or still-valid
-TURN-relayed path — but if media does not resume, the remedy is to re-place the
-call. `cfg.net_ice_handover` decides whether to keep retrying; see
-[Network handover](../guides/network_handover.md#ice-calls).
+An ICE call is migrated with a full RFC 8445 §9 ICE restart, so it emits the
+ordinary `CALL_MIGRATING` → `CALL_MIGRATE_ACCEPTED` → `CALL_MIGRATED` sequence —
+with `CALL_MIGRATING` arriving up to `cfg.ice_gathering_timeout_ms` before the
+re-INVITE itself, which is built from the re-gather.
+
+`CALL_ICE_STALE` marks the exception: an ICE call the restart could not be
+performed for, whose re-INVITE therefore carries the pre-handover candidates. It
+is emitted once per call per handover, before that offer. The offer still
+recovers a direct or still-valid TURN-relayed path; if media does not resume, the
+remedy is to re-place the call. `cfg.net_ice_handover` decides whether to keep
+retrying; see [Network handover](../guides/network_handover.md#ice-calls).
 
 ---
 

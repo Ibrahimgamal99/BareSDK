@@ -196,8 +196,8 @@ print(live)
 | `payload_type` | `int` | RTP payload type |
 | `ssrc_tx` / `ssrc_rx` | `int` | SSRC identifiers |
 | `remote_addr` | `str` | Remote RTP address:port |
-| `audio_level_dbov` | `float` | Speaker level dBov (NaN if unavailable) |
-| `mic_level_dbov` | `float` | Mic level dBov (NaN if unavailable) |
+| `audio_level_dbov` | `float` | Speaker level dBov; `NaN` = never measured, `-127` = measured silence |
+| `mic_level_dbov` | `float` | Mic level dBov; `NaN` = never measured, `-127` = measured silence |
 | `stats_tick` | `int` | Tick counter (1-based) |
 | `call_duration_ms` | `int` | Call duration ms |
 | `is_final` | `bool` | `True` on the last stats event after hangup |

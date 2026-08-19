@@ -165,6 +165,7 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->sip_t1_ms             = 500;
 	cfg->sip_t2_ms             = 4000;
 	cfg->sip_timer_b_ms        = 32000;
+	cfg->ice_gathering_timeout_ms = 2000;
 	cfg->sip_timer_f_ms        = 32000;
 	cfg->session_timer_enabled = true;
 	cfg->session_expires_s     = 1800;
@@ -509,6 +510,12 @@ int baresdk_init(const baresdk_config_t *cfg)
 		goto fail;
 	BSDK_TRACE("[bsdk] step 9 done\n");
 
+	/* After modules_init: the ice module has to have registered its media-NAT
+	 * before we can interpose the gathering deadline on it.  ENOENT just means
+	 * this build has no ice module, and then no INVITE is ever deferred. */
+	if (bsdk_ice_shim_init() == 0)
+		BSDK_TRACE("[bsdk] step 9b: ice gathering deadline installed\n");
+
 	/* Platform audio session setup (iOS AVAudioSession; no-op elsewhere).
 	 * Non-fatal: a session category the OS refuses right now (e.g. during
 	 * a CallKit-owned activation) still leaves the stack usable. */
@@ -609,6 +616,7 @@ fail:
 	bsdk_event_close();
 	ua_close();
 	bsdk_call_global_reset();
+	bsdk_ice_shim_close();
 	bsdk_dns_close();
 #ifdef _WIN32
 	{ __try { baresip_close(); } __except(EXCEPTION_EXECUTE_HANDLER) {
@@ -754,6 +762,8 @@ void baresdk_shutdown(void)
 	 * OpenSLES engine can be destroyed. */
 	bsdk_sles_vc_close();
 #endif
+	/* Put the ice module's vtable back before baresip_close() unloads it. */
+	bsdk_ice_shim_close();
 	BSDK_TRACE("[bsdk] shutdown: dns_close\n");
 	bsdk_dns_close();
 	BSDK_TRACE("[bsdk] shutdown: baresip_close\n");

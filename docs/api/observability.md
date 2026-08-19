@@ -60,6 +60,19 @@ You will receive `BARESDK_EV_MEDIA_STATS` events at that interval during every a
 
 **Stream identity** — useful for correlating stats with network captures
 
+`NaN` and `-127` are different answers, and the difference is the whole
+diagnostic value. `NaN` means no frame was ever measured — media never
+started. `-127` is a measurement: frames arrived and every sample was zero,
+which is a dead capture or playback path rather than a quiet room. Read the
+mic and speaker levels together with the RTP counters:
+
+| mic | spk | tx/rx | Reading |
+|---|---|---|---|
+| `NaN` | `NaN` | 0 | No media at all — check ICE/DTLS, not audio |
+| `NaN` | `NaN` | non-zero | RTP is flowing but the audio tap never ran |
+| `-127` | real | non-zero | Capture is delivering digital silence |
+| real | `-127` | non-zero | Playback path is receiving silence |
+
 | Field | Notes |
 |---|---|
 | `ssrc_tx` | Our SSRC as seen in Wireshark |

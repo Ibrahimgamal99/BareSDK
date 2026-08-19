@@ -87,8 +87,9 @@ static uint16_t default_port_for_transport(baresdk_transport_t t)
 {
 	switch (t) {
 	case BARESDK_TRANSPORT_TLS: return 5061;
-	case BARESDK_TRANSPORT_WS:  return 8088;
-	case BARESDK_TRANSPORT_WSS: return 8089;
+	/* WebSocket defaults, as in bsdk_parse_server_url. */
+	case BARESDK_TRANSPORT_WS:  return 80;
+	case BARESDK_TRANSPORT_WSS: return 443;
 	default:                    return 5060;
 	}
 }

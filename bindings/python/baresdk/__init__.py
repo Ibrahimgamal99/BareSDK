@@ -34,7 +34,7 @@ from ._loader import ffi, lib
 from .events import (
     RegStateEvent, IncomingCallEvent, CallStateEvent, CallDtmfEvent,
     SdpNegotiationEvent, SipTraceEvent, MediaStatsEvent, LogEvent,
-    RegistrarWarningEvent, TransferRequestEvent, MwiEvent,
+    RegistrarWarningEvent, TransferRequestEvent, TransferFailedEvent, MwiEvent,
     MessageEvent, PresenceStateEvent, QualityAlertEvent, NetworkEvent,
     CallStats,
 )
@@ -57,7 +57,8 @@ _VALID_NAMES = frozenset({
     "calling", "ringing", "established", "held", "ended", "cancelled", "call_failed",
     # direct events
     "incoming_call", "dtmf", "sdp_negotiation", "sip_trace", "media_stats",
-    "log", "registrar_warning", "transfer_request", "mwi", "message",
+    "log", "registrar_warning", "transfer_request", "transfer_failed",
+    "mwi", "message",
     "presence_state", "quality_alert", "network",
     # wildcard
     "*",
@@ -357,6 +358,14 @@ def _global_event_cb(ev_ptr, _userdata):
                 error        = n.error,
             )
 
+        elif typ == 15: # TRANSFER_FAILED
+            acct_handle = ev.u.transfer_failed.account
+            call_handle = ev.u.transfer_failed.call
+            obj = TransferFailedEvent(
+                call   = None,
+                reason = _s(ev.u.transfer_failed.reason) or "",
+            )
+
         else:
             return
 
@@ -484,7 +493,7 @@ def on(name: str):
       registering, registered, unregistered, reg_failed
       calling, ringing, established, held, ended, cancelled, call_failed
       incoming_call, dtmf, sdp_negotiation, sip_trace, media_stats,
-      log, registrar_warning, transfer_request, mwi, message,
+      log, registrar_warning, transfer_request, transfer_failed, mwi, message,
       presence_state, quality_alert, network
       * (wildcard — every event)
 
@@ -1141,7 +1150,8 @@ __all__ = [
     # Event dataclasses
     "RegStateEvent", "IncomingCallEvent", "CallStateEvent", "CallDtmfEvent",
     "SdpNegotiationEvent", "SipTraceEvent", "MediaStatsEvent", "LogEvent",
-    "RegistrarWarningEvent", "TransferRequestEvent", "MwiEvent",
+    "RegistrarWarningEvent", "TransferRequestEvent", "TransferFailedEvent",
+    "MwiEvent",
     "MessageEvent", "PresenceStateEvent", "QualityAlertEvent", "NetworkEvent",
     # Push provider constants (no string form in the C API)
     "PUSH_PROVIDER_NONE", "PUSH_PROVIDER_APNS",

@@ -276,14 +276,37 @@ static void invite_fn(void *arg)
 	                         ruri, VIDMODE_OFF);
 	if (ctx->result == EAFNOSUPPORT) {
 		/* ICE STUN/TURN lookup failed because this host has no IPv6.
-		 * Disable ICE and retry with direct RTP. */
-		account_set_medianat(ua_account(ctx->acct->ua), NULL);
+		 * Disable ICE and retry with direct RTP.
+		 *
+		 * Put it back afterwards.  The account outlives the call, and
+		 * leaving the media-NAT cleared meant one dial on an IPv4-only
+		 * network silently downgraded every later call on that account
+		 * to no-ICE — including calls placed after the device moved to a
+		 * network where ICE was both available and needed. */
+		struct account *ba = ua_account(ctx->acct->ua);
+		const char *mnatid = account_medianat(ba);
+		char keep[32] = "";
+
+		if (mnatid)
+			str_ncpy(keep, mnatid, sizeof(keep));
+
+		account_set_medianat(ba, NULL);
 		ctx->result = ua_connect(ctx->acct->ua, &bc, NULL,
 		                         ruri, VIDMODE_OFF);
+		if (keep[0])
+			account_set_medianat(ba, keep);
 	}
 	mem_deref(ruri);
-	if (ctx->result || !bc)
+	if (ctx->result)
 		return;
+	if (!bc) {
+		/* ua_connect reported success without producing a call. Nothing
+		 * downstream can work with that, and returning 0 would hand the
+		 * caller an untouched *out — a stale or uninitialised handle for
+		 * every binding that does not pre-zero it. */
+		ctx->result = EINVAL;
+		return;
+	}
 
 	struct baresdk_call *lc = mem_alloc(sizeof(*lc), bsdk_call_destructor);
 	if (!lc) {
@@ -303,7 +326,14 @@ static void invite_fn(void *arg)
 	 * matched by bsdk_sdp_handle_event().  Record it here so the
 	 * SDP_NEGOTIATION event fires when the remote answer arrives. */
 	lc->local_sdp_set = true;
-	uint32_t _sil_bits; float _sil = -127.0f; memcpy(&_sil_bits, &_sil, 4);
+	/* NaN, not -127: the header documents NaN for "unavailable" and -127 for
+	 * "silent", and tap_compute_dbov() genuinely returns -127 for all-zero
+	 * PCM.  Seeding -127 collapsed the two, so a microphone delivering
+	 * digital silence and a level that was never measured at all read back
+	 * identically — which is precisely the distinction you need when audio
+	 * is missing and you are trying to work out whether the capture path is
+	 * dead or merely quiet. */
+	uint32_t _sil_bits; float _sil = NAN; memcpy(&_sil_bits, &_sil, 4);
 	re_atomic_rlx_set(&lc->rx_level_bits, _sil_bits);
 	re_atomic_rlx_set(&lc->tx_level_bits, _sil_bits);
 

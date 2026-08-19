@@ -49,8 +49,10 @@
 #  define NOMINMAX
 #  include <windows.h>
 #endif
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -61,6 +63,100 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Live in-call timer
+ *
+ * Talk time is kept on a steady_clock here rather than read from
+ * baresdk_ev_media_stats_t::call_duration_ms: that figure only advances once
+ * per stats_interval_ms and is not produced at all when stats are disabled, so
+ * a clock built on it moves in five-second jumps.  The SDK's figure is the one
+ * to report; this one is the one to watch.
+ *
+ * The ticker owns a single terminal line and rewrites it in place with '\r'.
+ * Event callbacks fire on the SDK's own thread and print freely, so everything
+ * that writes while a call is up goes through say() — which clears the status
+ * line first, or the two interleave into an unreadable mess.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+namespace status {
+
+std::mutex        out_mtx;
+bool              line_shown = false;
+std::atomic<bool> running{false};
+/* Bumped by every start_timer().  A ticker thread exits as soon as its own
+ * generation is stale, so a second call in the same session cannot end up with
+ * two threads drawing the status line: without it, a thread asleep in its
+ * one-second wait when the previous call ended sees `running` true again by the
+ * time it wakes, and carries on alongside the new one. */
+std::atomic<unsigned> generation{0};
+std::chrono::steady_clock::time_point started;
+
+inline std::string fmt_elapsed(long long secs)
+{
+    char buf[32];
+    if (secs >= 3600)
+        std::snprintf(buf, sizeof(buf), "%lld:%02lld:%02lld",
+                      secs / 3600, secs / 60 % 60, secs % 60);
+    else
+        std::snprintf(buf, sizeof(buf), "%lld:%02lld", secs / 60, secs % 60);
+    return buf;
+}
+
+/* std::cout that does not collide with the in-call status line. */
+template <typename F>
+void say(F&& emit)
+{
+    std::lock_guard<std::mutex> lk(out_mtx);
+    if (line_shown) {
+        std::cout << "\r\033[K";
+        line_shown = false;
+    }
+    emit(std::cout);
+    std::cout.flush();
+}
+
+inline void say_line(const std::string& text)
+{
+    say([&](std::ostream& os) { os << text << "\n"; });
+}
+
+/* Idempotent, so hold/resume does not restart the clock. */
+inline void start_timer()
+{
+    if (running.exchange(true))
+        return;
+    started = std::chrono::steady_clock::now();
+    const unsigned gen = ++generation;
+
+    std::thread([gen]{
+        while (running.load() && generation.load() == gen) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now() - started).count();
+            std::lock_guard<std::mutex> lk(out_mtx);
+            /* Re-check under the lock: stop_timer() clears the flag and then
+             * wipes the line, and without this a tick already past the loop
+             * condition could redraw over the cleared line afterwards. */
+            if (!running.load() || generation.load() != gen)
+                return;
+            std::cout << "\rIn call \u00b7 " << fmt_elapsed(secs) << std::flush;
+            line_shown = true;
+        }
+    }).detach();
+}
+
+/* Stops the ticker and returns total talk time in seconds, or -1 if never started. */
+inline long long stop_timer()
+{
+    if (!running.exchange(false))
+        return -1;
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - started).count();
+    say([](std::ostream&) {});   /* clear the status line */
+    return secs;
+}
+
+} /* namespace status */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Minimal JSON parser — no external dependencies.
@@ -651,20 +747,29 @@ int main(int argc, char* argv[])
                 };
                 int si = ev.u.call_state.state;
                 const char* sname = (si >= 0 && si <= 6) ? kStateNames[si] : "?";
-                std::cout << "Call state: " << sname << " (" << si << ")";
-                if (ev.u.call_state.reason && ev.u.call_state.reason[0])
-                    std::cout << "  reason=\"" << ev.u.call_state.reason << "\"";
-                if (ev.u.call_state.error != BARESDK_OK)
-                    std::cout << "  error=" << ev.u.call_state.error;
-                std::cout << "\n";
+                status::say([&](std::ostream& os) {
+                    os << "Call state: " << sname << " (" << si << ")";
+                    if (ev.u.call_state.reason && ev.u.call_state.reason[0])
+                        os << "  reason=\"" << ev.u.call_state.reason << "\"";
+                    if (ev.u.call_state.error != BARESDK_OK)
+                        os << "  error=" << ev.u.call_state.error;
+                    os << "\n";
+                });
 
                 if (ev.u.call_state.state == BARESDK_CALL_ESTABLISHED) {
+                    /* Talk time starts when the far end answers, not when we
+                     * dialled — that is the number a user expects to see. */
+                    status::start_timer();
                     std::lock_guard<std::mutex> lk(mtx);
                     call_established = true;
                     cv.notify_one();
                 } else if (ev.u.call_state.state == BARESDK_CALL_ENDED  ||
                     ev.u.call_state.state == BARESDK_CALL_FAILED ||
                     ev.u.call_state.state == BARESDK_CALL_CANCELLED) {
+                    long long talked = status::stop_timer();
+                    if (talked >= 0)
+                        status::say_line("Call ended after " +
+                                         status::fmt_elapsed(talked) + ".");
                     std::lock_guard<std::mutex> lk(mtx);
                 call_done = true;
                 cv.notify_one();
@@ -739,23 +844,24 @@ int main(int argc, char* argv[])
         if (!call_established) return 0;
 
         lk.unlock();
-        std::cout << "Call active. Keys: h=hangup  o=hold  r=resume  m=mute  u=unmute  t=transfer\n";
+        status::say_line("In call \u00b7 0:00   Keys: h=hangup  o=hold  r=resume  "
+                         "m=mute  u=unmute  t=transfer");
 
         std::thread input_thread([&]{
             char c;
             while (std::cin.get(c)) {
                 if      (c == 'h' || c == 'H') { active_call.hangup();          break; }
-                else if (c == 'o' || c == 'O') { try { active_call.hold();   std::cout << "On hold.\n";   } catch (...) {} }
-                else if (c == 'r' || c == 'R') { try { active_call.resume(); std::cout << "Resumed.\n";  } catch (...) {} }
-                else if (c == 'm' || c == 'M') { try { active_call.mute(true);  std::cout << "Muted.\n";   } catch (...) {} }
-                else if (c == 'u' || c == 'U') { try { active_call.mute(false); std::cout << "Unmuted.\n"; } catch (...) {} }
+                else if (c == 'o' || c == 'O') { try { active_call.hold();   status::say_line("On hold.");  } catch (...) {} }
+                else if (c == 'r' || c == 'R') { try { active_call.resume(); status::say_line("Resumed.");  } catch (...) {} }
+                else if (c == 'm' || c == 'M') { try { active_call.mute(true);  status::say_line("Muted.");   } catch (...) {} }
+                else if (c == 'u' || c == 'U') { try { active_call.mute(false); status::say_line("Unmuted."); } catch (...) {} }
                 else if (c == 't' || c == 'T') {
                     std::string dest;
-                    std::cout << "Transfer to URI: ";
+                    status::say([](std::ostream& os) { os << "Transfer to URI: "; });
                     std::getline(std::cin, dest);
                     if (!dest.empty()) {
-                        try { active_call.transfer(dest); std::cout << "Transfer sent.\n"; }
-                        catch (const std::exception& e) { std::cerr << "transfer failed: " << e.what() << "\n"; }
+                        try { active_call.transfer(dest); status::say_line("Transfer sent."); }
+                        catch (const std::exception& e) { status::say_line(std::string("transfer failed: ") + e.what()); }
                     }
                 }
             }

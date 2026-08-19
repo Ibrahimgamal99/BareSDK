@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+### Fixed
+
+- Wi-Fi ↔ cellular handover left an ICE call with dead audio. The re-INVITE
+  re-advertised the network the call had just left (the ICE module owns the
+  media-level `c=` line, and nothing re-gathered), so the PBX kept sending RTP to
+  an address that was gone and dropped what arrived from the new one. ICE calls
+  are now migrated with a real RFC 8445 §9 ICE restart — new credentials, a fresh
+  gather on the new interface — and emit the ordinary `callMigrating` →
+  `callMigrated` sequence, with the re-INVITE arriving up to
+  `iceGatheringTimeoutMs` after `callMigrating`. `NetworkStage.callIceStale` and
+  `BareSDKConfig.netIceHandover` now apply only to the calls a restart could not
+  be performed for.
+
+- In-dialog requests on an incoming call never reached the server, so hanging up
+  put no BYE on the wire and the ICE re-offer never arrived. The PBX sent no
+  Record-Route, so libre routed to a Contact naming an internal hostname that
+  resolves nowhere, and the lookup failed asynchronously after the request had
+  already been accepted. In-dialog requests now follow the WebSocket flow the
+  registration established (RFC 7118 §B.2). Android only — it needs GNU ld's
+  `--wrap`, so iOS still carries the bug.
+
+- A media-encryption mismatch was reported as "no common audio or video codecs",
+  which points at the codec list when the codecs are fine and the media profile
+  is the problem. Now named correctly when the account offers no encryption.
+
+- Hanging up an answered incoming call sent no BYE — the app reported the call
+  ended while the caller was still connected, and their eventual hangup came
+  back as `481 Call Does Not Exist`. Native fix; Android only (it needs GNU
+  ld's `--wrap`, so iOS is unaffected by the fix and still carries the bug).
+
+- Incoming calls had no audio when ICE was on. ICE nominated a peer-reflexive
+  candidate, which is never signalled, so media left from an address the server
+  had not been told about and Asterisk dropped it — the call connected and both
+  sides heard silence. The SDK now re-offers when the address ICE settles on is
+  not the one that was advertised.
+
+- `BareSDKConfig`'s ICE toggle had no STUN server to go with it in the example
+  app, which is the configuration that triggers the above. Added STUN and TURN
+  fields, shown when ICE is enabled, and defaulted `mediaEnc` to
+  `MediaEncryption.dtlsSrtp` — a WSS-facing PBX rejects an unencrypted account.
+  TURN is not optional on a carrier NAT that hands out a different public IP per
+  destination; STUN alone cannot describe that and the re-offer cannot rescue it.
+
+- `MediaStats.micLevelDbov` / `audioLevelDbov` now start as `NaN` rather than
+  `-127.0`. Both values were previously `-127.0`, which is also the reading for
+  genuine silence, so a dead microphone and an unmeasured one were
+  indistinguishable.
+
+- Outgoing calls could never send their INVITE when `iceEnabled` was set. The
+  native stack defers the INVITE until ICE candidate gathering reports
+  complete, nothing bounded that wait, and one path never reported at all — so
+  a call sat in `CallState.calling` forever with no SIP message on the wire and
+  no event, while `Account.call()` had already returned a `Call`. The new
+  `BareSDKConfig.iceGatheringTimeoutMs` (default 2000; `-1` keeps the SDK
+  default, `0` waits indefinitely) releases the offer with whatever candidates
+  exist when it expires, the same way dart-sip-ua's `ice_gathering_timeout`
+  and pjsua's `PJSUA_ICE_TRANSPORT_INIT_TIMEOUT` do.
+
+### Changed
+
+- The example app now shows **In call · M:SS** under the peer name, ticking
+  once a second, and `On hold · M:SS` while held. It previously showed only the
+  raw call-state name. The clock is wall-time, started on
+  `CallState.established`: `MediaStats.callDurationMs` only advances once per
+  `statsIntervalMs` and is not emitted at all when stats are off, so a timer
+  built on it moves in five-second jumps or not at all.
+
 ### Added
 
 - Degraded-link handling on `BareSDKConfig` — for the failure handover cannot
@@ -19,6 +86,14 @@
 - `IceHandover` enum for `netIceHandover`: `bestEffort` (default) or `failFast`.
 - `Call.setRtpTimeout()`, `Call.setBitrate()`, `Account.keepaliveNow()`,
   `BareSDK.setAdaptiveBitrate()`.
+
+- `TransferFailedEvent` — an outgoing REFER was refused. Previously this arrived
+  as `CallStateEvent(CallState.failed)`, which is terminal: the Dart layer
+  dropped the call handle while the call was still established natively, so a
+  blind transfer to a busy or unknown extension destroyed the live call instead
+  of reporting the refusal. The call is now left alone and the app can resume
+  the parked caller. There is no success event — an accepted REFER closes the
+  leg and arrives as `CallState.ended`.
 
 ### Changed
 

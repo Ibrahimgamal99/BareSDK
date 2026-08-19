@@ -104,7 +104,14 @@ enum AecMode {
       values.firstWhere((v) => v.raw == raw, orElse: () => suppressor);
 }
 
-/// What to do with an ICE call whose candidates went stale on handover.
+/// What to do with an ICE call whose candidates could not be re-gathered on
+/// handover.
+///
+/// An ICE call is normally migrated with a full RFC 8445 §9 ICE restart — new
+/// credentials, a fresh gather on the new interface — which needs nothing from
+/// the app and is not affected by this setting.  It applies to the calls the
+/// restart could not be performed for, which fall back to a re-INVITE carrying
+/// the pre-handover candidates and are marked [NetworkStage.callIceStale].
 enum IceHandover {
   /// Send the re-INVITE and let media verification decide (default).
   bestEffort(c.baresdk_ice_handover_t.BARESDK_ICE_HANDOVER_BEST_EFFORT),
@@ -112,6 +119,8 @@ enum IceHandover {
   /// Try once, then report `callMigrationFailed`.  Preferred when calls are
   /// ICE+TURN over cellular: repeating an offer built from the wrong
   /// candidates only lengthens the silence before the app can redial.
+  ///
+  /// A call whose ICE was restarted keeps the full retry budget regardless.
   failFast(c.baresdk_ice_handover_t.BARESDK_ICE_HANDOVER_FAIL_FAST);
 
   final int raw;
@@ -188,11 +197,12 @@ enum NetworkStage {
   callDeferred(c.baresdk_net_event_t.BARESDK_NET_CALL_DEFERRED),
   handoverFailed(c.baresdk_net_event_t.BARESDK_NET_HANDOVER_FAILED),
 
-  /// This call negotiated ICE, so its gathered candidates are now stale and
-  /// cannot be re-gathered mid-call.  The re-INVITE is still sent — it
-  /// recovers a direct or still-valid TURN-relayed path — but if media does
-  /// not resume, the remedy is to re-place the call.
-  /// `BareSDKConfig.netIceHandover` decides whether to keep retrying.
+  /// This call has ICE that could not be re-gathered — the ICE restart the
+  /// SDK normally performs on handover was not possible for it — so the
+  /// re-INVITE carries the pre-handover candidates.  That recovers a direct or
+  /// still-valid TURN-relayed path; if media does not resume, the remedy is to
+  /// re-place the call.  `BareSDKConfig.netIceHandover` decides whether to keep
+  /// retrying.  An ICE call that was restarted does not emit this.
   callIceStale(c.baresdk_net_event_t.BARESDK_NET_CALL_ICE_STALE);
 
   final int raw;

@@ -1000,8 +1000,9 @@ static void create_fn(void *arg)
 		uint16_t port = acct->parsed_port;
 		if (!port) {
 			switch (tp) {
-			case BARESDK_TRANSPORT_WSS: port = 8089; break;
-			case BARESDK_TRANSPORT_WS:  port = 8088; break;
+			/* WebSocket defaults, as in bsdk_parse_server_url. */
+			case BARESDK_TRANSPORT_WSS: port = 443; break;
+			case BARESDK_TRANSPORT_WS:  port = 80; break;
 			case BARESDK_TRANSPORT_TLS: port = 5061; break;
 			case BARESDK_TRANSPORT_TCP: port = 5060; break;
 			case BARESDK_TRANSPORT_UDP:

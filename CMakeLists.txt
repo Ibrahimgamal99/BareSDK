@@ -50,27 +50,31 @@ if(BARESDK_SRC_MODE)
 
   # Platform-specific source files
   if(ANDROID_ABI)
-    file(GLOB PLAT_SRCS
+    file(GLOB PLAT_SRCS CONFIGURE_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/android/*.c")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     enable_language(OBJC)   # audio_ios.m (AVAudioSession setup)
-    file(GLOB PLAT_SRCS
+    file(GLOB PLAT_SRCS CONFIGURE_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/ios/*.c"
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/ios/*.m")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     enable_language(OBJC)
-    file(GLOB PLAT_SRCS
+    file(GLOB PLAT_SRCS CONFIGURE_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/macos/*.c"
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/macos/*.m")
   elseif(WIN32)
-    file(GLOB PLAT_SRCS
+    file(GLOB PLAT_SRCS CONFIGURE_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/windows/*.c")
   else()
-    file(GLOB PLAT_SRCS
+    file(GLOB PLAT_SRCS CONFIGURE_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/linux/*.c")
   endif()
 
-  file(GLOB CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
+  # CONFIGURE_DEPENDS so a newly added source is compiled by an incremental
+  # build.  Without it the glob is evaluated once at configure time and cached:
+  # a new .c file links as if it were never written, which is a silent and very
+  # confusing failure for anyone adding one.
+  file(GLOB CORE_SRCS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
   # glibc_symver.c pins glibc symbol versions for portable desktop-Linux
   # binaries — it references strtoll@GLIBC_2.2.5 etc. and must not be
   # compiled anywhere else (Android uses bionic, Windows/macOS no glibc).
@@ -807,6 +811,15 @@ if(BARESDK_SHARED)
               # Reuses the one WebSocket for in-dialog requests; see the
               # in-dialog reuse note in src/ws_path.c.
               -Wl,--wrap=sip_transp_send
+              # In-dialog requests follow the WebSocket flow, not the peer's
+              # unroutable Contact (RFC 7118 B.2). See src/ws_path.c.
+              -Wl,--wrap=sip_dialog_route
+              # Clears every reply the ACK matches, so hanging up an answered
+              # incoming call actually sends the BYE; see src/sipsess_fix.c.
+              -Wl,--wrap=sipsess_reply_ack
+              # Reports a BYE that could not be sent; libre discards the
+              # error. See src/sipsess_fix.c.
+              -Wl,--wrap=sipsess_bye
               ${_SHARED_LINK_EXTRA}
               -Wl,--whole-archive ${_WHOLE_LIBS} -Wl,--no-whole-archive
               ${_ONDEMAND_LIBS}

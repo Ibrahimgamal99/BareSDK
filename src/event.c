@@ -95,6 +95,10 @@ qev_clone(struct baresdk_queued_event *old)
 		ev->u.transfer_req.refer_to_uri =
 			rb(ev->u.transfer_req.refer_to_uri, old, n);
 		break;
+	case BARESDK_EV_TRANSFER_FAILED:
+		ev->u.transfer_failed.reason =
+			rb(ev->u.transfer_failed.reason, old, n);
+		break;
 	case BARESDK_EV_MWI:
 		ev->u.mwi.raw_body = rb(ev->u.mwi.raw_body, old, n);
 		break;
@@ -249,6 +253,30 @@ static int sip_reason_code(const char *reason)
 
 /* ── bevent handler (runs on re_main) ────────────────────────────────────── */
 
+/**
+ * True when baresip's "no common codecs" is really a media-encryption mismatch.
+ *
+ * Only claimed when this account offers no encryption at all: that is the case
+ * where the codec lists are irrelevant and the profile is certain to be the
+ * problem.  The opposite direction (we require encryption, peer offers plain
+ * RTP) is left with baresip's own wording — the peer's capabilities are not
+ * ours to describe, and a genuine codec mismatch is still possible there.
+ */
+static bool codec_reason_is_really_menc(const char *reason,
+                                        const struct baresdk_account *acct)
+{
+	baresdk_media_enc_t enc;
+
+	if (!reason || !acct)
+		return false;
+
+	if (!strstr(reason, "common audio") && !strstr(reason, "common media"))
+		return false;
+
+	enc = acct->cfg.media_enc ? acct->cfg.media_enc : g_bsdk.cfg.media_enc;
+	return enc == BARESDK_MEDIA_ENC_NONE;
+}
+
 static void bevent_handler(enum bevent_ev bev,
                             struct bevent *event,
                             void *arg)
@@ -367,7 +395,8 @@ static void bevent_handler(enum bevent_ev bev,
 		mtx_init(&new_lc->tap_lock, mtx_plain);
 		mtx_init(&new_lc->rec_lock, mtx_plain);
 		list_init(&new_lc->custom_hdrs);
-		uint32_t _sil_bits; float _sil = -127.0f; memcpy(&_sil_bits, &_sil, 4);
+		/* NaN = never measured; -127 = measured silence. See call.c. */
+		uint32_t _sil_bits; float _sil = NAN; memcpy(&_sil_bits, &_sil, 4);
 		re_atomic_rlx_set(&new_lc->rx_level_bits, _sil_bits);
 		re_atomic_rlx_set(&new_lc->tx_level_bits, _sil_bits);
 
@@ -505,6 +534,23 @@ static void bevent_handler(enum bevent_ev bev,
 				         sizeof(qev->buf));
 				qev->ev.u.call_state.reason = qev->buf;
 			}
+			else if (reason && codec_reason_is_really_menc(reason, acct)) {
+				/* baresip disables a stream whose media profile it
+				 * cannot match and then reports the call as having
+				 * no common codecs.  When the profiles differ that
+				 * message is actively misleading: an account
+				 * offering RTP/AVP against a peer offering
+				 * UDP/TLS/RTP/SAVPF fails with a full codec list on
+				 * both sides and nothing wrong with any of them.
+				 * Name the real mismatch. */
+				str_ncpy(qev->buf,
+				         "No common media: this account offers "
+				         "unencrypted RTP and the peer requires "
+				         "encrypted media (set media_enc, e.g. "
+				         "DTLS-SRTP)",
+				         sizeof(qev->buf));
+				qev->ev.u.call_state.reason = qev->buf;
+			}
 			else if (reason) {
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
 				qev->ev.u.call_state.reason = qev->buf;
@@ -569,12 +615,17 @@ static void bevent_handler(enum bevent_ev bev,
 		break;
 
 	case BEVENT_CALL_TRANSFER_FAILED: {
+		/* A refused REFER leaves the call ESTABLISHED — baresip does not
+		 * close it, and reporting BARESDK_CALL_FAILED here did: consumers
+		 * treat that state as terminal and drop their call handle, so a
+		 * blind transfer to a busy or unknown extension silently destroyed
+		 * the live call the user was still talking on.  Report the transfer
+		 * outcome instead and leave lc->state alone. */
 		const char *reason = bevent_get_text(event);
-		ev.type = BARESDK_EV_CALL_STATE;
-		ev.u.call_state.call    = lc;
-		ev.u.call_state.account = acct;
-		ev.u.call_state.state   = BARESDK_CALL_FAILED;
-		if (lc) lc->state = BARESDK_CALL_FAILED;
+		ev.type = BARESDK_EV_TRANSFER_FAILED;
+		ev.u.transfer_failed.call    = lc;
+		ev.u.transfer_failed.account = acct;
+		ev.u.transfer_failed.reason  = NULL;
 
 		if (reason) {
 			struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
@@ -582,10 +633,10 @@ static void bevent_handler(enum bevent_ev bev,
 				memset(qev, 0, sizeof(*qev));
 				memcpy(&qev->ev, &ev, sizeof(ev));
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
-				qev->ev.u.call_state.reason = qev->buf;
+				qev->ev.u.transfer_failed.reason = qev->buf;
 				bsdk_event_post_qev(qev);
+				post = false;
 			}
-			post = false;
 		}
 		break;
 	}

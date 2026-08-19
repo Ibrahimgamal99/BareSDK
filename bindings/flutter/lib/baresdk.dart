@@ -275,6 +275,24 @@ class TransferRequestEvent extends BareSDKEvent {
   TransferRequestEvent(this.call, this.referToUri, this.hasReplaces);
 }
 
+/// An outgoing REFER was refused — the transfer did not happen.
+///
+/// [call] is still established.  A failed transfer is not a call failure: the
+/// far end simply would not take the call, and the user is still on the line
+/// (usually on hold, if the app parked them for a warm transfer).  Resume them
+/// and report [reason]; do not hang up.
+///
+/// There is no matching success event.  A REFER that is accepted moves the call
+/// to the transfer target and closes our leg, which arrives as a
+/// [CallStateEvent] with [CallState.ended].
+class TransferFailedEvent extends BareSDKEvent {
+  final Call call;
+
+  /// Status line or cause text from the stack; empty when none was supplied.
+  final String reason;
+  TransferFailedEvent(this.call, this.reason);
+}
+
 /// Non-fatal registrar warning.
 class RegistrarWarningEvent extends BareSDKEvent {
   final String message;
@@ -1392,6 +1410,13 @@ class BareSDK {
         final call = _trackCall(t.call, target);
         decoded = TransferRequestEvent(
             call, _str(t.refer_to_uri) ?? '', t.has_replaces);
+        break;
+
+      case baresdk_event_type_t.BARESDK_EV_TRANSFER_FAILED:
+        final t = ev.ref.u.transfer_failed;
+        target = _accounts[t.account.address];
+        final call = _trackCall(t.call, target);
+        decoded = TransferFailedEvent(call, _str(t.reason) ?? '');
         break;
 
       case baresdk_event_type_t.BARESDK_EV_REGISTRAR_WARNING:

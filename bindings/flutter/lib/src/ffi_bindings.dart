@@ -1631,14 +1631,20 @@ abstract class baresdk_jbuf_type_t {
   static const int BARESDK_JBUF_FIXED = 1;
 }
 
-/// What to do with an ICE call whose local candidates went stale on handover.
+/// What to do with an ICE call whose candidates could not be re-gathered on
+/// handover.
 ///
-/// A network handover invalidates every gathered ICE candidate, and baresip
-/// fixes the local ufrag/pwd when the media session is created — an RFC 8445
-/// §9 ICE restart is therefore not possible from outside the library.  The
-/// re-INVITE we do send carries the old candidate set: it recovers the call
-/// when the peer is reachable directly or through a still-valid TURN relay,
-/// and cannot recover it otherwise.
+/// A network handover invalidates every gathered ICE candidate, so the SDK
+/// migrates an ICE call with a full RFC 8445 §9 ICE restart: new ice-ufrag /
+/// ice-pwd, a fresh gather on the interface that now carries the default route,
+/// and a re-INVITE built from the result.  That is the normal path and it needs
+/// nothing from the app.
+///
+/// This setting applies to the calls it cannot be done for — no ICE session left
+/// to restart, or a replacement that could not be allocated.  Those get the plain
+/// re-INVITE, which carries the old candidate set: it recovers the call when the
+/// peer is reachable directly or through a still-valid TURN relay, and cannot
+/// recover it otherwise.  BARESDK_NET_CALL_ICE_STALE marks such a call.
 abstract class baresdk_ice_handover_t {
   /// Send the re-INVITE anyway and let media verification decide.
   /// Recovers relay/direct paths; wastes net_verify_ms × net_max_attempts
@@ -1649,6 +1655,10 @@ abstract class baresdk_ice_handover_t {
   /// CALL_MIGRATION_FAILED it can answer by re-placing the call, instead
   /// of a long silence.  Recommended when calls are ICE+TURN over
   /// cellular.
+  ///
+  /// Does not apply to a call whose ICE was restarted: that call is not
+  /// offering the wrong candidates any more, so it is held to the same
+  /// retry budget as a direct-RTP call.
   static const int BARESDK_ICE_HANDOVER_FAIL_FAST = 1;
 }
 
@@ -1774,6 +1784,13 @@ abstract class baresdk_event_type_t {
   static const int BARESDK_EV_PRESENCE_STATE = 12;
   static const int BARESDK_EV_QUALITY_ALERT = 13;
   static const int BARESDK_EV_NETWORK = 14;
+
+  /// An outgoing REFER was refused.  The call named in the payload is STILL
+  /// ESTABLISHED — this is deliberately not a call-state change, so a failed
+  /// transfer never tears down the leg the user is still talking on.  A REFER
+  /// that succeeds needs no event of its own: the far end takes the call over
+  /// and our leg closes, which arrives as BARESDK_EV_CALL_STATE / ENDED.
+  static const int BARESDK_EV_TRANSFER_FAILED = 15;
 }
 
 /// Stages of a network handover (Wi-Fi ↔ 4G/5G, VPN up/down, dock/undock).
@@ -1818,8 +1835,11 @@ abstract class baresdk_net_event_t {
   /// transport reset failed; retrying
   static const int BARESDK_NET_HANDOVER_FAILED = 10;
 
-  /// ICE call: gathered candidates are stale and cannot be re-gathered.
-  /// Emitted once per call per handover, before the re-INVITE.  See
+  /// ICE call whose candidates could not be re-gathered: the migration
+  /// falls back to a re-INVITE carrying the pre-handover candidate set,
+  /// which recovers direct and TURN-relayed paths only.  Emitted once per
+  /// call per handover, before that re-INVITE.  An ICE call that *was*
+  /// restarted does not emit this — it migrates like any other call.  See
   /// baresdk_ice_handover_t and cfg.net_ice_handover.
   static const int BARESDK_NET_CALL_ICE_STALE = 11;
 }
@@ -1848,7 +1868,8 @@ final class baresdk_ev_network_t extends ffi.Struct {
   external int attempt;
 
   /// The offer budget this call is held to — net_max_attempts normally, or 1
-  /// for a stale-ICE call under BARESDK_ICE_HANDOVER_FAIL_FAST.
+  /// for a call under BARESDK_ICE_HANDOVER_FAIL_FAST whose ICE could not be
+  /// restarted.
   ///
   /// Render it as a progress counter ("%u/%u"), not as an invariant:
   /// `attempt` also advances while a call waits for a default route to
@@ -1861,11 +1882,12 @@ final class baresdk_ev_network_t extends ffi.Struct {
   @ffi.Uint32()
   external int elapsed_ms;
 
-  /// True when the call negotiated ICE.  Media recovery is best-effort
-  /// for these: the re-INVITE re-runs ICE against the existing local
-  /// candidates but does NOT perform an RFC 8445 §9 ICE restart, because
-  /// baresip fixes the local ufrag/pwd when the media session is created
-  /// and exposes no way to regenerate them mid-call.
+  /// True when the call has a live ICE media-NAT (the negotiated truth, not
+  /// cfg.ice_enabled).  Such a call is migrated with an RFC 8445 §9 ICE
+  /// restart — new credentials and a fresh gather, so the re-INVITE carries
+  /// candidates for the network the device is on now.  Recovery is only
+  /// best-effort for one that also carries CALL_ICE_STALE, meaning the
+  /// restart could not be performed.
   @ffi.Bool()
   external bool ice;
 
@@ -2172,6 +2194,22 @@ final class baresdk_ev_transfer_req_t extends ffi.Struct {
   external bool has_replaces;
 }
 
+/// An outgoing REFER was refused (blind or attended).
+///
+/// The call is still up.  baresip does not close a call whose transfer failed,
+/// and neither does baresdk: the caller is still on the line, usually on hold,
+/// and the app's remedy is to resume them and report the failure — not to hang
+/// up.  `reason` is the status line or cause text when the stack supplied one.
+final class baresdk_ev_transfer_failed_t extends ffi.Struct {
+  external baresdk_account_handle_t account;
+
+  /// the call we tried to transfer away
+  external baresdk_call_handle_t call;
+
+  /// status line / cause, may be NULL
+  external ffi.Pointer<ffi.Char> reason;
+}
+
 /// MWI NOTIFY — raw body is parsed into counters; all fields may be 0.
 final class baresdk_ev_mwi_t extends ffi.Struct {
   external baresdk_account_handle_t account;
@@ -2277,6 +2315,8 @@ final class UnnamedUnion1 extends ffi.Union {
   external baresdk_ev_registrar_warning_t reg_warn;
 
   external baresdk_ev_transfer_req_t transfer_req;
+
+  external baresdk_ev_transfer_failed_t transfer_failed;
 
   external baresdk_ev_mwi_t mwi;
 
@@ -2784,6 +2824,22 @@ final class baresdk_config_t extends ffi.Struct {
   /// See baresdk_ice_handover_t.
   @ffi.Int32()
   external int net_ice_handover;
+
+  /// Deadline for ICE candidate gathering on an outgoing call, ms.
+  /// Default 2000; 0 disables the deadline (wait indefinitely).
+  ///
+  /// With a media-NAT configured, the INVITE is not sent when the call is
+  /// placed — it is sent when the ICE stack reports it has finished
+  /// gathering. Nothing in that stack bounds how long that takes, and one
+  /// path never reports at all, so without this an outgoing call could sit
+  /// in calling forever with no SIP message on the wire and no event.
+  ///
+  /// When it expires the offer is released with whatever candidates exist,
+  /// as browser SIP stacks and pjsua both do. Gathering is not cancelled: a
+  /// later completion re-offers the fuller set in a re-INVITE, and a later
+  /// failure is dropped rather than ending the call.
+  @ffi.Uint32()
+  external int ice_gathering_timeout_ms;
 }
 
 typedef baresdk_aec_mode_t = ffi.Uint8;

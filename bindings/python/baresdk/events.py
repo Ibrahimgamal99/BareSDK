@@ -151,6 +151,23 @@ class TransferRequestEvent:
 
 
 @dataclass
+class TransferFailedEvent:
+    """An outgoing REFER was refused — the transfer did not happen.
+
+    `call` is still established.  A refused transfer is not a call failure:
+    the far end would not take the call and the user is still on the line,
+    usually on hold.  Resume them and report `reason`; do not hang up.
+
+    There is no matching success event.  An accepted REFER hands the call to
+    the transfer target and closes our leg, which arrives as a call-state
+    event with state "ended".
+    """
+    type: str = field(init=False, default="transfer_failed")
+    call: object
+    reason: str
+
+
+@dataclass
 class MwiEvent:
     type: str = field(init=False, default="mwi")
     messages_waiting: bool
@@ -203,11 +220,17 @@ class NetworkEvent:
       call_migration_failed, call_deferred, handover_failed,
       call_ice_stale
 
-    call_ice_stale says this call negotiated ICE, so its gathered candidates
-    are now wrong and cannot be re-gathered mid-call.  The re-INVITE is still
-    sent — it recovers a direct or TURN-relayed path — but if it fails the
+    An ICE call is migrated with a full RFC 8445 §9 ICE restart: new
+    credentials and a fresh gather on the new interface, so the re-INVITE
+    carries candidates for the network the device is on now.  That is
+    automatic and shows up as the ordinary call_migrating → call_migrated
+    sequence, with the re-INVITE arriving up to ice_gathering_timeout_ms later.
+
+    call_ice_stale marks the exception: a call with ICE that could not be
+    re-gathered, whose re-INVITE therefore carries the pre-handover
+    candidates.  That recovers a direct or TURN-relayed path; if it fails the
     remedy is to re-place the call.  configure(net_ice_handover=1) makes the
-    SDK give up after one attempt rather than retrying.
+    SDK give up after one attempt rather than retrying such a call.
 
     Typical logging:
         if ev.stage == "call_migrating":
@@ -362,8 +385,11 @@ class CallStats:
         method = "E-model" if self.mos_method == 0 else "simplified"
         spk = f"{self.audio_level_dbov:.4f} dBov" if not math.isnan(self.audio_level_dbov) else "n/a"
         mic = f"{self.mic_level_dbov:.4f} dBov"   if not math.isnan(self.mic_level_dbov)   else "n/a"
+        dur = self.call_duration_ms // 1000
+        elapsed = (f"{dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}"
+                   if dur >= 3600 else f"{dur // 60}:{dur % 60:02d}")
         print(
-            f"┌─ Media Stats (tick={self.stats_tick}) ─────────────────────────\n"
+            f"┌─ Media Stats (tick={self.stats_tick}, in call {elapsed}) ──────\n"
             f"│  Codec     : {self.codec_name}  {self.codec_clock_rate // 1000} kHz"
             f"  ch={self.codec_channels}  PT={self.payload_type}\n"
             f"│  Remote    : {self.remote_addr}"

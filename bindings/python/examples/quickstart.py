@@ -42,11 +42,89 @@ Media stats:
 import json
 import sys
 import threading
+import time
 from typing import Optional
 
 import baresdk as sdk
 
 STATS_INTERVAL_S = 5.0
+
+
+# ── Live call timer ──────────────────────────────────────────────────────────
+#
+# The elapsed time is kept on a wall clock here rather than read from
+# CallStats.call_duration_ms, for the same reason a GUI would: that figure only
+# advances once per stats tick (STATS_INTERVAL_S, and nothing at all if stats
+# are disabled), so a clock built on it moves in five-second jumps.
+#
+# The ticker owns one terminal line and rewrites it in place with \r.  Anything
+# else printed while a call is up has to clear that line first, or it lands on
+# top of the timer — which is what say() is for.
+
+_call_started_at: Optional[float] = None
+_ticker_stop = threading.Event()
+_ticker_lock = threading.Lock()
+_status_shown = False
+# Bumped by every start_call_timer().  A ticker exits as soon as its own
+# generation is stale, so a second call in the same session cannot end up with
+# two threads drawing the status line: without it, a ticker asleep in its
+# one-second wait when the previous call ended finds the event cleared again by
+# the time it wakes, and carries on alongside the new one.
+_ticker_gen = 0
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    s = int(seconds)
+    if s >= 3600:
+        return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}"
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def say(*args, **kwargs) -> None:
+    """print() that does not collide with the in-call status line."""
+    global _status_shown
+    with _ticker_lock:
+        if _status_shown:
+            sys.stdout.write("\r\033[K")
+            _status_shown = False
+        print(*args, **kwargs)
+
+
+def _tick(gen: int) -> None:
+    global _status_shown
+    while not _ticker_stop.wait(1.0):
+        started = _call_started_at
+        if started is None or gen != _ticker_gen:
+            return
+        with _ticker_lock:
+            # Re-check under the lock: stop_call_timer() sets the event and then
+            # clears the line, and without this a tick that had already passed
+            # the wait() could redraw over the cleared line afterwards.
+            if _ticker_stop.is_set() or gen != _ticker_gen:
+                return
+            sys.stdout.write(f"\rIn call · {_fmt_elapsed(time.monotonic() - started)}")
+            sys.stdout.flush()
+            _status_shown = True
+
+
+def start_call_timer() -> None:
+    """Begin counting talk time.  Idempotent, so hold/resume does not restart it."""
+    global _call_started_at, _ticker_gen
+    if _call_started_at is not None:
+        return
+    _call_started_at = time.monotonic()
+    _ticker_gen += 1
+    _ticker_stop.clear()
+    threading.Thread(target=_tick, args=(_ticker_gen,), daemon=True).start()
+
+
+def stop_call_timer() -> Optional[float]:
+    """Stop the ticker and return the total talk time, or None if never started."""
+    global _call_started_at
+    _ticker_stop.set()
+    started, _call_started_at = _call_started_at, None
+    say("", end="")   # clear the status line
+    return None if started is None else time.monotonic() - started
 
 
 def _config_from_json(path_or_str: str):
@@ -153,26 +231,26 @@ def main():
     @sdk.on("registered")
     def _(ev):
         nonlocal active_call
-        print("Registered OK.")
+        say("Registered OK.")
         print_devices()
         if callee:
-            print(f"Dialling {callee} ...")
+            say(f"Dialling {callee} ...")
             with call_lock:
                 active_call = sdk.call(callee)
         else:
-            print("Waiting for incoming call...")
+            say("Waiting for incoming call...")
 
     @sdk.on("reg_failed")
     def _(ev):
         detail = ev.error_str or sdk.strerror(ev.error)
-        print(f"Registration failed: {detail}")
+        say(f"Registration failed: {detail}")
         sdk.stop()
 
     @sdk.on("incoming_call")
     def _(ev):
         nonlocal active_call
-        print(f"\n=== Incoming call from {ev.from_uri} ===")
-        print("Press 'a' + Enter to answer, 'r' + Enter to reject")
+        say(f"\n=== Incoming call from {ev.from_uri} ===")
+        say("Press 'a' + Enter to answer, 'r' + Enter to reject")
         with call_lock:
             active_call = ev.call
 
@@ -185,7 +263,7 @@ def main():
                             try:
                                 active_call.answer()
                             except Exception as e:
-                                print(f"answer failed: {e}")
+                                say(f"answer failed: {e}")
                     break
                 elif ch == "r":
                     with call_lock:
@@ -203,15 +281,23 @@ def main():
             msg += f"  reason={ev.reason!r}"
         if ev.error:
             msg += f"  error={ev.error}"
-        print(msg)
+        say(msg)
 
         if ev.state == "established":
-            print(f"Call active (stats every {STATS_INTERVAL_S}s). "
-                  f"Keys: h=hangup  o=hold  r=resume  m=mute  u=unmute  t=transfer  s=stats-now")
+            # Talk time starts when the far end answers, not when we dialled.
+            start_call_timer()
+            say(f"In call · 0:00   (stats every {STATS_INTERVAL_S}s). "
+                f"Keys: h=hangup  o=hold  r=resume  m=mute  u=unmute  t=transfer  s=stats-now")
             with call_lock:
                 c = active_call
             if c:
-                c.poll_stats(interval=STATS_INTERVAL_S, on_update=lambda s: s.print())
+                # say("") first: s.print() writes a multi-line block, and the
+                # in-call status line has to be cleared out of its way.
+                def _show(st):
+                    say("", end="")
+                    st.print()
+
+                c.poll_stats(interval=STATS_INTERVAL_S, on_update=_show)
 
             def _interactive():
                 for line in sys.stdin:
@@ -223,28 +309,33 @@ def main():
                     if ch == "h":
                         c.hangup(); break
                     elif ch == "o":
-                        try: c.hold();         print("On hold.")
-                        except Exception as e: print(f"hold: {e}")
+                        try: c.hold();         say("On hold.")
+                        except Exception as e: say(f"hold: {e}")
                     elif ch == "r":
-                        try: c.resume();       print("Resumed.")
-                        except Exception as e: print(f"resume: {e}")
+                        try: c.resume();       say("Resumed.")
+                        except Exception as e: say(f"resume: {e}")
                     elif ch == "m":
-                        try: c.mute(True);     print("Muted.")
-                        except Exception as e: print(f"mute: {e}")
+                        try: c.mute(True);     say("Muted.")
+                        except Exception as e: say(f"mute: {e}")
                     elif ch == "u":
-                        try: c.mute(False);    print("Unmuted.")
-                        except Exception as e: print(f"unmute: {e}")
+                        try: c.mute(False);    say("Unmuted.")
+                        except Exception as e: say(f"unmute: {e}")
                     elif ch == "s":
+                        say("", end="")
                         c.stats().print()
                     elif ch == "t":
+                        say("", end="")
                         dest = input("Transfer to URI: ").strip()
                         if dest:
-                            try: c.transfer(dest); print("Transfer sent.")
-                            except Exception as e: print(f"transfer: {e}")
+                            try: c.transfer(dest); say("Transfer sent.")
+                            except Exception as e: say(f"transfer: {e}")
 
             threading.Thread(target=_interactive, daemon=True).start()
 
         if ev.state in ("ended", "failed", "cancelled"):
+            talked = stop_call_timer()
+            if talked is not None:
+                say(f"Call ended after {_fmt_elapsed(talked)}.")
             with call_lock:
                 active_call = None
             sdk.stop()
@@ -252,21 +343,21 @@ def main():
     @sdk.on("transfer_request")
     def _(ev):
         kind = "attended" if ev.has_replaces else "blind"
-        print(f"=== Transfer request ({kind}): REFER to {ev.refer_to_uri}")
-        print("    (to follow: hang up current call and dial the refer_to_uri)")
+        say(f"=== Transfer request ({kind}): REFER to {ev.refer_to_uri}")
+        say("    (to follow: hang up current call and dial the refer_to_uri)")
 
     @sdk.on("sip_trace")
     def _(ev):
-        print(f"{'>>>' if ev.direction == 'tx' else '<<<'}\n{ev.raw_message}\n---")
+        say(f"{'>>>' if ev.direction == 'tx' else '<<<'}\n{ev.raw_message}\n---")
 
     @sdk.on("log")
     def _(ev):
-        print(f"[sdk] {ev.message}")
+        say(f"[sdk] {ev.message}")
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
     sdk.run()
-    print("Done.")
+    say("Done.")
     return 0
 
 

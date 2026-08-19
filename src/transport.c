@@ -36,13 +36,13 @@ const char *bsdk_mediaenc_str(baresdk_media_enc_t enc)
  * Supported schemes and their default ports:
  *   sip:   → UDP, port 5060
  *   sips:  → TLS, port 5061
- *   ws:    → WS,  port 8088
- *   wss:   → WSS, port 8089
+ *   ws:    → WS,  port 80
+ *   wss:   → WSS, port 443
  *
  * The ;transport=XXX suffix on sip:/sips: URIs overrides the default
  * transport derived from the scheme. Examples:
  *
- *   "wss://pbx.example.com/ws"               → WSS, host=pbx.example.com, 8089, /ws
+ *   "wss://pbx.example.com/ws"               → WSS, host=pbx.example.com, 443, /ws
  *   "wss://pbx.example.com:443/ws"           → WSS, host=pbx.example.com,  443, /ws
  *   "ws://pbx.internal:8088/ws"              → WS,  host=pbx.internal,    8088, /ws
  *   "sip:pbx.example.com"                    → UDP, host=pbx.example.com,  5060, ""
@@ -66,13 +66,20 @@ int bsdk_parse_server_url(const char *url,
 	uint16_t default_port;
 	const char *rest;
 
+	/* A portless ws:// / wss:// URL means the WebSocket default (RFC 6455
+	 * §3): 443 for wss, 80 for ws — the same ports a browser would use, and
+	 * what an edge proxy in front of the PBX terminates on.  NOT Asterisk's
+	 * 8088/8089: those are a convention of one PBX's own listener, and anyone
+	 * pointing at it writes them explicitly.  Defaulting to them instead sent
+	 * "wss://pbx.example.com/ws" to a port nothing answers on, which presents
+	 * as REGISTER timing out against a server that is plainly reachable. */
 	if (strncmp(url, "wss://", 6) == 0) {
 		transport    = BARESDK_TRANSPORT_WSS;
-		default_port = 8089;
+		default_port = 443;
 		rest         = url + 6;
 	} else if (strncmp(url, "ws://", 5) == 0) {
 		transport    = BARESDK_TRANSPORT_WS;
-		default_port = 8088;
+		default_port = 80;
 		rest         = url + 5;
 	} else if (strncmp(url, "sips:", 5) == 0) {
 		transport    = BARESDK_TRANSPORT_TLS;
@@ -96,10 +103,10 @@ int bsdk_parse_server_url(const char *url,
 		const char *tv = tp + 11;
 		if (strncasecmp(tv, "wss", 3) == 0) {
 			transport    = BARESDK_TRANSPORT_WSS;
-			default_port = 8089;
+			default_port = 443;
 		} else if (strncasecmp(tv, "ws", 2) == 0) {
 			transport    = BARESDK_TRANSPORT_WS;
-			default_port = 8088;
+			default_port = 80;
 		} else if (strncasecmp(tv, "tls", 3) == 0) {
 			transport    = BARESDK_TRANSPORT_TLS;
 			default_port = 5061;
@@ -190,8 +197,9 @@ int bsdk_build_outbound(const char *server_url,
 		if (!port) {
 			switch (transport) {
 			case BARESDK_TRANSPORT_TLS: port = 5061; break;
-			case BARESDK_TRANSPORT_WS:  port = 8088; break;
-			case BARESDK_TRANSPORT_WSS: port = 8089; break;
+			/* WebSocket defaults, as in bsdk_parse_server_url. */
+			case BARESDK_TRANSPORT_WS:  port = 80; break;
+			case BARESDK_TRANSPORT_WSS: port = 443; break;
 			default:                    port = 5060; break;
 			}
 		}

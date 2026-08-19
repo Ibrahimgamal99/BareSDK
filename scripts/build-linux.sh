@@ -33,6 +33,9 @@ echo "=== Linking ${SO} ==="
 gcc -shared \
   -Wl,--wrap=websock_connect \
   -Wl,--wrap=sip_transp_send \
+  -Wl,--wrap=sip_dialog_route \
+  -Wl,--wrap=sipsess_reply_ack \
+  -Wl,--wrap=sipsess_bye \
   -Wl,--whole-archive "${DIST_DIR}/baresdk.a" -Wl,--no-whole-archive \
   -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl -lstdc++ \
   -lpulse \

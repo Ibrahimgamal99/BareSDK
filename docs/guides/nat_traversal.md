@@ -133,13 +133,79 @@ fingerprint
 
 ## ICE candidate types
 
-| Type | Source | Reliability |
-|---|---|---|
-| Host | Local interface IP | Works on same LAN |
-| Server-reflexive (srflx) | STUN response | Works on most NATs |
-| Relay | TURN allocation | Always works |
+| Type | Source | Signalled in the SDP? | Reliability |
+|---|---|---|---|
+| Host | Local interface IP | yes | Works on same LAN |
+| Server-reflexive (srflx) | STUN response | yes | Works on most NATs |
+| Peer-reflexive (prflx) | Discovered during connectivity checks | **no** (RFC 8445 §5.1.3) | Works, but the peer was never told about it |
+| Relay | TURN allocation | yes | Always works |
 
-ICE automatically prioritises host > srflx > relay and selects the first working pair.
+ICE prioritises by type and selects the first working pair. Note the third row:
+peer-reflexive candidates are learned *after* the offer/answer, so they are
+never signalled. That matters more than it looks — see below.
+
+---
+
+## When the peer drops your media
+
+A peer that filters incoming media against the candidates you signalled will
+discard packets from a peer-reflexive address. Asterisk does exactly this:
+
+```
+res_rtp_asterisk.c: DTLS packet from <ip:port> dropped.
+Source not in ICE active candidate list.
+```
+
+The call connects, signalling looks perfect, and neither side hears anything.
+With DTLS-SRTP it is total silence rather than degraded audio, because RTP is
+gated behind a handshake that never completes.
+
+It hits the **answerer** hardest. Per RFC 5763 the answerer picks
+`a=setup:active` and is therefore the side that transmits first — into an
+address the peer will not accept.
+
+The SDK re-offers when ICE settles on an address that was never signalled:
+
+```
+baresdk/ice: selected local candidate 41.33.94.42:62417 was never signalled
+             (offered 213.212.207.242:62417) — re-offering so the peer accepts our media
+```
+
+**Do not rely on that alone.** A re-INVITE carries the new candidates, but a
+peer is only obliged to re-read them on an ICE *restart* — a new ufrag/pwd per
+RFC 8445 §9. This re-offer is not one: it keeps the session's credentials, and
+against Asterisk it is answered `200 OK` with the candidate list left unchanged.
+Treat it as a best effort that helps with cooperative peers, not as NAT
+traversal. (The SDK does perform a genuine restart when the *network* changes —
+see [network handover](network_handover.md#ice-calls) — because there the
+candidates are not merely incomplete, they are unreachable.)
+
+### Carrier-grade NAT: when STUN is not enough
+
+A mobile network may map the *same local port* to a **different public IP per
+destination**, and change the mapping over time:
+
+```
+srflx:213.212.207.242:62417   ← what the STUN server sees
+prflx:41.33.94.42:62417       ← what the PBX sees
+```
+
+The reflexive address STUN reports is then simply not the address your PBX
+sees, so the candidate you signalled is wrong no matter how promptly you signal
+it. Calls appear to work intermittently — whenever the two views happen to
+coincide.
+
+**Use TURN.** A relay candidate is allocated up front, signalled in the initial
+offer or answer, and does not move, so there is nothing for the peer to reject.
+This is the case TURN exists for, and no amount of candidate re-signalling
+substitutes for it.
+
+Symptoms that point here rather than at a config mistake:
+
+- media works on Wi-Fi and fails on cellular, or vice versa
+- the same account works from one location and not another
+- `srflx` and `prflx` in the SDK's ICE dump carry **different** IP addresses
+- the peer logs dropped packets from an address that is in neither party's SDP
 
 ---
 
@@ -156,3 +222,13 @@ ICE automatically prioritises host > srflx > relay and selects the first working
 3. **Firewall rules** — ensure outbound UDP to STUN (port 3478) and TURN (port 3478/443) is allowed.
 
 4. **NAT type test** — use `stun-client` or the STUN binding request/response to determine if your NAT is symmetric.
+
+5. **Compare the two reflexive views.** In the SDK's ICE dump, read the `srflx`
+   and `prflx` lines together. Identical addresses mean STUN is telling you the
+   truth and STUN alone is enough. Different addresses mean the NAT is
+   destination-dependent and only TURN will make media deterministic.
+
+6. **Check whether media is gated on a handshake.** With `media_enc` set to
+   DTLS-SRTP, `dtls connect to …` with no following `DTLS-SRTP complete` means
+   the handshake is being dropped, not that a codec or a route is wrong. Zero
+   `tx`/`rx` counters alongside a healthy dialog is the same signal.

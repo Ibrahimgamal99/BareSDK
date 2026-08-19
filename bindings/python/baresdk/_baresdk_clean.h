@@ -128,6 +128,8 @@ typedef enum {
  BARESDK_EV_PRESENCE_STATE,
  BARESDK_EV_QUALITY_ALERT,
  BARESDK_EV_NETWORK,
+
+ BARESDK_EV_TRANSFER_FAILED,
 } baresdk_event_type_t;
 typedef enum {
  BARESDK_NET_CHANGE_DETECTED = 0,
@@ -269,6 +271,11 @@ typedef struct {
 } baresdk_ev_transfer_req_t;
 typedef struct {
  baresdk_account_handle_t account;
+ baresdk_call_handle_t call;
+ const char *reason;
+} baresdk_ev_transfer_failed_t;
+typedef struct {
+ baresdk_account_handle_t account;
  bool messages_waiting;
  uint32_t new_voice;
  uint32_t old_voice;
@@ -317,6 +324,7 @@ typedef struct {
   baresdk_ev_media_stats_t stats;
   baresdk_ev_registrar_warning_t reg_warn;
   baresdk_ev_transfer_req_t transfer_req;
+  baresdk_ev_transfer_failed_t transfer_failed;
   baresdk_ev_mwi_t mwi;
   baresdk_ev_message_t msg;
   baresdk_ev_presence_state_t presence;
@@ -438,6 +446,7 @@ typedef struct {
  bool dns_srv_failover;
 
  baresdk_ice_handover_t net_ice_handover;
+ uint32_t ice_gathering_timeout_ms;
 
 } baresdk_config_t;
 

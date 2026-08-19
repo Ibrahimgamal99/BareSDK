@@ -6,6 +6,252 @@ All notable changes to baresdk are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A network handover left an ICE call with dead audio.** Wi-Fi ↔ cellular
+  migrated a direct-RTP call correctly and could not migrate an ICE one at all:
+  the re-INVITE re-advertised the network the call had just left, so the peer
+  kept sending RTP to an address that was gone while dropping what arrived from
+  the new one (Asterisk: `Source not in ICE active candidate list`). The call
+  stayed up, silent, until `net_max_attempts` ran out — 24 s at the defaults.
+
+  Two things caused it, both in baresip's ice module. `call_reset_transp()`, the
+  whole of the migration, sets the *session* address; ice.c writes the selected
+  local candidate into the *media* address, and a media-level `c=` line overrides
+  the session-level one (RFC 4566 §5.7). And nothing re-gathers: the module's
+  update handler runs `ice_start()` with `started` already true, which re-encodes
+  the candidate list it already has under the same `ice-ufrag` / `ice-pwd`.
+
+  An ICE call is now migrated with a genuine RFC 8445 §9 ICE restart. The inner
+  media-NAT session is thrown away and allocated again, which mints new
+  credentials, writes them into the SDP and re-gathers on the interface that now
+  carries the default route; baresip turns the completion into the re-INVITE, so
+  the offer carries the new candidates *and* the new address at both levels. The
+  RTP sockets are kept — they are wildcard-bound, so they already follow the new
+  route, and the media encryption is keyed to them.
+
+  This is what the media-NAT vtable interposition in `src/ice_shim.c` makes
+  possible: the ice module's session object is ours to replace. Its media object
+  now goes to baresip through a wrapper of ours, so the pointer baresip holds as
+  `stream->mns` survives the swap, and a restart whose gather fails releases the
+  offer instead of reporting an error — baresip answers an mnat failure with
+  `CALL_EVENT_CLOSED`, which would hang up the call the restart was rescuing.
+
+  Behaviour notes: a restart is only attempted when the local address actually
+  moved, so a WebSocket call re-INVITEd purely to re-bind its dialog does not put
+  working media through one. `cfg.ice_gathering_timeout_ms` bounds the re-gather
+  as it bounds the one on dial (0 there means 3 s, not "for ever" — the call is
+  live and silent while it runs). `BARESDK_NET_CALL_ICE_STALE` and
+  `net_ice_handover` now apply only to a call the restart could not be performed
+  for, and `FAIL_FAST` no longer caps a restarted call at one attempt: what it is
+  waiting on is the peer's NAT rebinding, exactly like a direct-RTP call. The
+  `ice` field on the event is now the negotiated truth (does this call have a
+  live ICE media-NAT?) rather than `cfg.ice_enabled`, so an ICE-enabled account
+  whose call ended up on plain RTP is no longer held to the ICE policy.
+
+- **In-dialog requests on an incoming call never reached the server.** A UAS
+  dialog's route set is only the peer's Record-Route — unlike a UAC's, it does
+  not begin with our outbound proxy. A PBX behind a reverse proxy commonly sends
+  no Record-Route at all, leaving libre to route to the Contact:
+
+      Contact: <sip:asterisk@echo:5060;transport=ws>
+
+  `echo` is the PBX's internal hostname and resolves nowhere, 5060 is not our
+  port, and `ws` is not our transport. libre cannot parse that as an address
+  literal, falls into `addr_lookup()`, and the DNS query fails *asynchronously* —
+  long after `sipsess_bye()` has already returned 0.
+
+  So hanging up an answered incoming call reported success and put nothing on
+  the wire: the caller stayed connected until they gave up, and their BYE then
+  arrived at a dialog we had dismantled, answered `481 Call Does Not Exist`. The
+  re-INVITE carrying updated ICE candidates died the same way, leaving media
+  dead.
+
+  `sip_dialog_route()` is now interposed so in-dialog requests follow the
+  WebSocket flow the registration established, which RFC 7118 §B.2 requires
+  anyway. Only WS/WSS dialogs are affected; UDP, TLS and transport-less routes
+  are passed through untouched.
+
+- **Hanging up an answered incoming call sent no BYE.** The local side tore
+  down and reported ENDED while the caller stayed on a live call; their own BYE
+  then arrived at a dialog we had already dismantled and got `481 Call Does Not
+  Exist`. Outgoing calls were unaffected.
+
+  A UAS that rings before answering puts *two* entries on libre's
+  `sess->replyl` — `sipsess_reply_1xx` (the 180) and `sipsess_reply_2xx` (the
+  200) both append, stamped with the same INVITE CSeq. `sipsess_reply_ack()`
+  matches with `list_apply()`, which stops at the first hit, so one entry
+  survives the call. At hangup `termwait()` sees a non-empty list, takes a
+  reference and returns, and the session destructor never reaches the branch
+  that sends the BYE. It is not lost outright: the leftover reply's 64·T1 timer
+  fires 32 s later and the BYE finally goes, which for the caller is
+  indistinguishable from never. A UAC sends no replies at all, which is why
+  outgoing hangups always worked.
+
+  `src/sipsess_fix.c` drains every reply the ACK matches. Interposed with
+  `--wrap` (GNU ld) rather than patched into libre, so it is **active on Linux
+  and Android only**; elsewhere the translation unit compiles away and the bug
+  remains.
+
+- **Incoming calls had no audio: media was sent from an address the peer was
+  never told about.** ICE learns server-reflexive candidates from STUN before
+  the offer/answer, so those get signalled. A *peer-reflexive* candidate is
+  discovered from the connectivity checks themselves and is never signalled
+  (RFC 8445 §5.1.3) — and when ICE nominates one, media leaves from an address
+  the peer will not accept. Asterisk logs
+
+      res_rtp_asterisk.c: DTLS packet from <ip:port> dropped.
+      Source not in ICE active candidate list.
+
+  and since DTLS-SRTP gates RTP behind the handshake, the call connects,
+  signalling looks perfect, and neither side hears anything. It hits the
+  answerer hardest: per RFC 5763 the answerer picks `a=setup:active` and is
+  therefore the side that transmits first.
+
+  baresip already sets `send_reinvite` when the selected candidate changes but
+  only acts on it when its conncheck handler is called with `update` set, which
+  does not happen on this path. `src/ice_shim.c` now compares the address ICE
+  settled on against the one actually advertised and asks baresip to re-offer
+  when they differ.
+
+- **A re-INVITE pointed media at the peer's signalled address, undoing ICE.**
+  Symptom: a call that established cleanly, completed its connectivity check,
+  started its DTLS handshake — and then sat there with `tx 0 rx 0` and both
+  audio levels `NaN` until someone hung up, in both directions.
+
+  baresip keeps the address it sends media to in `stream->tx.raddr_rtp`, and two
+  things write it. `stream_mnat_connected()` writes the remote candidate ICE
+  nominated. `stream_remote_set()`, reached from `stream_update()`, writes
+  `sdp_media_raddr()` — the address in the peer's SDP, verbatim. The second runs
+  on every `call_update_media()`: the re-offer above, ice.c's own re-INVITE, a
+  re-INVITE the peer sends, a session refresh, hold/unhold. It overwrites the
+  first, and nothing puts it back — the ice module's update handler refreshes
+  *local* addresses only, and no new connectivity check runs, so no further
+  connected handler fires.
+
+  When the peer is behind NAT the two addresses are not the same. A PBX
+  signalling `c=IN IP4 172.16.11.52` but reachable, per ICE, at
+  `82.129.158.253:19914` left the stream aimed at an RFC 1918 address on the far
+  side of the internet from the first re-INVITE onwards. With DTLS-SRTP the
+  handshake dies first: it is still retransmitting when the address moves under
+  it, the retries go nowhere, `menc_secure` is never set, and
+  `stream_is_ready()` stays false forever — so `audio_update()` is never called,
+  the microphone is never opened, and the call runs with no media at all while
+  signalling looks perfect.
+
+  `src/ice_shim.c` re-applies the nominated pair from the media-NAT update
+  handler, which `call_apply_sdp()` calls after every `stream_update()` and which
+  therefore covers all of those paths at once. It only does so while the peer is
+  still signalling the same address as when the pair was nominated: a peer that
+  signals a *different* one has genuinely moved its media, and following it is
+  correct.
+
+  Two related corrections in the same file: the "was this address signalled?"
+  baseline is now taken from the SDP as it stands when gathering reports, rather
+  than from the session address that is all that exists before gathering — so a
+  server-reflexive candidate that the offer did carry is no longer re-offered on
+  every NAT'd call.
+
+- `mic_level_dbov` / `audio_level_dbov` were seeded with `-127.0f`, which
+  `tap_compute_dbov()` also returns for all-zero PCM — so "never measured" and
+  "measured digital silence" were the same value, despite the header
+  documenting `NaN when unavailable`. Now seeded `NAN`, as documented, which is
+  what makes a dead capture path distinguishable from a quiet one.
+
+- **Outgoing calls could never send their INVITE.** With ICE enabled, baresip
+  does not send the INVITE when the call is placed — it defers it until the
+  media-NAT reports that candidate gathering finished. Nothing bounded that
+  wait, and one path never reported at all: the ice module's no-STUN/TURN case
+  arms a 1 ms timer whose handler walks the session's media list and fires the
+  gather callback once per entry, so an empty list meant the callback was never
+  invoked. The call then sat in `BARESDK_CALL_CALLING` indefinitely — zero SIP
+  messages on the wire under `trace_sip`, no event of any kind, and
+  `baresdk_call_invite()` had already returned success, so nothing in the SDK
+  or the app could tell. A refused hangup looked dead because there was no
+  transaction to cancel.
+
+  `cfg.ice_gathering_timeout_ms` (default 2000, 0 = wait indefinitely) is the
+  bound. On expiry the offer is released with the candidates gathered so far,
+  which is what every other SIP client does: JsSIP, SIP.js and dart-sip-ua all
+  resolve their offer on `icegatheringstatechange == complete` *or* a timer
+  (dart-sip-ua's `ice_gathering_timeout` defaults to 500 ms), and pjsua has
+  `PJSUA_ICE_TRANSPORT_INIT_TIMEOUT`, whose own comment calls it "a safety net
+  so the calling thread cannot block indefinitely if the callback never
+  arrives". Gathering is not cancelled — a late completion re-offers the fuller
+  set in a re-INVITE, and a late failure is dropped rather than tearing down a
+  call whose offer is already on the wire.
+
+- One dial on an IPv4-only network permanently disabled ICE for the whole
+  account. `baresdk_call_invite()` retries with the media-NAT cleared when
+  `ua_connect()` reports `EAFNOSUPPORT` (a STUN/TURN lookup that needs IPv6),
+  but never restored it — so every later call on that account was silently
+  downgraded to no-ICE, including calls placed after the device moved to a
+  network where ICE was both available and needed.
+
+- `baresdk_call_invite()` returned success without writing `*out` when
+  `ua_connect()` reported success but produced no call, leaving the caller with
+  an untouched handle. It now returns `BARESDK_ERR_INVAL`.
+
+- `baresdk_call_get_stats()` reported 0 for `mos_lq_min`, `mos_lq_avg`,
+  `stats_tick` and `call_duration_ms` at every point in a call, however many
+  stats ticks had already run — the session-history block was only filled on
+  the event path. The getter now reads them from the call without advancing
+  them, so polling cannot skew the averages it is reporting.
+
+- baresip reports a media-encryption mismatch as "no common audio or video
+  codecs", which misattributes the failure: an account offering `RTP/AVP`
+  against a peer offering `UDP/TLS/RTP/SAVPF` fails with a full and perfectly
+  compatible codec list on both sides. When the account offers no encryption the
+  SDK now names the real mismatch. The opposite direction keeps baresip's
+  wording — the peer's capabilities are not ours to describe, and a genuine
+  codec mismatch is still possible there.
+
+- The example app offered an ICE toggle with nothing to point it at, so
+  enabling ICE could only ever gather host candidates — the configuration that
+  produces the peer-reflexive failure above. It now has STUN and TURN server
+  fields, and defaults `media_enc` to DTLS-SRTP — a WSS-facing PBX offers
+  `SAVPF` and rejects an unencrypted account outright.
+
+### Known limitations
+
+- **The re-offer of an unsignalled ICE candidate is best effort.** A peer is
+  only obliged to re-read candidates on an ICE *restart* (new ufrag/pwd, RFC
+  8445 §9), and baresip fixes those at media-session creation, so the SDK cannot
+  trigger one. Asterisk answers the re-INVITE `200 OK` and leaves its candidate
+  list unchanged. On a carrier-grade NAT that maps one local port to different
+  public IPs per destination, **TURN is the only reliable answer** — see
+  [NAT traversal](guides/nat_traversal.md#carrier-grade-nat-when-stun-is-not-enough).
+
+- The BYE and in-dialog routing fixes rely on GNU ld's `--wrap` and are
+  therefore **active on Linux and Android only**. On iOS, macOS and Windows the
+  translation units compile away and both bugs remain.
+
+- `file(GLOB)` in CMakeLists.txt lacked `CONFIGURE_DEPENDS`, so a newly added
+  source file was silently left out of every incremental build until the next
+  fresh configure.
+
+### Changed
+
+- The examples now show **In call · M:SS**, ticking once a second, for as long
+  as the call is up — Flutter (under the peer name, `On hold · M:SS` while
+  held), Python and C++ (a status line rewritten in place). Previously they
+  showed only the raw state name, and the only duration anywhere was buried in
+  a stats block.
+
+  The clock is wall-time in the example, not `call_duration_ms` from the stats
+  event: that field only advances once per `stats_interval_ms` and is not
+  emitted at all when stats are off, so a timer built on it either moves in
+  five-second jumps or never moves. It starts on `ESTABLISHED` rather than on
+  dial, because talk time is what a user expects to see, and it keeps running
+  across hold.
+
+  In the two CLI examples every other line of output now goes through a helper
+  that clears the status line first, so event callbacks firing on the SDK's
+  thread no longer land on top of the timer.
+
+- The Python stats block header now carries the call duration
+  (`Media Stats (tick=7, in call 1:35)`), which it captured but never printed.
+
 ### Added
 
 - **Degraded-link handling** — the SDK already recovered from a *changed*

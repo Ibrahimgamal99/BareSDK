@@ -207,6 +207,127 @@ Monitor retries via `retry_attempt` and `retry_delay_ms` in `BARESDK_EV_REG_STAT
 
 ---
 
+## Silent failures worth knowing about
+
+A SIP stack has several places where a request is accepted and then never
+arrives, and where the value that would tell you so is indistinguishable from a
+legitimate one. These are the log lines the SDK emits so that does not happen.
+
+### The BYE that never left
+
+```
+baresdk/sipsess: BYE queued
+baresdk/sipsess: BYE could not be sent (…) — the peer will stay on the call
+                 until it gives up on its own
+```
+
+libre discards the return value of `sipsess_bye()`, and there are three
+separate ways a BYE can be skipped, so a hangup can report success while the
+far end stays connected. Read the line at teardown:
+
+| Line at hangup | Meaning |
+|---|---|
+| `BYE queued` | The request was accepted. If nothing reaches the wire, the failure is in routing or transport. |
+| `BYE could not be sent (…)` | The session layer refused; the error names why. |
+| neither | The session destructor never got that far — a transaction is still pending. |
+
+### In-dialog requests routed away from the WebSocket flow
+
+```
+baresdk: ws in-dialog route echo:5060 is not the registration flow;
+         routing over pbx.example.com:443 instead (RFC 7118 B.2)
+```
+
+A UAS dialog's route set is only the peer's Record-Route; unlike a UAC's, it
+does not begin with your outbound proxy. A PBX behind a reverse proxy commonly
+Record-Routes its own internal address — or omits Record-Route entirely, leaving
+libre to route to a Contact like `sip:asterisk@echo:5060`, a hostname that
+resolves nowhere. The lookup then fails *asynchronously*, long after the request
+was accepted. This line means the SDK put it back on the registration flow.
+
+### ICE candidates the peer was never told about
+
+```
+baresdk/ice: selected local candidate <addr> was never signalled (offered <addr>)
+             — re-offering so the peer accepts our media
+```
+
+See [NAT traversal](nat_traversal.md#when-the-peer-drops-your-media). Note that
+this re-offer keeps the session credentials, so it only helps with peers that
+re-read candidates without an ICE restart. The restart the SDK does perform is
+the one on network handover, logged as `restarting ICE on <addr>`.
+
+### ICE gathering that never finishes
+
+```
+baresdk/ice: candidate gathering did not complete in time; offering the
+             candidates gathered so far (cfg.ice_gathering_timeout_ms=2000)
+```
+
+With a media-NAT configured the INVITE is deferred until gathering reports
+complete. `cfg.ice_gathering_timeout_ms` bounds that wait; without it an
+outgoing call can sit in `CALLING` with no SIP message on the wire at all.
+
+The word before "gathering" says which wait it was: `candidate` for the one on
+dial, `restart` for the re-gather of an ICE restart on network handover.
+
+### ICE restart on handover
+
+```
+baresdk/ice: restarting ICE on 100.82.7.19 — new credentials, re-gathering,
+             re-INVITE follows within 2000 ms
+```
+
+How an ICE call is migrated: the whole ICE session is replaced so the re-INVITE
+carries candidates for the network the device is on now. See
+[network handover](network_handover.md#ice-calls). The re-INVITE itself appears
+after this line, when the re-gather reports or the deadline expires — so a
+`CALL_MIGRATING` event without a re-INVITE on the wire for up to
+`ice_gathering_timeout_ms` is expected here, not a stall.
+
+If a call still fails to migrate, look for the reasons a restart could not be
+performed:
+
+```
+baresdk/ice: restart: replacement session failed (...) — keeping the current ICE state
+baresdk/ice: restart gathering failed (...) — offering the candidates gathered so far
+```
+
+The first falls back to the plain re-INVITE and emits `CALL_ICE_STALE`; the
+second still offers, deliberately, because reporting a media-NAT failure to
+baresip would close a call that is up and merely needs a new offer.
+
+### Audio levels: `NaN` is not silence
+
+`mic_level_dbov` and `audio_level_dbov` start as `NaN` and become a real dBov
+figure only once a frame has been measured. `-127.0` is a *measurement* — it
+means the samples were all zero.
+
+| Reading | Meaning |
+|---|---|
+| `NaN` | No frame was measured. Media never started, or the tap is not in the chain. |
+| `-127.0` | Frames were measured and are digital silence — a dead capture path, not a quiet room. |
+| anything else | Real audio. |
+
+Reading them together is what separates "no media at all" from "media flowing
+one way": `mic NaN / spk NaN` with zero RTP counters is a dead call, while
+`mic -127.0 / spk -35.0` with healthy counters is a capture problem.
+
+### "No common audio or video codecs" that is not about codecs
+
+baresip disables a stream whose media profile it cannot match and then reports
+the call as having no common codecs. An account offering `RTP/AVP` against a
+peer offering `UDP/TLS/RTP/SAVPF` fails with a full, perfectly compatible codec
+list on both sides. When the account offers no encryption the SDK says so
+instead:
+
+> No common media: this account offers unencrypted RTP and the peer requires
+> encrypted media (set media_enc, e.g. DTLS-SRTP)
+
+A WSS/WebRTC-facing PBX always offers `SAVPF`; set `media_enc` to DTLS-SRTP.
+
+---
+
 ## Debug workflow
 
 1. Set `log_level = 2`, `trace_sip = true`, `trace_sdp_diff = true`.

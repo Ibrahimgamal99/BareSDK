@@ -70,12 +70,43 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `turn_user` | `const char *` | NULL | TURN username |
 | `turn_pass` | `const char *` | NULL | TURN password |
 | `ice_enabled` | `bool` | false | Enable ICE |
+| `ice_gathering_timeout_ms` | `uint32_t` | 2000 | Deadline for ICE candidate gathering — on an outgoing call, and on the re-gather of a handover ICE restart. 0 waits indefinitely on dial; the restart falls back to 3 s |
+
+With ICE enabled the INVITE is **not** sent when the call is placed — it is sent
+once the ICE stack reports that candidate gathering is done. Nothing in that
+stack bounds how long that takes, and one path never reports at all, so without
+a deadline an outgoing call can sit in `CALLING` forever: no SIP message on the
+wire, no event, and `baresdk_call_invite()` already returned success.
+
+`ice_gathering_timeout_ms` is that bound. On expiry the offer is released with
+whatever candidates were gathered by then — the same choice JsSIP, SIP.js and
+dart-sip-ua make (they cap the identical wait at 0.5–5 s), and the same one
+pjsua makes with `PJSUA_ICE_TRANSPORT_INIT_TIMEOUT`. Gathering is not
+cancelled: a completion arriving afterwards re-offers the fuller candidate set
+in a re-INVITE, and a *failure* arriving afterwards is dropped rather than
+ending a call whose offer is already on the wire.
+
+The same bound applies to the re-gather of the ICE restart that migrates a call
+on network handover, where it decides how long the call stays without audio
+before an offer goes out. There a configured 0 does *not* mean "wait for ever" —
+the call is already live and silent, so a 3 s bound applies instead.
+
+Distinct from `sip_timer_b_ms`, which bounds the INVITE transaction *after* the
+request is sent. This one bounds the window before it exists.
 
 ### Media
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `media_enc` | `baresdk_media_enc_t` | `NONE` | `NONE`, `SDES`, `DTLS_SRTP` |
+
+A WSS or WebRTC-facing PBX offers `UDP/TLS/RTP/SAVPF` and will not
+negotiate against an account offering plain `RTP/AVP`. baresip reports the
+mismatch as *"no common audio or video codecs"*, which sends you looking at
+the codec list — the codecs are usually fine and the media profile is the
+problem. Set `media_enc` to `DTLS_SRTP` for those deployments; the SDK
+rewrites the message when the account offers no encryption, but the setting
+is what fixes it.
 | `audio_codecs[8]` | `baresdk_codec_t[]` | `[OPUS]` | Preference-ordered codec list |
 | `audio_codec_count` | `int` | 1 | Number of codecs in `audio_codecs` |
 | `audio_codec_names[8][32]` | `char[][]` | empty | Preference-ordered codec list by name; wins over `audio_codecs` |
@@ -183,7 +214,7 @@ Full guide: [Network handover](../guides/network_handover.md).
 | `net_verify_ms` | `uint32_t` | 4000 | Wait for RTP on the new path before retrying; 0 disables the media check |
 | `net_max_attempts` | `uint32_t` | 6 | Retry ceiling for the rebind and for each call migration |
 | `net_hangup_on_migration_failure` | `bool` | false | End calls whose media could not be migrated |
-| `net_ice_handover` | `baresdk_ice_handover_t` | `BEST_EFFORT` | `BEST_EFFORT` runs the full retry budget for an ICE call; `FAIL_FAST` gives up after one attempt. An ICE call cannot re-gather candidates mid-call — see [Network handover](../guides/network_handover.md#ice-calls) |
+| `net_ice_handover` | `baresdk_ice_handover_t` | `BEST_EFFORT` | Applies only to an ICE call that could **not** be re-gathered (ICE calls are normally migrated with a full ICE restart): `BEST_EFFORT` runs the full retry budget, `FAIL_FAST` gives up after one attempt — see [Network handover](../guides/network_handover.md#ice-calls) |
 
 ### Degraded links
 

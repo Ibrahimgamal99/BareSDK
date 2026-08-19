@@ -161,8 +161,12 @@ final account = sdk.createAccount('alice@pbx.example.com', 'secret',
 final account = sdk.createAccount('alice@pbx.example.com', 'secret',
     config: const AccountConfig(
       serverUrl: 'wss://pbx.example.com:8089/ws',
-      mediaEnc: MediaEncryption.dtlsSrtp,   // typical for WebRTC gateways
+      mediaEnc: MediaEncryption.dtlsSrtp,   // required by WebRTC gateways
       iceEnabled: true,
+      stunServer: 'stun:stun.example.com:3478',
+      // TURN is not optional on a carrier NAT — see the note below.
+      turnServer: 'turn:turn.example.com:3478',
+      turnUser: 'user', turnPass: 'pass',
       audioCodecs: ['opus', 'ulaw', 'alaw'],  // ordered preference (also the default)
     ));
 
@@ -172,9 +176,21 @@ account.events.listen((ev) {
 });
 ```
 
-`AccountConfig` also covers STUN/TURN (`stunServer`, `turnServer`,
-`turnUser`, `turnPass`), auth user, display name, outbound proxy, push
+`AccountConfig` also covers auth user, display name, outbound proxy, push
 tokens (RFC 8599), DTMF mode, and per-account codec overrides.
+
+Two settings above are worth being deliberate about:
+
+- **`mediaEnc`** — a WSS/WebRTC gateway offers `UDP/TLS/RTP/SAVPF` and will not
+  negotiate against the default unencrypted `RTP/AVP`. baresip reports that as
+  *"no common audio or video codecs"*, which points at the codec list when the
+  media profile is the problem.
+- **`turnServer`** — `iceEnabled` with STUN alone is enough for an ordinary NAT.
+  It is *not* enough on a mobile carrier NAT that maps one local port to a
+  different public IP per destination: the reflexive address STUN reports is not
+  the one your PBX sees, so the candidate you signalled is wrong and a strict
+  peer drops the media. Symptoms are intermittent — it works whenever the two
+  views coincide. See [NAT traversal](../guides/nat_traversal.md#carrier-grade-nat-when-stun-is-not-enough).
 
 ## 4 — Calls
 

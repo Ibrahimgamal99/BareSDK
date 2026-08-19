@@ -86,6 +86,27 @@ class BareSDKConfig {
   final bool iceEnabled;
   final bool rtcpMux;
 
+  /// Deadline for ICE candidate gathering on an outgoing call, in ms.
+  /// `-1` (default) keeps the SDK default of 2000; `0` disables the deadline
+  /// and waits indefinitely.
+  ///
+  /// With [iceEnabled] the INVITE is not sent when you place the call — it is
+  /// sent once the ICE stack finishes gathering candidates. Nothing in that
+  /// stack bounds how long that takes, and one path never reports back at
+  /// all, so without a deadline an outgoing call can sit in
+  /// [CallState.calling] forever with no SIP message on the wire and no event
+  /// to react to.
+  ///
+  /// On expiry the offer goes out with whatever candidates were gathered,
+  /// which is what browser SIP stacks (JsSIP, SIP.js, dart-sip-ua) and pjsua
+  /// do. Gathering continues: a later completion re-offers the fuller set in
+  /// a re-INVITE, and a later failure is dropped rather than ending the call.
+  ///
+  /// The same bound applies to the re-gather of the ICE restart that migrates a
+  /// call on network handover — there it is how long the call stays without
+  /// audio before an offer goes out, and `0` means 3 s rather than "for ever".
+  final int iceGatheringTimeoutMs;
+
   // ── Media ──────────────────────────────────────────────────────────────
   final MediaEncryption mediaEnc;
 
@@ -264,7 +285,9 @@ class BareSDKConfig {
   /// literal or a WS/WSS URL, none of which has an ordered list to walk.
   final bool dnsSrvFailover;
 
-  /// How to treat an ICE call on handover; see [IceHandover].
+  /// How to treat an ICE call whose candidates could not be re-gathered on
+  /// handover; see [IceHandover].  ICE calls are normally migrated with a full
+  /// ICE restart, which this does not affect.
   final IceHandover netIceHandover;
 
   // ── Quality / observability ────────────────────────────────────────────
@@ -329,6 +352,7 @@ class BareSDKConfig {
     this.turnUser,
     this.turnPass,
     this.iceEnabled = false,
+    this.iceGatheringTimeoutMs = -1,
     this.rtcpMux = true,
     this.mediaEnc = MediaEncryption.none,
     this.audioCodecs = const [],
@@ -406,6 +430,7 @@ class BareSDKConfig {
       turnUser: turnUser,
       turnPass: turnPass,
       iceEnabled: iceEnabled,
+      iceGatheringTimeoutMs: iceGatheringTimeoutMs,
       rtcpMux: rtcpMux,
       mediaEnc: mediaEnc,
       audioCodecs: audioCodecs,
@@ -616,6 +641,11 @@ NativeScope fillNativeConfig(
   r.turn_user = scope.str(conf.turnUser);
   r.turn_pass = scope.str(conf.turnPass);
   r.ice_enabled = conf.iceEnabled;
+  // -1 means "leave baresdk_config_init()'s default"; 0 is a real value here
+  // (disable the deadline), so the usual `> 0` guard would swallow it.
+  if (conf.iceGatheringTimeoutMs >= 0) {
+    r.ice_gathering_timeout_ms = conf.iceGatheringTimeoutMs;
+  }
   r.rtcp_mux = conf.rtcpMux;
 
   r.media_enc = conf.mediaEnc.raw;

@@ -35,22 +35,26 @@
  * follow the new default route automatically.  Only the address advertised in
  * the SDP has to change, which is exactly what call_reset_transp() does.
  *
- * Known limitation: with ICE enabled the re-INVITE carries the old gathered
- * candidates — a full ICE restart (new ufrag/pwd + re-gather against STUN on
- * the new path) is not performed.  It cannot be, from here: baresip's ice
- * module fixes the local ufrag/pwd when the media session is allocated, and
- * its mnat update handler re-runs icem_update() rather than re-gathering, so
- * there is no way to ask for RFC 8445 §9 behaviour through any public API.
- * Direct RTP and SDES/DTLS-SRTP migrate correctly, and so does an ICE call
- * whose selected pair is a still-reachable TURN relay.
+ * That is the whole story for a direct-RTP call, and only half of it for an ICE
+ * call.  ice.c writes the selected local candidate into the *media* address, and
+ * a media-level `c=` line overrides the session-level one call_reset_transp()
+ * rewrites (RFC 4566 §5.7); nothing re-gathers either, so the offer would carry
+ * the address and the candidate list of the network the call just left.  Those
+ * calls are migrated with an RFC 8445 §9 ICE restart instead —
+ * bsdk_ice_restart(), whose re-INVITE carries new credentials, freshly gathered
+ * candidates and the new address at both levels.  See ice_shim.c.
  *
- * What is done about it is to stop pretending otherwise.  Such a call is
- * announced with BARESDK_NET_CALL_ICE_STALE before the re-INVITE goes out,
- * and cfg.net_ice_handover decides how long to keep trying:
- * BEST_EFFORT runs the normal verify/retry budget, FAIL_FAST gives up after a
- * single attempt so the app gets a prompt CALL_MIGRATION_FAILED it can answer
- * by re-placing the call, instead of the user holding a silent handset for
- * net_verify_ms × net_max_attempts.
+ * A restart is only attempted when the local address actually moved.  A
+ * WebSocket call whose path is unchanged is re-INVITEd for a different reason
+ * (to re-bind the dialog to the new connection — see call_signals_over_ws), and
+ * putting working media through an ICE restart for that would cost audio.
+ *
+ * BARESDK_NET_CALL_ICE_STALE is still emitted, but now only for an ICE call the
+ * restart could not be performed for; cfg.net_ice_handover then decides how long
+ * to keep trying, as before: BEST_EFFORT runs the normal verify/retry budget,
+ * FAIL_FAST gives up after a single attempt so the app gets a prompt
+ * CALL_MIGRATION_FAILED it can answer by re-placing the call, instead of the
+ * user holding a silent handset for net_verify_ms × net_max_attempts.
  */
 
 #include "baresdk_internal.h"
@@ -115,8 +119,6 @@ static baresdk_error_t map_err(int err)
 	}
 }
 
-/* Does this call negotiate ICE?  Media recovery is best-effort when it does
- * — see the `ice` field doc in baresdk.h. */
 /* True when the call signals over WebSocket.
  *
  * It matters for handover because a WebSocket client has no listening port: its
@@ -140,10 +142,20 @@ static bool call_signals_over_ws(const struct baresdk_call *lc)
 	       lc->acct->parsed_transport == BARESDK_TRANSPORT_WSS;
 }
 
+/* Does this call have ICE?
+ *
+ * Asked of the media-NAT itself while the call is alive, because the config only
+ * says what was requested: an account with ICE enabled still ends up with a
+ * plain-RTP call when the peer offers no candidates, and that call migrates like
+ * any other.  Falls back to the config for a call that has already gone, which
+ * is only ever a reporting path. */
 static bool call_uses_ice(const struct baresdk_call *lc)
 {
 	if (!lc || !lc->acct)
 		return g_bsdk.cfg.ice_enabled;
+
+	if (lc->bc)
+		return bsdk_ice_call_active(lc->bc);
 
 	return lc->acct->cfg.ice_enabled || g_bsdk.cfg.ice_enabled;
 }
@@ -432,8 +444,12 @@ static uint32_t rx_packets(const struct baresdk_call *lc)
  */
 static uint32_t max_attempts_for(const struct baresdk_call *lc)
 {
+	/* A call whose ICE was restarted is not offering the wrong candidates any
+	 * more, so the shortcut does not apply to it: it deserves the same retry
+	 * budget as a direct-RTP call, because what it is now waiting on is the
+	 * peer's NAT rebinding, exactly like one. */
 	if (g_nm.ice_handover == BARESDK_ICE_HANDOVER_FAIL_FAST &&
-	    call_uses_ice(lc))
+	    call_uses_ice(lc) && !lc->net_ice_restarted)
 		return 1;
 
 	return g_nm.max_attempts;
@@ -443,6 +459,20 @@ static uint32_t verify_tick_ms(void)
 {
 	uint32_t ms = g_nm.verify_ms ? g_nm.verify_ms : 2000;
 	return ms < 500 ? 500 : ms;
+}
+
+/* How long an ICE restart may take to put its re-INVITE on the wire.
+ *
+ * Unlike call_reset_transp(), a restart does not offer from inside
+ * send_migration(): the offer is built when the re-gather reports, or when the
+ * gathering deadline releases it.  The verify tick has to allow for that, or it
+ * would judge the call before its offer had even been sent — and re-offer,
+ * burning the budget on a migration that was still on its way. */
+static uint32_t restart_grace_ms(void)
+{
+	return g_bsdk.cfg.ice_gathering_timeout_ms
+	     ? g_bsdk.cfg.ice_gathering_timeout_ms
+	     : 3000;   /* ice_shim.c's own restart deadline */
 }
 
 static void fail_migration(struct baresdk_call *lc, int err)
@@ -502,16 +532,49 @@ static void send_migration(struct baresdk_call *lc)
 		return;
 	}
 
-	/* Announce once per call per handover, before the first offer, so the
-	 * app knows why recovery may not work before it has to wait for it. */
-	if (call_uses_ice(lc) && !lc->net_ice_stale_sent) {
-		lc->net_ice_stale_sent = true;
-		netmon_emit(BARESDK_NET_CALL_ICE_STALE, lc, lc->acct, 0,
-		            (uint32_t)lc->net_mig_tries + 1u);
-	}
-
 	lc->net_rx_at_mig = rx_packets(lc);
 	lc->net_mig_tries++;
+
+	/* An ICE call cannot be migrated by rewriting the session address alone:
+	 * ice.c owns the *media* address (it writes the selected candidate there,
+	 * and a media-level `c=` line overrides the session one per RFC 4566
+	 * §5.7), and nothing re-gathers, so the offer would re-advertise the
+	 * network the call just left.  Restart ICE instead — new credentials, a
+	 * fresh gather on the interface that now has the route, and the re-INVITE
+	 * follows from the gather.  See ice_shim.c.
+	 *
+	 * Only when the address actually moved: a WebSocket call whose path is
+	 * unchanged is re-INVITEd purely to re-bind the dialog to the new
+	 * connection (see call_signals_over_ws), and putting the media through an
+	 * ICE restart for that would interrupt audio that is working. */
+	if (lc->net_mig_path_moved) {
+		err = bsdk_ice_restart(lc->bc, &lc->net_mig_laddr);
+
+		if (!err || err == EALREADY) {
+			/* EALREADY: a restart from an earlier attempt is still
+			 * gathering.  Its offer is still coming and is bounded by
+			 * the gathering deadline, so wait for it rather than
+			 * sending a second, worse offer on top. */
+			lc->net_ice_restarted = true;
+			lc->net_mig_state     = BSDK_MIG_SENT;
+			lc->net_mig_due       = tmr_jiffies() + restart_grace_ms()
+			                      + verify_tick_ms();
+			netmon_emit(BARESDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
+			            lc->net_mig_tries);
+			return;
+		}
+
+		/* ENOENT is the ordinary answer for a call with no ICE at all —
+		 * the plain re-offer below is exactly right for it.  Anything
+		 * else means this call does have ICE that could not be
+		 * restarted, so its candidates really are stale: say so once,
+		 * before the app has to sit through the retries. */
+		if (err != ENOENT && !lc->net_ice_stale_sent) {
+			lc->net_ice_stale_sent = true;
+			netmon_emit(BARESDK_NET_CALL_ICE_STALE, lc, lc->acct,
+			            err, (uint32_t)lc->net_mig_tries);
+		}
+	}
 
 	/* Rewrites the SDP session address and sends the re-INVITE.  A 491
 	 * glare or a 401/407 challenge is retried by libre's sipsess layer. */
@@ -525,6 +588,7 @@ static void send_migration(struct baresdk_call *lc)
 	}
 
 	lc->net_mig_state = BSDK_MIG_SENT;
+	lc->net_mig_due   = tmr_jiffies() + verify_tick_ms();
 	netmon_emit(BARESDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
 	            lc->net_mig_tries);
 
@@ -573,7 +637,10 @@ static void start_migration(struct baresdk_call *lc)
 	if (lc->net_mig_gen != g_nm.gen) {
 		lc->net_mig_gen   = g_nm.gen;
 		lc->net_mig_tries = 0;
+		lc->net_mig_due   = 0;
 		lc->net_ice_stale_sent = false;
+		lc->net_ice_restarted  = false;
+		lc->net_mig_path_moved = false;
 		/* Clock the audio outage from the moment the network changed, not
 		 * from the re-INVITE — the gap the user hears starts earlier. */
 		lc->net_mig_start = g_nm.handover_start ? g_nm.handover_start
@@ -612,10 +679,18 @@ static void start_migration(struct baresdk_call *lc)
 
 	/* Over WebSocket the re-INVITE is needed even on an unchanged path: it is
 	 * what re-binds the dialog to the connection the transport reset just
-	 * created.  See call_signals_over_ws(). */
-	if (old && sa_cmp(&laddr, old, SA_ADDR))
+	 * created.  See call_signals_over_ws().
+	 *
+	 * Whether the media path moved is a different question from whether a
+	 * re-INVITE is owed, and send_migration() needs the first one: it decides
+	 * between an ICE restart and a plain re-offer. */
+	if (old && sa_cmp(&laddr, old, SA_ADDR)) {
 		debug("baresdk/netmon: same path but WS transport was reset —"
 		      " re-INVITE to refresh the Contact\n");
+	}
+	else {
+		lc->net_mig_path_moved = true;
+	}
 
 	sa_cpy(&lc->net_mig_laddr, &laddr);
 	send_migration(lc);
@@ -680,6 +755,27 @@ static void verify_handler(void *arg)
 			break;
 
 		case BSDK_MIG_SENT:
+			/* Not yet judgeable: the offer is still in flight, or (for
+			 * an ICE restart) still being gathered.  The 100 ms of
+			 * slack is so a tick that fires a hair early — timer
+			 * jitter, or another call's refreshable bounce — does not
+			 * cost this call a whole verify period. */
+			if (lc->net_mig_due &&
+			    tmr_jiffies() + 100 < lc->net_mig_due)
+				break;
+
+			/* Media check disabled.  The plain path reports MIGRATED
+			 * as soon as the offer is sent; an ICE restart has no
+			 * offer to report until the re-gather produces one, so it
+			 * lands here instead — and must be taken at its word the
+			 * same way, without inspecting RTP or retrying. */
+			if (!g_nm.verify_ms) {
+				lc->net_mig_state = BSDK_MIG_DONE;
+				netmon_emit(BARESDK_NET_CALL_MIGRATED, lc,
+				            lc->acct, 0, lc->net_mig_tries);
+				break;
+			}
+
 			/* A held call carries no RTP, so the counter can never
 			 * advance — the answered re-INVITE is all the confirmation
 			 * available. */

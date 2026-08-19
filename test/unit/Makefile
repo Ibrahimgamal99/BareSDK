@@ -9,7 +9,7 @@ TESTS := test_mos test_url_parser test_mwi_parser test_codec_str test_transport_
 # (SYSROOT=... to point elsewhere); the other tests stay standalone.
 SYSROOT ?= ../../build/linux-x86_64/sysroot
 ifneq ($(wildcard $(SYSROOT)/include/re/re.h),)
-TESTS += test_ws_pin test_audio_external test_fmtp_bitrate
+TESTS += test_ws_pin test_audio_external test_fmtp_bitrate test_ice_deadline
 endif
 
 .PHONY: all clean test
@@ -36,7 +36,7 @@ test_transport_str: test_transport_str.c
 test_ws_pin: test_ws_pin.c ../../src/ws_path.c
 	$(CC) $(CFLAGS) -Wno-unused-parameter \
 	  -I$(SYSROOT)/include -I$(SYSROOT)/include/re -I../../include \
-	  -o $@ $^ -L$(SYSROOT)/lib -Wl,--wrap=sip_transp_send \
+	  -o $@ $^ -L$(SYSROOT)/lib -Wl,--wrap=sip_transp_send -Wl,--wrap=sip_dialog_route \
 	  -lbaresip -lre -lssl -lcrypto -lpthread -lz \
 	  $(LDFLAGS)
 
@@ -45,6 +45,15 @@ test_ws_pin: test_ws_pin.c ../../src/ws_path.c
 # the sysroot happens to have been built with. The test provides the device
 # registry itself and links libre alone.
 test_audio_external: test_audio_external.c ../../src/audio_external.c
+	$(CC) $(CFLAGS) -Wno-unused-parameter \
+	  -I$(SYSROOT)/include -I$(SYSROOT)/include/re -I../../include \
+	  -o $@ $^ -L$(SYSROOT)/lib -lre -lssl -lcrypto -lpthread -lz \
+	  $(LDFLAGS)
+
+# Links libre but not libbaresip: baresip_mnatl() needs a full baresip_init(),
+# and the test only wants a media-NAT registry entry to interpose on, so it
+# supplies its own along with the three other baresip symbols ice_shim.c uses.
+test_ice_deadline: test_ice_deadline.c ../../src/ice_shim.c
 	$(CC) $(CFLAGS) -Wno-unused-parameter \
 	  -I$(SYSROOT)/include -I$(SYSROOT)/include/re -I../../include \
 	  -o $@ $^ -L$(SYSROOT)/lib -lre -lssl -lcrypto -lpthread -lz \

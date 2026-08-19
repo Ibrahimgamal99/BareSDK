@@ -21,6 +21,7 @@
  *   No special linker flag required at any link step.
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include "baresdk_internal.h"
 
@@ -455,6 +456,153 @@ int BSDK_WS_WRAP_NAME(struct websock_conn **connp, struct websock *sock,
  * Written and read on the re thread only. */
 static struct sa s_ws_peer;
 
+/* The transport that peer is actually reached on.  Learned alongside the
+ * address, because rewriting one without the other does not work — see the
+ * transport note in __wrap_sip_transp_send(). */
+static enum sip_transp s_ws_peer_tp = SIP_TRANSP_NONE;
+
+/* ── In-dialog routing for WebSocket dialogs (RFC 7118 §B.2) ────────────────
+ *
+ * An incoming call arrives with no Record-Route and a Contact naming the PBX's
+ * own internal address:
+ *
+ *     INVITE sip:100@127.0.0.1:60828;transport=WS
+ *     Contact: <sip:asterisk@echo:5060;transport=ws>
+ *
+ * With an empty route set libre falls back to the remote target, so every
+ * in-dialog request we send — BYE, re-INVITE — is addressed to host "echo" on
+ * port 5060 over plain ws.  "echo" is the PBX's internal hostname and resolves
+ * nowhere, 5060 is not our port, and ws is not our transport.  libre cannot
+ * parse that as an address literal, falls into addr_lookup(), and the DNS query
+ * fails *asynchronously* — long after sipsess_bye() already returned 0.
+ *
+ * The result was a hangup that reported success and never left the device: the
+ * caller stayed connected until they gave up, and their BYE then arrived at a
+ * dialog we had dismantled, so we answered 481 Call Does Not Exist.  The
+ * re-INVITE that carries updated ICE candidates died the same way.
+ *
+ * RFC 7118 §B.2 is unambiguous: a SIP WebSocket Client reaches its peers only
+ * through its WebSocket Server, so in-dialog requests belong on the flow the
+ * registration already established — not at whatever address the Contact
+ * happens to name.  Substituting the route here, before any resolution is
+ * attempted, is what the transport rewrite further down cannot do: by the time
+ * sip_transp_send() is reached, the request has already failed.
+ *
+ * Only WebSocket dialogs are touched.  A dialog whose route carries no
+ * transport parameter, or a non-WS one, is left exactly as libre built it.
+ */
+
+struct sip_dialog;
+
+static char       s_route_buf[352];
+static struct uri s_route_uri;
+static bool       s_route_ok;
+
+/* Rebuild the substitute route from the pinned WS server ("wss://host:port"). */
+static void ws_route_rebuild(void)
+{
+	const char *rest, *scheme, *colon;
+	char host[256];
+	unsigned port;
+	struct pl pl;
+
+	s_route_ok = false;
+
+	if (!g_bsdk_ws_server[0])
+		return;
+
+	if (!strncmp(g_bsdk_ws_server, "wss://", 6)) {
+		scheme = "wss";
+		rest   = g_bsdk_ws_server + 6;
+	}
+	else if (!strncmp(g_bsdk_ws_server, "ws://", 5)) {
+		scheme = "ws";
+		rest   = g_bsdk_ws_server + 5;
+	}
+	else {
+		return;
+	}
+
+	/* ws_origin() writes "scheme://host:port", bracketing IPv6 hosts, so the
+	 * port is whatever follows the last colon outside the brackets. */
+	colon = strrchr(rest, ':');
+	if (!colon || colon == rest)
+		return;
+
+	if ((size_t)(colon - rest) >= sizeof(host))
+		return;
+
+	memcpy(host, rest, (size_t)(colon - rest));
+	host[colon - rest] = '\0';
+	port = (unsigned)strtoul(colon + 1, NULL, 10);
+	if (!port)
+		return;
+
+	if (re_snprintf(s_route_buf, sizeof(s_route_buf),
+	                "sip:%s:%u;transport=%s;lr", host, port, scheme) < 0)
+		return;
+
+	pl_set_str(&pl, s_route_buf);
+	if (uri_decode(&s_route_uri, &pl))
+		return;
+
+	s_route_ok = true;
+}
+
+/* True when this dialog route belongs to a WebSocket flow. */
+static bool ws_route_is_websocket(const struct uri *route)
+{
+	struct pl tp;
+
+	if (!route || msg_param_decode(&route->params, "transport", &tp))
+		return false;
+
+	return !pl_strcasecmp(&tp, "ws") || !pl_strcasecmp(&tp, "wss");
+}
+
+/**
+ * Decide the route a request should actually take.
+ *
+ * Split out from the wrapper so it can be tested directly: __real_* is a name
+ * the linker owns under --wrap, so a test cannot stand in for it, and handing
+ * libre's real accessor a synthetic dialog is not safe.
+ */
+const struct uri *bsdk_ws_route_override(const struct uri *route);
+
+const struct uri *bsdk_ws_route_override(const struct uri *route)
+{
+	if (!route || !g_bsdk_ws_server[0] || !ws_route_is_websocket(route))
+		return route;
+
+	if (!s_route_ok || pl_strcmp(&s_route_uri.host, g_bsdk_ws_server)) {
+		/* Cheap guard against a server change between calls; rebuilding
+		 * is a snprintf and a parse. */
+		ws_route_rebuild();
+	}
+
+	if (!s_route_ok)
+		return route;
+
+	if (!pl_cmp(&route->host, &s_route_uri.host) &&
+	    route->port == s_route_uri.port)
+		return route;   /* already the flow — nothing to do */
+
+	debug("baresdk: ws in-dialog route %r:%u is not the registration flow;"
+	      " routing over %r:%u instead (RFC 7118 B.2)\n",
+	      &route->host, route->port,
+	      &s_route_uri.host, s_route_uri.port);
+
+	return &s_route_uri;
+}
+
+const struct uri *__real_sip_dialog_route(const struct sip_dialog *dlg);
+const struct uri *__wrap_sip_dialog_route(const struct sip_dialog *dlg);
+
+const struct uri *__wrap_sip_dialog_route(const struct sip_dialog *dlg)
+{
+	return bsdk_ws_route_override(__real_sip_dialog_route(dlg));
+}
+
 /* Both are private to libre (src/sip/sip.h), so mirror them here — the same
  * approach baresdk_internal.h already takes for baresip internals. */
 struct sip_connqent;
@@ -484,7 +632,8 @@ int __wrap_sip_transp_send(struct sip_connqent **qentp, struct sip *sip,
 
 		if (!sa_is_loopback(dst)) {
 			/* The registration's own destination: remember it. */
-			s_ws_peer = *dst;
+			s_ws_peer    = *dst;
+			s_ws_peer_tp = tp;
 		}
 		else if (g_bsdk_ws_server[0] && sa_isset(&s_ws_peer, SA_ALL)) {
 			fixed = s_ws_peer;
@@ -492,6 +641,37 @@ int __wrap_sip_transp_send(struct sip_connqent **qentp, struct sip *sip,
 			      " reusing the registration flow to %J\n",
 			      dst, &fixed);
 			dst = &fixed;
+
+			/* Fix the transport too, or the address rewrite is
+			 * pointless.
+			 *
+			 * A UAS dialog's route set is just the peer's
+			 * Record-Route — unlike a UAC's, which starts with our
+			 * own outbound proxy.  Asterisk behind a reverse proxy
+			 * Record-Routes the leg *it* sees, which is plain WS on
+			 * 127.0.0.1:8088, so every in-dialog request we send on
+			 * an incoming call is built for SIP_TRANSP_WS while the
+			 * only connection we hold is WSS.  libre looks a
+			 * connection up by (transport, address), finds nothing,
+			 * and tries to open a fresh ws:// to a TLS port.
+			 *
+			 * The request is accepted and then simply never arrives:
+			 * sipsess_bye() returns 0, so hanging up an answered
+			 * incoming call reported success while the caller stayed
+			 * connected, and the ICE re-offer went the same way,
+			 * leaving media dead.  RFC 7118 §B.2 is explicit that a
+			 * WebSocket client reaches its peers through its one
+			 * WebSocket Server, so following the registration flow
+			 * is also the correct reading. */
+			if (s_ws_peer_tp != SIP_TRANSP_NONE &&
+			    s_ws_peer_tp != tp) {
+				debug("baresdk: ws in-dialog transport %s does "
+				      "not match the registration flow (%s); "
+				      "using the flow\n",
+				      sip_transp_name(tp),
+				      sip_transp_name(s_ws_peer_tp));
+				tp = s_ws_peer_tp;
+			}
 		}
 		else if (g_bsdk_ws_server[0]) {
 			/* Pinning is on but no peer learned yet — the URI

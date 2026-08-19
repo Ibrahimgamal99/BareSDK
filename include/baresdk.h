@@ -130,14 +130,20 @@ typedef enum {
 } baresdk_jbuf_type_t;
 
 /**
- * What to do with an ICE call whose local candidates went stale on handover.
+ * What to do with an ICE call whose candidates could not be re-gathered on
+ * handover.
  *
- * A network handover invalidates every gathered ICE candidate, and baresip
- * fixes the local ufrag/pwd when the media session is created — an RFC 8445
- * §9 ICE restart is therefore not possible from outside the library.  The
- * re-INVITE we do send carries the old candidate set: it recovers the call
- * when the peer is reachable directly or through a still-valid TURN relay,
- * and cannot recover it otherwise.
+ * A network handover invalidates every gathered ICE candidate, so the SDK
+ * migrates an ICE call with a full RFC 8445 §9 ICE restart: new ice-ufrag /
+ * ice-pwd, a fresh gather on the interface that now carries the default route,
+ * and a re-INVITE built from the result.  That is the normal path and it needs
+ * nothing from the app.
+ *
+ * This setting applies to the calls it cannot be done for — no ICE session left
+ * to restart, or a replacement that could not be allocated.  Those get the plain
+ * re-INVITE, which carries the old candidate set: it recovers the call when the
+ * peer is reachable directly or through a still-valid TURN relay, and cannot
+ * recover it otherwise.  BARESDK_NET_CALL_ICE_STALE marks such a call.
  */
 typedef enum {
 	/** Send the re-INVITE anyway and let media verification decide.
@@ -147,7 +153,11 @@ typedef enum {
 	/** Try once, then fail immediately.  Gives the app a prompt
 	 *  CALL_MIGRATION_FAILED it can answer by re-placing the call, instead
 	 *  of a long silence.  Recommended when calls are ICE+TURN over
-	 *  cellular. */
+	 *  cellular.
+	 *
+	 *  Does not apply to a call whose ICE was restarted: that call is not
+	 *  offering the wrong candidates any more, so it is held to the same
+	 *  retry budget as a direct-RTP call. */
 	BARESDK_ICE_HANDOVER_FAIL_FAST,
 } baresdk_ice_handover_t;
 
@@ -243,6 +253,12 @@ typedef enum {
 	BARESDK_EV_PRESENCE_STATE,
 	BARESDK_EV_QUALITY_ALERT,
 	BARESDK_EV_NETWORK,
+	/** An outgoing REFER was refused.  The call named in the payload is STILL
+	 *  ESTABLISHED — this is deliberately not a call-state change, so a failed
+	 *  transfer never tears down the leg the user is still talking on.  A REFER
+	 *  that succeeds needs no event of its own: the far end takes the call over
+	 *  and our leg closes, which arrives as BARESDK_EV_CALL_STATE / ENDED. */
+	BARESDK_EV_TRANSFER_FAILED,
 } baresdk_event_type_t;
 
 /* ── Network handover ─────────────────────────────────────────────────────── */
@@ -269,8 +285,11 @@ typedef enum {
 	BARESDK_NET_CALL_MIGRATION_FAILED, /* gave up; see `error`               */
 	BARESDK_NET_CALL_DEFERRED,         /* not refreshable yet; will retry    */
 	BARESDK_NET_HANDOVER_FAILED,       /* transport reset failed; retrying   */
-	/** ICE call: gathered candidates are stale and cannot be re-gathered.
-	 *  Emitted once per call per handover, before the re-INVITE.  See
+	/** ICE call whose candidates could not be re-gathered: the migration
+	 *  falls back to a re-INVITE carrying the pre-handover candidate set,
+	 *  which recovers direct and TURN-relayed paths only.  Emitted once per
+	 *  call per handover, before that re-INVITE.  An ICE call that *was*
+	 *  restarted does not emit this — it migrates like any other call.  See
 	 *  baresdk_ice_handover_t and cfg.net_ice_handover. */
 	BARESDK_NET_CALL_ICE_STALE,
 } baresdk_net_event_t;
@@ -291,7 +310,8 @@ typedef struct {
 	uint32_t                 attempt;  /* 1-based retry counter            */
 	/**
 	 * The offer budget this call is held to — net_max_attempts normally, or 1
-	 * for a stale-ICE call under BARESDK_ICE_HANDOVER_FAIL_FAST.
+	 * for a call under BARESDK_ICE_HANDOVER_FAIL_FAST whose ICE could not be
+	 * restarted.
 	 *
 	 * Render it as a progress counter ("%u/%u"), not as an invariant:
 	 * `attempt` also advances while a call waits for a default route to
@@ -301,11 +321,12 @@ typedef struct {
 	uint32_t                 max_attempts;
 	uint32_t                 elapsed_ms;   /* ms since this migration began */
 	/**
-	 * True when the call negotiated ICE.  Media recovery is best-effort
-	 * for these: the re-INVITE re-runs ICE against the existing local
-	 * candidates but does NOT perform an RFC 8445 §9 ICE restart, because
-	 * baresip fixes the local ufrag/pwd when the media session is created
-	 * and exposes no way to regenerate them mid-call.
+	 * True when the call has a live ICE media-NAT (the negotiated truth, not
+	 * cfg.ice_enabled).  Such a call is migrated with an RFC 8445 §9 ICE
+	 * restart — new credentials and a fresh gather, so the re-INVITE carries
+	 * candidates for the network the device is on now.  Recovery is only
+	 * best-effort for one that also carries CALL_ICE_STALE, meaning the
+	 * restart could not be performed.
 	 */
 	bool                     ice;
 	baresdk_error_t          error;    /* BARESDK_OK unless *_FAILED       */
@@ -450,6 +471,20 @@ typedef struct {
 	bool                     has_replaces;  /* true = attended transfer */
 } baresdk_ev_transfer_req_t;
 
+/**
+ * An outgoing REFER was refused (blind or attended).
+ *
+ * The call is still up.  baresip does not close a call whose transfer failed,
+ * and neither does baresdk: the caller is still on the line, usually on hold,
+ * and the app's remedy is to resume them and report the failure — not to hang
+ * up.  `reason` is the status line or cause text when the stack supplied one.
+ */
+typedef struct {
+	baresdk_account_handle_t account;
+	baresdk_call_handle_t    call;    /* the call we tried to transfer away */
+	const char              *reason;  /* status line / cause, may be NULL */
+} baresdk_ev_transfer_failed_t;
+
 /** MWI NOTIFY — raw body is parsed into counters; all fields may be 0. */
 typedef struct {
 	baresdk_account_handle_t account;
@@ -511,6 +546,7 @@ typedef struct {
 		baresdk_ev_media_stats_t       stats;
 		baresdk_ev_registrar_warning_t reg_warn;
 		baresdk_ev_transfer_req_t      transfer_req;
+		baresdk_ev_transfer_failed_t   transfer_failed;
 		baresdk_ev_mwi_t               mwi;
 		baresdk_ev_message_t           msg;
 		baresdk_ev_presence_state_t    presence;
@@ -968,10 +1004,46 @@ typedef struct {
 	bool      dns_srv_failover;
 
 	/**
-	 * How to treat an ICE call on handover.  Default BEST_EFFORT.
-	 * See baresdk_ice_handover_t.
+	 * How to treat an ICE call that could not be re-gathered on handover.
+	 * Default BEST_EFFORT.  See baresdk_ice_handover_t — an ICE call is
+	 * normally migrated with a full ICE restart, and this does not apply to
+	 * those.
 	 */
 	baresdk_ice_handover_t net_ice_handover;
+
+	/**
+	 * Deadline for ICE candidate gathering on an outgoing call, ms.
+	 * Default 2000; 0 disables the deadline (wait indefinitely).
+	 *
+	 * With a media-NAT configured, the INVITE is not sent when the call is
+	 * placed — it is sent later, when the ICE stack reports that it has
+	 * finished gathering candidates.  Nothing in that stack bounds how long
+	 * that takes, and one path never reports at all, so an outgoing call
+	 * could sit in BARESDK_CALL_CALLING forever with no SIP message ever
+	 * reaching the wire and no event to say so.
+	 *
+	 * This is the bound.  When it expires the offer is released with
+	 * whatever candidates were gathered by then, exactly as a browser-based
+	 * SIP client does (JsSIP/SIP.js/dart-sip-ua all cap the same wait, at
+	 * 0.5–5 s) and as pjsua's PJSUA_ICE_TRANSPORT_INIT_TIMEOUT does.  A
+	 * degraded candidate set makes for a degraded call; a call that is
+	 * never offered is no call at all.
+	 *
+	 * Gathering is not cancelled — if it completes afterwards the fuller
+	 * set is offered again in a re-INVITE.  A *failure* arriving after the
+	 * deadline is dropped rather than ending the call, since by then the
+	 * offer is already on the wire.
+	 *
+	 * The same bound applies to the re-gather of an ICE restart on network
+	 * handover, where it decides how long a migrating call stays without
+	 * audio before an offer goes out.  There, 0 does *not* mean "wait
+	 * forever" — the call is already live and silent, so a 3 s default
+	 * applies instead.
+	 *
+	 * Set 0 only if a slow TURN allocation must never be pre-empted on dial
+	 * and an unbounded dial is acceptable.
+	 */
+	uint32_t  ice_gathering_timeout_ms;
 
 } baresdk_config_t;
 

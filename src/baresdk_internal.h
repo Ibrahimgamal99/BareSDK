@@ -228,7 +228,12 @@ struct baresdk_call {
 	uint32_t                   net_rx_at_mig;  /* rx packets when re-INVITE sent */
 	uint64_t                   net_mig_start;  /* tmr_jiffies() when migration began */
 	struct sa                  net_mig_laddr;  /* target local address */
+	uint64_t                   net_mig_due;    /* jiffies before which a SENT
+	                                            * offer must not be judged */
 	bool                       net_ice_stale_sent; /* ICE_STALE emitted this gen */
+	bool                       net_ice_restarted;  /* ICE was restarted this gen */
+	bool                       net_mig_path_moved; /* the local address changed
+	                                                * (vs. a WS-only refresh) */
 	/* ── Degraded-link adaptation (adapt.c; re_main thread only) ────── */
 	uint32_t                   adapt_bitrate;     /* applied bps; 0 = negotiated */
 	uint32_t                   adapt_clean_ticks; /* consecutive low-loss ticks */
@@ -471,6 +476,31 @@ typedef void (bsdk_dns_done_h)(const struct bsdk_dns_result *res, void *arg);
 
 int  bsdk_dns_init(void);
 void bsdk_dns_close(void);
+
+/* ── ICE gathering deadline (ice_shim.c) ─────────────────────────────────── */
+
+/* Interposes cfg.ice_gathering_timeout_ms on the "ice" media-NAT so a stalled
+ * gather can never hold an outgoing INVITE forever.  _init() must run after
+ * modules_init(), which registers the struct it mutates; ENOENT means the ice
+ * module is not in this build and nothing was changed. */
+int  bsdk_ice_shim_init(void);
+void bsdk_ice_shim_close(void);
+
+/* Restart ICE for one call (RFC 8445 §9) and re-offer on `laddr`: new
+ * ice-ufrag/ice-pwd, a fresh gather on the interface that now carries the
+ * default route, and a re-INVITE driven from the estab handler once it reports
+ * or the gathering deadline expires.  This is how a handover moves an ICE call
+ * — see the ICE-restart section in ice_shim.c for why call_reset_transp() alone
+ * cannot.  `call` is a `struct call *`.
+ *
+ * Returns 0 when a restart is under way, ENOENT when the call has no ICE
+ * media-NAT (the plain re-offer is correct then), EALREADY when one is already
+ * gathering, or an errorcode when nothing was changed. */
+int  bsdk_ice_restart(void *call, const struct sa *laddr);
+
+/* True when `call` (a `struct call *`) has a live ICE media-NAT with at least
+ * one stream — the negotiated truth, as opposed to cfg.ice_enabled. */
+bool bsdk_ice_call_active(void *call);
 
 /* Async RFC 3263 resolution. done_h fires on re_main thread.
  * port_hint > 0 skips NAPTR/SRV (explicit port in URI). */

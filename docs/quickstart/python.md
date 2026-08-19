@@ -169,8 +169,15 @@ sdk.configure(log_level=2, verify_server=True)
 account = sdk.create_account("alice@pbx.example.com", "secret",
     transport   = "wss",
     server_url  = "wss://pbx.example.com/ws",
+    media_enc   = "dtls_srtp",   # a WSS gateway will not accept plain RTP
     ice_enabled = True,
     stun_server = "stun:stun.l.google.com:19302",
+    # TURN is required on a carrier NAT that maps one local port to a different
+    # public IP per destination — STUN alone reports an address the PBX never
+    # sees, and the media is dropped. See guides/nat_traversal.md.
+    turn_server = "turn:turn.example.com:3478",
+    turn_user   = "user",
+    turn_pass   = "pass",
 )
 account.register()
 ```

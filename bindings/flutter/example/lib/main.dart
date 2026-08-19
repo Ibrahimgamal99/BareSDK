@@ -52,10 +52,32 @@ class _PhonePageState extends State<PhonePage>
   final _user = TextEditingController(text: 'alice@pbx.example.com');
   final _pass = TextEditingController();
   final _serverUrl = TextEditingController();
+  /// Pre-filled because ICE without one is a trap: host-only candidates
+  /// cannot traverse NAT, and a strict peer (Asterisk) silently drops media
+  /// arriving from the peer-reflexive address it was never told about.
+  final _stunServer =
+      TextEditingController(text: 'stun:stun.l.google.com:19302');
+
+  /// TURN, not just STUN, is what a carrier-grade NAT needs. A NAT that maps
+  /// the same local port to a *different* public IP per destination makes STUN
+  /// actively misleading: the reflexive address the STUN server reports is not
+  /// the one the PBX sees, ICE nominates a peer-reflexive candidate that was
+  /// never signalled, and a strict peer (Asterisk) drops the media. Re-offering
+  /// does not rescue it — Asterisk only re-reads candidates on an ICE restart,
+  /// which needs a new ufrag/pwd that baresip fixes at session creation. A TURN
+  /// relay candidate is signalled up front and stays put, so it sidesteps the
+  /// whole problem.
+  final _turnServer = TextEditingController();
+  final _turnUser = TextEditingController();
+  final _turnPass = TextEditingController();
   final _callee = TextEditingController();
   final _transferTo = TextEditingController();
   Transport _transport = Transport.udp;
-  MediaEncryption _mediaEnc = MediaEncryption.none;
+  /// DTLS-SRTP, not none: a WSS/WebRTC-facing PBX offers
+  /// UDP/TLS/RTP/SAVPF, and an account answering plain RTP/AVP fails every
+  /// incoming call — reported by baresip as "no common audio codecs", which
+  /// sends you looking at the codec list instead of the media profile.
+  MediaEncryption _mediaEnc = MediaEncryption.dtlsSrtp;
   bool _ice = false;
   bool _verifyTls = true;
   final List<String> _codecPrefs = ['opus', 'ulaw', 'alaw'];
@@ -71,16 +93,75 @@ class _PhonePageState extends State<PhonePage>
   bool _speaker = false;
   bool _appAudio = false;
   MediaStats? _stats;
+
+  /// When the call was answered, and a 1 Hz tick to redraw the elapsed time.
+  ///
+  /// Wall clock rather than MediaStatsEvent.callDurationMs: that only advances
+  /// once per `statsIntervalMs` and is not emitted at all when stats are off,
+  /// so a call timer built on it either stutters or never moves. The SDK's
+  /// figure is the right one for reporting; this one is the right one for a
+  /// clock the user is watching.
+  DateTime? _answeredAt;
+  Timer? _callTicker;
   final List<String> _alerts = [];
   final List<String> _handover = [];
   final List<String> _log = [];
 
   @override
   void dispose() {
+    _callTicker?.cancel();
     _sub?.cancel();
     _sdk?.shutdown();
     _tabs.dispose();
     super.dispose();
+  }
+
+  // ── Call timer ─────────────────────────────────────────────────────────
+
+  /// Runs only while a call is up: a periodic timer that outlives the call it
+  /// belongs to keeps the widget rebuilding forever, and on a phone that is a
+  /// battery drain nobody attributes to the dialer.
+  void _startCallTimer() {
+    if (_callTicker != null) return;
+    _answeredAt = DateTime.now();
+    _callTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _stopCallTimer() {
+    _callTicker?.cancel();
+    _callTicker = null;
+    _answeredAt = null;
+  }
+
+  /// Elapsed call time as `M:SS`, or `H:MM:SS` once it runs past an hour.
+  static String _fmtDuration(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes % 60;
+    final sec = d.inSeconds % 60;
+    final ss = sec.toString().padLeft(2, '0');
+    return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$ss' : '$m:$ss';
+  }
+
+  /// What to put under the peer name: the call's phase, and once it is up, how
+  /// long it has been running.
+  String get _callStatusLine {
+    final st = _callState;
+    if (st == null) return '';
+    if (st == CallState.established || st == CallState.held) {
+      final since = _answeredAt;
+      final elapsed =
+          since == null ? '0:00' : _fmtDuration(DateTime.now().difference(since));
+      // Hold is still "in call" — the timer keeps running, as it does on every
+      // phone, because the call is still connected and still being billed.
+      return st == CallState.held ? 'On hold · $elapsed' : 'In call · $elapsed';
+    }
+    return switch (st) {
+      CallState.calling => 'Dialing…',
+      CallState.ringing => 'Ringing…',
+      _ => st.name,
+    };
   }
 
   void _snack(String msg) {
@@ -151,6 +232,10 @@ class _PhonePageState extends State<PhonePage>
         serverUrl: _serverUrl.text.isEmpty ? null : _serverUrl.text,
         mediaEnc: _mediaEnc,
         iceEnabled: _ice,
+        stunServer: _ice && _stunServer.text.isNotEmpty ? _stunServer.text : null,
+        turnServer: _ice && _turnServer.text.isNotEmpty ? _turnServer.text : null,
+        turnUser: _turnUser.text.isEmpty ? null : _turnUser.text,
+        turnPass: _turnPass.text.isEmpty ? null : _turnPass.text,
         verifyTls: _verifyTls,
         audioCodecs:
             _codecPrefs.where(_enabledCodecs.contains).toList(),
@@ -202,6 +287,13 @@ class _PhonePageState extends State<PhonePage>
         _snack('Incoming call from $_callPeer');
 
       case CallStateEvent e:
+        // Start on `established`, not on dial: the duration a user expects to
+        // see is talk time, which begins when the far end answers.
+        if (e.state == CallState.established) {
+          _startCallTimer();
+        } else if (e.state.isTerminal) {
+          _stopCallTimer();
+        }
         setState(() {
           _callState = e.state;
           if (e.state.isTerminal) {
@@ -274,8 +366,13 @@ class _PhonePageState extends State<PhonePage>
         _logLine(e.message);
 
       case SipTraceEvent e:
+        // Full message, one logcat line per SIP line. Three lines was enough to
+        // identify a message but not to debug one: Contact, Record-Route and
+        // the SDP (a=setup, a=fingerprint, c=, m=) are exactly what you need
+        // when media or in-dialog routing misbehaves, and all of them are below
+        // the cut.
         _logLine('SIP ${e.direction.name} ${e.transport} ${e.remoteAddr}\n'
-            '${e.rawMessage.split('\r\n').take(3).join(' | ')}');
+            '${e.rawMessage.split('\r\n').where((l) => l.isNotEmpty).join('\n  ')}');
 
       default:
         break;
@@ -410,6 +507,42 @@ class _PhonePageState extends State<PhonePage>
         value: _ice,
         onChanged: registered ? null : (v) => setState(() => _ice = v),
       ),
+      if (_ice)
+        TextField(
+          controller: _stunServer,
+          enabled: !registered,
+          decoration: const InputDecoration(
+            labelText: 'STUN server',
+            hintText: 'stun:stun.example.com:3478',
+            helperText: 'Without one, ICE offers only this device\'s LAN '
+                'address and media is dropped behind NAT',
+            helperMaxLines: 3,
+          ),
+        ),
+      if (_ice) ...[
+        TextField(
+          controller: _turnServer,
+          enabled: !registered,
+          decoration: const InputDecoration(
+            labelText: 'TURN server (optional)',
+            hintText: 'turn:turn.example.com:3478',
+            helperText: 'Needed on a carrier NAT that gives out a different '
+                'public IP per destination — STUN alone cannot fix that',
+            helperMaxLines: 3,
+          ),
+        ),
+        TextField(
+          controller: _turnUser,
+          enabled: !registered,
+          decoration: const InputDecoration(labelText: 'TURN username'),
+        ),
+        TextField(
+          controller: _turnPass,
+          enabled: !registered,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'TURN password'),
+        ),
+      ],
       SwitchListTile(
         title: const Text('Verify TLS certificate'),
         value: _verifyTls,
@@ -482,7 +615,7 @@ class _PhonePageState extends State<PhonePage>
           child: ListTile(
             leading: const Icon(Icons.person),
             title: Text(_callPeer),
-            subtitle: Text(_callState?.name ?? ''),
+            subtitle: Text(_callStatusLine),
           ),
         ),
         const SizedBox(height: 8),

@@ -212,54 +212,81 @@ the SDP has to change.
 
 ## ICE calls
 
-**ICE calls get best-effort recovery, not a true ICE restart.**
+**An ICE call is migrated with a real RFC 8445 §9 ICE restart.**
 
-An RFC 8445 §9 ICE restart requires a new `ice-ufrag` / `ice-pwd` pair in the
-offer. baresip generates those once when the media session is created and
-exposes no way to regenerate them mid-call, and the ICE agent handle is private
-to its module — so the re-INVITE necessarily carries the *same* credentials,
-which by definition is not a restart. The peer will not restart either.
+Rewriting the SDP address is enough for a direct-RTP call and does nothing for an
+ICE call. Two reasons, both inside baresip's ice module:
 
-Practically:
+- it owns the *media* address — it writes the selected local candidate there, and
+  a media-level `c=` line overrides the session-level one (RFC 4566 §5.7), which
+  is the only one a plain re-INVITE changes;
+- nothing re-gathers. Its update handler re-encodes the candidate list it already
+  has, under the same `ice-ufrag` / `ice-pwd`.
 
-- **Direct RTP, SDES-SRTP, DTLS-SRTP** migrate correctly. This is the usual
-  configuration against a PBX and is what the media verification is tuned for.
-- **ICE** calls may recover if the peer latches onto your new source address
-  (symmetric RTP / peer-reflexive discovery), and may not. The
-  `ev->u.network.ice` field is `true` for these so you can log accordingly and,
-  if you want, `net_hangup_on_migration_failure` to end them cleanly.
+So the offer would re-advertise the network the call just left, while the peer
+drops what arrives from the new source — with ICE, a source that is not in the
+candidate list is not accepted (Asterisk: `Source not in ICE active candidate
+list`).
 
-If your deployment is mobile-first, prefer STUN plus symmetric RTP over ICE and
-let the handover do its work.
+The SDK therefore replaces the whole ICE session for that call: new credentials,
+a fresh gather on the interface that now carries the default route, and the
+re-INVITE built from the result, carrying the new candidates *and* the new
+address at both levels. The RTP sockets are kept — they are wildcard-bound, so
+they already follow the new route, and the media encryption is keyed to them.
 
-### Making the failure visible and quick
+Nothing in the app has to change for this. What you observe is the ordinary
+sequence, with the re-INVITE arriving up to `cfg.ice_gathering_timeout_ms` later
+than it would for a direct-RTP call:
 
-Since the limitation cannot be engineered away from outside baresip, the SDK
-stops pretending otherwise. Every such call emits `BARESDK_NET_CALL_ICE_STALE`
-once per handover, *before* the re-INVITE, so you can tell the user something
-useful while the attempt is in flight rather than after it has failed.
+    CHANGE_DETECTED → TRANSPORT_RESET → REREGISTERING
+                    → CALL_MIGRATING → CALL_MIGRATE_ACCEPTED → CALL_MIGRATED
 
-`cfg.net_ice_handover` then decides how long to keep trying:
+`cfg.ice_gathering_timeout_ms` (default 2 s) bounds the re-gather as well as the
+one on dial: when it expires the offer goes out with whatever was gathered by
+then, and a gather that completes afterwards re-offers the fuller set. Here a
+configured 0 does **not** mean "wait indefinitely" — the call is live and silent
+while this runs, so a 3 s bound applies instead.
+
+An ICE restart is only attempted when the local address actually moved. A
+WebSocket call whose path did not change is still re-INVITEd, but for an
+unrelated reason — to re-bind the dialog to the new WebSocket — and putting
+working media through a restart for that would cost audio for nothing.
+
+### When the restart cannot be done
+
+Two cases remain: the call has no ICE session left to restart (every stream had
+its media-NAT disabled), or the replacement session could not be allocated. Those
+fall back to the plain re-INVITE with the pre-handover candidate set, which
+recovers a call the peer can reach directly or through a still-valid TURN relay,
+and cannot recover one it cannot.
+
+Such a call emits `BARESDK_NET_CALL_ICE_STALE` once per handover, *before* that
+re-INVITE, so you can tell the user something useful while the attempt is in
+flight rather than after it has failed. `cfg.net_ice_handover` then decides how
+long to keep trying:
 
 | Value | Behaviour |
 |---|---|
 | `BARESDK_ICE_HANDOVER_BEST_EFFORT` (default) | The full `net_verify_ms` × `net_max_attempts` budget — 24 s at the defaults. Right when calls often are direct or TURN-relayed, because those do recover |
 | `BARESDK_ICE_HANDOVER_FAIL_FAST` | One attempt, then `CALL_MIGRATION_FAILED`. Right when calls are ICE+TURN over cellular: re-offering the same wrong candidates cannot succeed, and 24 s of silence is worse for the user than a prompt "reconnecting…" |
 
+Neither applies to a call whose ICE *was* restarted: it is not offering the wrong
+candidates any more, so it keeps the full retry budget — what it is waiting on
+(the peer's NAT rebinding) is exactly what a direct-RTP call waits on.
+
 `max_attempts` in the event reflects the budget the call is actually held to, so
 a fail-fast call renders as `1/1` rather than promising retries it will not make.
 
 ```c
 case BARESDK_NET_CALL_ICE_STALE:
-    /* Recovery may not work; say so now, not in 24 seconds. */
+    /* This call could not be re-gathered; recovery may not work. */
     ui_show_reconnecting(n->call);
     break;
 
 case BARESDK_NET_CALL_MIGRATION_FAILED:
-    if (n->ice)
-        redial(n->call);   /* a fresh call gathers fresh candidates */
+    redial(n->call);   /* a fresh call gathers fresh candidates */
     break;
 ```
 
-Re-placing the call is the only complete remedy: a new call allocates a new
-media session, which gathers candidates on the network you are actually on.
+Re-placing the call remains the complete remedy for one that failed: a new call
+allocates a new media session and gathers on the network you are actually on.
