@@ -38,8 +38,23 @@ enum RegState {
   unregistered(c.baresdk_reg_state_t.BARESDK_REG_UNREGISTERED),
   registering(c.baresdk_reg_state_t.BARESDK_REG_REGISTERING),
   registered(c.baresdk_reg_state_t.BARESDK_REG_REGISTERED),
+
+  /// Terminal: the SDK has stopped trying — wrong credentials, the retry
+  /// budget ran out, or the app cancelled the retry.  Needs the app or the
+  /// user: [Account.retryNow], or new credentials.
   failed(c.baresdk_reg_state_t.BARESDK_REG_FAILED),
-  unregistering(c.baresdk_reg_state_t.BARESDK_REG_UNREGISTERING);
+  unregistering(c.baresdk_reg_state_t.BARESDK_REG_UNREGISTERING),
+
+  /// Transient: the registration is down and the SDK is getting it back on
+  /// its own — a retry armed after a timeout or 5xx, a keepalive probe the
+  /// proxy stopped answering, or a network handover (Wi-Fi ↔ cellular, VPN,
+  /// dock).  Show "Reconnecting…"; there is nothing for the app to do.
+  ///
+  /// It holds for the whole recovery — the state does not flip back to
+  /// [registering] for each attempt — and ends at [registered] or [failed].
+  /// [RegStateEvent.retryAttempt] / [RegStateEvent.retryDelayMs] are set on
+  /// the event that announces an armed retry.
+  reconnecting(c.baresdk_reg_state_t.BARESDK_REG_RECONNECTING);
 
   final int raw;
   const RegState(this.raw);

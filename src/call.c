@@ -241,8 +241,16 @@ static void invite_fn(void *arg)
 	struct pl pl;
 
 	/* Refuse to dial when the transport never connected — ua_connect would
-	 * crash inside baresip trying to use a dead socket. */
-	if (ctx->acct->reg_state == BARESDK_REG_FAILED) {
+	 * crash inside baresip trying to use a dead socket.
+	 *
+	 * That state used to be reported as FAILED and is now RECONNECTING while
+	 * a retry is armed, so the guard has to cover both — but only when
+	 * baresip has no successful registration behind it either.  Otherwise
+	 * this would newly refuse to dial through the seconds of a network
+	 * handover, whose transports have just been re-bound and are usable. */
+	if (ctx->acct->reg_state == BARESDK_REG_FAILED ||
+	    (ctx->acct->reg_state == BARESDK_REG_RECONNECTING &&
+	     !ua_isregistered(ctx->acct->ua))) {
 		ctx->result = ENOTCONN;
 		return;
 	}

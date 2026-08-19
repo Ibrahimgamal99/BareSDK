@@ -6,6 +6,50 @@ All notable changes to baresdk are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`BARESDK_REG_RECONNECTING` — a registration the SDK is recovering is no
+  longer reported as a failure.** Every transient loss used to arrive as
+  `BARESDK_REG_FAILED`: a REGISTER that timed out on a train, a 5xx, a keepalive
+  probe the proxy stopped answering. The retry loop then fixed it a second later,
+  but the app had already been told the registration failed and had no way to
+  tell that from wrong credentials — so the honest UI was an error the user could
+  do nothing about. A network handover was the mirror image: the transports were
+  flushed and the registrar's binding pointed at an address the device had left,
+  yet the state stayed `REGISTERED`, so a status indicator showed a green dot
+  over a path that could not take an inbound call.
+
+  The state now splits by who owns the recovery. `RECONNECTING` is everything the
+  SDK is getting back by itself:
+
+  - a REGISTER that failed on transport, timeout or 5xx with a retry armed —
+    `retry_attempt` / `retry_delay_ms` carry the countdown, as they always did,
+  - a keepalive probe (`cfg.keepalive_interval`) that went unanswered: registered
+    on paper, unreachable in fact,
+  - a network handover or a link that dropped entirely, from
+    `BARESDK_NET_CHANGE_DETECTED` (or `NET_DOWN`) until the REGISTER lands on the
+    new path.
+
+  `FAILED` is kept for what the SDK has stopped acting on: `BARESDK_ERR_AUTH`, an
+  exhausted `reg_retry_max_attempts`, or a retry the app cancelled with
+  `baresdk_account_cancel_retry()`.
+
+  The recovery does not flicker: an account stays `RECONNECTING` across every
+  attempt it makes — a retry's own REGISTER is reported as `RECONNECTING`, not
+  `REGISTERING` — and leaves it only for `REGISTERED` or `FAILED`. Two gaps that
+  left an app stuck are closed with it: an exhausted retry budget used to go
+  silent, and so did a keepalive path that came back without a re-REGISTER
+  (`keepalive_reregister = false`); both now report the transition they owe.
+  A handover that runs out of transport-rebind attempts hands its accounts to
+  their own retry policy rather than leaving a recovery nothing is driving.
+
+  The enum value is appended (5, after `UNREGISTERING`) so the existing ones keep
+  their ABI. An app that renders `FAILED` and nothing else now shows no status
+  for a transient outage instead of a wrong one — the one line worth adding is a
+  `RECONNECTING` case. Dialling is unaffected during a handover: the guard that
+  refuses to dial a dead transport asks baresip whether a registration is behind
+  it rather than keying on the state alone.
+
 ### Fixed
 
 - **A network handover left an ICE call with dead audio.** Wi-Fi ↔ cellular

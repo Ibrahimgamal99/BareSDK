@@ -206,6 +206,10 @@ def main():
             active = acc.call(callee)
             print(f"Dialling {callee}")
 
+    @sdk.on("reconnecting")
+    def _(ev):
+        print(f"Reconnecting: {ev.error_str or ev.error}")
+
     @sdk.on("reg_failed")
     def _(ev):
         print(f"Registration failed: {ev.error}")

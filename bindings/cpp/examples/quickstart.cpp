@@ -717,6 +717,18 @@ int main(int argc, char* argv[])
                     registered = true;
                     reg_ok     = true;
                     cv.notify_one();
+                } else if (ev.u.reg.state == BARESDK_REG_RECONNECTING) {
+                    /* Transient — the SDK is retrying by itself, so report it
+                     * and keep waiting rather than unblocking main(). */
+                    const char* detail = ev.u.reg.error_str
+                        ? ev.u.reg.error_str
+                        : baresdk_strerror(ev.u.reg.error);
+                    std::cout << "Reconnecting: " << detail;
+                    if (ev.u.reg.retry_attempt)
+                        std::cout << " (attempt " << ev.u.reg.retry_attempt
+                                  << " in " << ev.u.reg.retry_delay_ms
+                                  << " ms)";
+                    std::cout << "\n";
                 } else if (ev.u.reg.state == BARESDK_REG_FAILED) {
                     const char* detail = ev.u.reg.error_str
                         ? ev.u.reg.error_str

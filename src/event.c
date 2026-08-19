@@ -306,10 +306,42 @@ static void bevent_handler(enum bevent_ev bev,
 	}
 
 	case BEVENT_REGISTERING:
-		ev.type        = BARESDK_EV_REG_STATE;
-		ev.u.reg.state = BARESDK_REG_REGISTERING;
+		ev.type          = BARESDK_EV_REG_STATE;
 		ev.u.reg.account = acct;
-		if (acct) acct->reg_state = BARESDK_REG_REGISTERING;
+
+		if (acct && acct->reconnecting) {
+			/* A REGISTER going out inside a recovery — a retry, or a
+			 * handover's re-REGISTER — is still the reconnect the app was
+			 * told about, not a new registration.  Reporting REGISTERING
+			 * here would flip the status line between "Reconnecting…" and
+			 * "Registering…" once per attempt for the whole outage. */
+			ev.u.reg.state  = BARESDK_REG_RECONNECTING;
+			ev.u.reg.error  = acct->reg_error;
+			acct->reg_state = BARESDK_REG_RECONNECTING;
+
+			/* Carry the reason the recovery started with, so an app that
+			 * renders only the latest event still has one.  Queued with its
+			 * own copy: acct->reg_error_str is re-written by the next
+			 * failure, and the consumer reads this on another thread. */
+			if (acct->reg_error_str[0]) {
+				struct baresdk_queued_event *qev =
+				        mem_alloc(sizeof(*qev), NULL);
+				if (qev) {
+					memset(qev, 0, sizeof(*qev));
+					str_ncpy(qev->buf, acct->reg_error_str,
+					         sizeof(qev->buf));
+					memcpy(&qev->ev, &ev, sizeof(ev));
+					qev->ev.u.reg.error_str = qev->buf;
+					bsdk_event_post_qev(qev);
+					post = false;
+				}
+			}
+		}
+		else {
+			ev.u.reg.state = BARESDK_REG_REGISTERING;
+			if (acct)
+				acct->reg_state = BARESDK_REG_REGISTERING;
+		}
 		break;
 
 	/* FALLBACK_OK is the same success, reported under a different name:
@@ -328,6 +360,11 @@ static void bevent_handler(enum bevent_ev bev,
 		if (acct) {
 			acct->reg_state    = BARESDK_REG_REGISTERED;
 			acct->retry_attempt = 0;
+			/* Recovered — the next failure starts a new reconnect. */
+			acct->reconnecting = false;
+			acct->ka_failed    = false;
+			acct->reg_error    = BARESDK_OK;
+			acct->reg_error_str[0] = '\0';
 			/* Registered and reachable — start probing so we notice if
 			 * that stops being true before the next refresh. */
 			bsdk_account_keepalive_arm(acct);
@@ -338,7 +375,6 @@ static void bevent_handler(enum bevent_ev bev,
 	case BEVENT_FALLBACK_FAIL: {   /* see FALLBACK_OK above */
 		const char *reason = bevent_get_text(event);
 		ev.type            = BARESDK_EV_REG_STATE;
-		ev.u.reg.state     = BARESDK_REG_FAILED;
 		ev.u.reg.account   = acct;
 		/* Classify error by 3-digit SIP status code */
 		int code = sip_reason_code(reason);
@@ -349,6 +385,14 @@ static void bevent_handler(enum bevent_ev bev,
 		else
 			ev.u.reg.error = BARESDK_ERR_TRANSPORT;
 
+		/* RECONNECTING while the SDK still has a retry to spend on this —
+		 * a timeout, a 5xx, a transport that died with the network.  FAILED
+		 * only for the ones no retry can fix (auth) or when the budget is
+		 * gone.  Decided before the event is posted so both agree. */
+		ev.u.reg.state = acct
+		        ? bsdk_account_reg_fail_state(acct, ev.u.reg.error)
+		        : BARESDK_REG_FAILED;
+
 		/* Enqueue via a queued_event so the string lives long enough */
 		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
 		if (qev) {
@@ -358,7 +402,7 @@ static void bevent_handler(enum bevent_ev bev,
 			memcpy(&qev->ev, &ev, sizeof(ev));
 			qev->ev.u.reg.error_str = reason ? qev->buf : NULL;
 			if (acct) {
-				acct->reg_state  = BARESDK_REG_FAILED;
+				acct->reg_state  = ev.u.reg.state;
 				acct->reg_error  = ev.u.reg.error;
 				/* No point probing a registration that is down; the
 				 * retry path re-arms this on success. */
@@ -380,7 +424,10 @@ static void bevent_handler(enum bevent_ev bev,
 		ev.type        = BARESDK_EV_REG_STATE;
 		ev.u.reg.state = BARESDK_REG_UNREGISTERING;
 		ev.u.reg.account = acct;
-		if (acct) acct->reg_state = BARESDK_REG_UNREGISTERING;
+		if (acct) {
+			acct->reg_state    = BARESDK_REG_UNREGISTERING;
+			acct->reconnecting = false;
+		}
 		break;
 
 	case BEVENT_CALL_INCOMING: {

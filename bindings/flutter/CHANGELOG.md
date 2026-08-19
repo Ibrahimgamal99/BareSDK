@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- `RegState.reconnecting` — a registration the SDK is recovering by itself no
+  longer reports `RegState.failed`. It covers a retry armed after a timeout or
+  5xx (with `retryAttempt` / `retryDelayMs`), a keepalive probe the proxy stopped
+  answering, and a network handover or lost link, and it holds for the whole
+  recovery instead of flipping back to `registering` per attempt.
+  `RegState.failed` now means the SDK has given up: bad credentials, an exhausted
+  retry budget, or a `cancelRetry()`. Apps that render only `failed` should add a
+  `reconnecting` case — see the status banner in `example/lib/main.dart`.
+
 ### Fixed
 
 - Wi-Fi ↔ cellular handover left an ICE call with dead audio. The re-INVITE

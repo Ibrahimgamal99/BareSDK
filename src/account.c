@@ -409,6 +409,71 @@ static void configure_baresip_account(struct baresdk_account *acct)
 
 }
 
+/* ── Reconnecting vs failed ──────────────────────────────────────────────────
+ *
+ * A registration that drops on a bad link is not the same event as one the
+ * registrar refused, but the SDK used to report both as FAILED — so an app had
+ * no way to tell "we are getting it back, say nothing" from "this needs the
+ * user".  Every REGISTER on a train tunnel showed up as a hard failure while
+ * the retry loop, one second later, quietly fixed it.
+ *
+ * So a failure the SDK will act on itself is RECONNECTING, and FAILED is kept
+ * for the ones it has stopped acting on: wrong credentials, an exhausted retry
+ * budget, a retry the app cancelled.  The decision is one function because
+ * three call sites make it — the REGISTER_FAIL event, the registration
+ * watchdog and the keepalive probe — and they must agree.
+ */
+
+static bool retry_budget_left(const struct baresdk_account *acct)
+{
+	uint32_t max_attempts = acct->retry_policy_set
+	        ? acct->retry_max_attempts
+	        : g_bsdk.cfg.reg_retry_max_attempts;
+
+	return max_attempts == 0 || acct->retry_attempt < max_attempts;
+}
+
+baresdk_reg_state_t bsdk_account_reg_fail_state(struct baresdk_account *acct,
+                                                baresdk_error_t err)
+{
+	/* An armed retry settles it: that attempt is going out whatever the
+	 * budget now says, and schedule_retry() already counted it. */
+	bool will_retry = acct->reg_wanted && !acct->destroyed &&
+	        err != BARESDK_ERR_AUTH &&
+	        (tmr_isrunning(&acct->retry_tmr) || retry_budget_left(acct));
+
+	acct->reconnecting = will_retry;
+
+	return will_retry ? BARESDK_REG_RECONNECTING : BARESDK_REG_FAILED;
+}
+
+void bsdk_account_reg_reconnecting(struct baresdk_account *acct)
+{
+	baresdk_event_t ev = {0};
+
+	if (!acct || acct->destroyed || !acct->reg_wanted)
+		return;
+
+	/* Only a registration that was up (or on its way up) has anything to
+	 * lose here.  One that is already RECONNECTING keeps the state it has,
+	 * and a terminal FAILED is not turned back into hope by a new link. */
+	if (acct->reg_state != BARESDK_REG_REGISTERED &&
+	    acct->reg_state != BARESDK_REG_REGISTERING)
+		return;
+
+	acct->reconnecting = true;
+	acct->reg_state    = BARESDK_REG_RECONNECTING;
+	/* The binding is stale and the path may be gone; probing it would only
+	 * report the outage we already know about.  The re-REGISTER re-arms. */
+	bsdk_account_keepalive_cancel(acct);
+
+	ev.type          = BARESDK_EV_REG_STATE;
+	ev.u.reg.state   = BARESDK_REG_RECONNECTING;
+	ev.u.reg.error   = BARESDK_OK;
+	ev.u.reg.account = acct;
+	bsdk_event_post(&ev);
+}
+
 /* ── Registration watchdog (fires on re_main) ───────────────────────────────
  *
  * Registration state is reported to the consumer from baresip events. That is
@@ -459,6 +524,17 @@ static void reg_watch_handler(void *arg)
 	    acct->reg_state == BARESDK_REG_FAILED)
 		return;
 
+	/* A retry is armed, so this REGISTER has already been answered for as
+	 * far as the app is concerned (RECONNECTING, attempt N in M ms) and the
+	 * next attempt re-arms this watchdog with a fresh budget.  Reporting a
+	 * second timeout in the meantime would only overwrite the error the
+	 * failure carried.  Note this deliberately keeps watching a RECONNECTING
+	 * account with no timer running — a handover's re-REGISTER, and the
+	 * retry that has already fired — so a REGISTER that vanishes without
+	 * even a REGISTERING event still comes back here and gets retried. */
+	if (tmr_isrunning(&acct->retry_tmr))
+		return;
+
 	if (ua_isregistered(acct->ua)) {
 		baresdk_event_t ev = {0};
 
@@ -468,6 +544,7 @@ static void reg_watch_handler(void *arg)
 
 		acct->reg_state     = BARESDK_REG_REGISTERED;
 		acct->retry_attempt = 0;
+		acct->reconnecting  = false;
 		bsdk_account_keepalive_arm(acct);
 
 		ev.type          = BARESDK_EV_REG_STATE;
@@ -489,13 +566,14 @@ static void reg_watch_handler(void *arg)
 		        acct->cfg_uri ? acct->cfg_uri : "(unknown)",
 		        acct->reg_watch_elapsed_ms);
 
-		acct->reg_state = BARESDK_REG_FAILED;
 		acct->reg_error = BARESDK_ERR_TIMEOUT;
+		acct->reg_state = bsdk_account_reg_fail_state(acct,
+		                                             BARESDK_ERR_TIMEOUT);
 		str_ncpy(acct->reg_error_str, "registration timed out",
 		         sizeof(acct->reg_error_str));
 
 		ev.type            = BARESDK_EV_REG_STATE;
-		ev.u.reg.state     = BARESDK_REG_FAILED;
+		ev.u.reg.state     = acct->reg_state;
 		ev.u.reg.error     = BARESDK_ERR_TIMEOUT;
 		ev.u.reg.error_str = acct->reg_error_str;
 		ev.u.reg.account   = acct;
@@ -725,8 +803,39 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 	acct->ka_in_flight = false;
 
 	if (!err && msg) {
-		/* Reachable.  Nothing to report — an app that wants to see the
-		 * probes can watch SIP tracing. */
+		/* Reachable.  Normally nothing to report — an app that wants to
+		 * see the probes can watch SIP tracing.
+		 *
+		 * Unless we told it the path was gone: a probe answering again is
+		 * the only signal such a registration ever gets back, since the
+		 * binding at the registrar never lapsed and no REGISTER is coming
+		 * to report success.  Without this the app would sit on
+		 * "Reconnecting…" until the next refresh, up to reg_expires away,
+		 * with a working registration underneath. */
+		if (acct->ka_failed) {
+			acct->ka_failed = false;
+
+			if (acct->reg_state == BARESDK_REG_RECONNECTING &&
+			    ua_isregistered(acct->ua)) {
+				baresdk_event_t ok = {0};
+
+				info("baresdk: keepalive probe answered again; "
+				     "path to proxy recovered\n");
+
+				acct->reg_state     = BARESDK_REG_REGISTERED;
+				acct->reg_error     = BARESDK_OK;
+				acct->retry_attempt = 0;
+				acct->reconnecting  = false;
+				acct->reg_error_str[0] = '\0';
+
+				ok.type          = BARESDK_EV_REG_STATE;
+				ok.u.reg.state   = BARESDK_REG_REGISTERED;
+				ok.u.reg.error   = BARESDK_OK;
+				ok.u.reg.account = acct;
+				bsdk_event_post(&ok);
+			}
+		}
+
 		bsdk_account_keepalive_arm(acct);
 		return;
 	}
@@ -734,13 +843,28 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 	warning("baresdk: keepalive probe failed (%m); path to proxy is "
 	        "unreachable\n", err ? err : ETIMEDOUT);
 
-	acct->reg_state = BARESDK_REG_FAILED;
+	acct->ka_failed = true;
 	acct->reg_error = BARESDK_ERR_TIMEOUT;
+
+	/* Unreachable, not refused.  With keepalive_reregister the retry policy
+	 * decides whether this is still recoverable; without it we keep probing,
+	 * so an account the app wants registered is recovering either way and a
+	 * later answer (above) is what ends it. */
+	if (g_bsdk.cfg.keepalive_reregister && acct->reg_wanted) {
+		acct->reg_state = bsdk_account_reg_fail_state(acct,
+		                                             BARESDK_ERR_TIMEOUT);
+	}
+	else {
+		acct->reg_state    = acct->reg_wanted ? BARESDK_REG_RECONNECTING
+		                                      : BARESDK_REG_FAILED;
+		acct->reconnecting = acct->reg_wanted;
+	}
+
 	str_ncpy(acct->reg_error_str, "keepalive probe timed out",
 	         sizeof(acct->reg_error_str));
 
 	ev.type            = BARESDK_EV_REG_STATE;
-	ev.u.reg.state     = BARESDK_REG_FAILED;
+	ev.u.reg.state     = acct->reg_state;
 	ev.u.reg.error     = BARESDK_ERR_TIMEOUT;
 	ev.u.reg.error_str = acct->reg_error_str;
 	ev.u.reg.account   = acct;
@@ -856,7 +980,6 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 	uint32_t initial_ms   = acct->retry_policy_set ? acct->retry_initial_ms   : cfg->reg_retry_initial_ms;
 	uint32_t max_ms       = acct->retry_policy_set ? acct->retry_max_ms       : cfg->reg_retry_max_ms;
 	float    backoff      = acct->retry_policy_set ? acct->retry_backoff      : cfg->reg_retry_backoff;
-	uint32_t max_attempts = acct->retry_policy_set ? acct->retry_max_attempts : cfg->reg_retry_max_attempts;
 
 	/* A failure can reach us twice for the same REGISTER — the watchdog and
 	 * baresip's own transaction timeout both report it — and once from a
@@ -867,8 +990,32 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 	if (tmr_isrunning(&acct->retry_tmr))
 		return;
 
-	if (max_attempts > 0 && acct->retry_attempt >= max_attempts) {
+	if (!retry_budget_left(acct)) {
+		baresdk_event_t done = {0};
+
 		info("baresdk: max retry attempts reached for account\n");
+
+		acct->reconnecting = false;
+
+		/* Nothing owed unless the app is still holding RECONNECTING, which
+		 * promises another attempt: going quiet on that would leave it
+		 * rendering "Reconnecting…" for ever with nothing left to reconnect
+		 * it.  A caller that already reported FAILED (an exhausted budget is
+		 * visible to bsdk_account_reg_fail_state() too) needs no second
+		 * event. */
+		if (acct->reg_state != BARESDK_REG_RECONNECTING)
+			return;
+
+		acct->reg_state = BARESDK_REG_FAILED;
+
+		done.type            = BARESDK_EV_REG_STATE;
+		done.u.reg.state     = BARESDK_REG_FAILED;
+		done.u.reg.error     = acct->reg_error;
+		done.u.reg.error_str = acct->reg_error_str[0]
+		        ? acct->reg_error_str : NULL;
+		done.u.reg.account   = acct;
+		done.u.reg.retry_attempt = acct->retry_attempt;
+		bsdk_event_post(&done);
 		return;
 	}
 
@@ -888,11 +1035,18 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 
 	acct->retry_attempt++;
 
-	/* Post retry event so consumer can show UI */
+	/* Post retry event so consumer can show UI.  RECONNECTING, with the
+	 * attempt and the delay: an attempt is armed, so this is a countdown and
+	 * not a failure the app has to act on. */
+	acct->reconnecting = true;
+	acct->reg_state    = BARESDK_REG_RECONNECTING;
+
 	baresdk_event_t ev = {0};
 	ev.type                    = BARESDK_EV_REG_STATE;
-	ev.u.reg.state             = BARESDK_REG_FAILED;
+	ev.u.reg.state             = BARESDK_REG_RECONNECTING;
 	ev.u.reg.error             = acct->reg_error;
+	ev.u.reg.error_str         = acct->reg_error_str[0]
+	        ? acct->reg_error_str : NULL;
 	ev.u.reg.account           = acct;
 	ev.u.reg.retry_attempt     = acct->retry_attempt;
 	ev.u.reg.retry_delay_ms    = delay;
@@ -1147,6 +1301,10 @@ static void register_fn(void *arg)
 	struct baresdk_account *acct = arg;
 	if (acct->ua) {
 		acct->reg_wanted = true;   /* netmon.c re-REGISTERs on handover */
+		/* An explicit register() is a fresh intent, not the tail of a
+		 * recovery: report it as REGISTERING even if the account was
+		 * RECONNECTING when the app asked. */
+		acct->reconnecting = false;
 		/* Fire the SRV lookup alongside the first REGISTER rather than
 		 * before it: the answer is only needed if this attempt fails, and
 		 * delaying the REGISTER on a DNS round-trip would slow down every
@@ -1167,7 +1325,9 @@ static void unregister_fn(void *arg)
 {
 	struct baresdk_account *acct = arg;
 	if (acct->ua) {
-		acct->reg_wanted = false;
+		acct->reg_wanted   = false;
+		acct->reconnecting = false;
+		acct->ka_failed    = false;
 		acct->reg_state = BARESDK_REG_UNREGISTERING;
 		tmr_cancel(&acct->reg_watch_tmr);
 		bsdk_account_keepalive_cancel(acct);
@@ -1235,9 +1395,29 @@ int baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
 static void cancel_retry_fn(void *arg)
 {
 	struct baresdk_account *acct = arg;
+
 	tmr_cancel(&acct->retry_tmr);
 	tmr_cancel(&acct->reg_watch_tmr);
 	acct->retry_attempt = 0;
+
+	/* The recovery was the SDK's and the app just took it away, so the
+	 * registration is now down for good as far as the SDK is concerned.
+	 * Report it, or the app is left rendering "Reconnecting…" against a
+	 * retry it cancelled itself. */
+	if (acct->reg_state == BARESDK_REG_RECONNECTING) {
+		baresdk_event_t ev = {0};
+
+		acct->reconnecting = false;
+		acct->reg_state    = BARESDK_REG_FAILED;
+
+		ev.type            = BARESDK_EV_REG_STATE;
+		ev.u.reg.state     = BARESDK_REG_FAILED;
+		ev.u.reg.error     = acct->reg_error;
+		ev.u.reg.error_str = acct->reg_error_str[0]
+		        ? acct->reg_error_str : NULL;
+		ev.u.reg.account   = acct;
+		bsdk_event_post(&ev);
+	}
 }
 
 int baresdk_account_cancel_retry(baresdk_account_handle_t acct)
@@ -1302,7 +1482,8 @@ static void set_push_token_fn(void *arg)
 	 * The new cparams are already stored on the UA; the next natural
 	 * ua_register() call will pick them up. */
 	bool reg_in_flight = (acct->reg_state == BARESDK_REG_REGISTERING ||
-	                      acct->reg_state == BARESDK_REG_UNREGISTERING);
+	                      acct->reg_state == BARESDK_REG_UNREGISTERING ||
+	                      acct->reg_state == BARESDK_REG_RECONNECTING);
 	bool retry_pending = tmr_isrunning(&acct->retry_tmr);
 
 	if (!reg_in_flight && !retry_pending)

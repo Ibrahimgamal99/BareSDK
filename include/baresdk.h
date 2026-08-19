@@ -204,8 +204,43 @@ typedef enum {
 	BARESDK_REG_UNREGISTERED = 0,
 	BARESDK_REG_REGISTERING,
 	BARESDK_REG_REGISTERED,
+	/**
+	 * Terminal: the registration is down and the SDK has stopped trying.
+	 * Either nothing it can retry will help (BARESDK_ERR_AUTH — wrong
+	 * credentials), the retry budget (`reg_retry_max_attempts`) ran out, or
+	 * the app cancelled the retry itself.  Recovering needs the app:
+	 * baresdk_account_retry_now(), or new credentials.
+	 */
 	BARESDK_REG_FAILED,
 	BARESDK_REG_UNREGISTERING,
+	/**
+	 * Transient: the registration is not usable right now, and the SDK is
+	 * getting it back on its own.  Nothing for the app to do but say so —
+	 * "Reconnecting…", not "Registration failed".
+	 *
+	 * Appended after UNREGISTERING deliberately: the values above it are
+	 * ABI, so this one had to take 5 rather than sit next to FAILED.
+	 *
+	 * It is reported for every recovery the SDK drives itself:
+	 *
+	 *   - a REGISTER that failed on transport, timeout or 5xx, with a retry
+	 *     armed — `retry_attempt` and `retry_delay_ms` say which attempt is
+	 *     next and how long until it goes out,
+	 *   - a keepalive probe that went unanswered (cfg.keepalive_interval):
+	 *     the binding is registered on paper but the path to the proxy is
+	 *     gone,
+	 *   - a network handover or a link that dropped entirely — Wi-Fi ↔
+	 *     cellular, VPN up/down, dock/undock — from the moment the change is
+	 *     detected until the REGISTER lands on the new path.  The matching
+	 *     BARESDK_EV_NETWORK events carry the detail.
+	 *
+	 * The state does not flicker back to REGISTERING for each retry: an
+	 * account stays RECONNECTING for the whole recovery, and leaves it only
+	 * for REGISTERED (recovered) or FAILED (given up).  REGISTERING keeps
+	 * its narrower meaning — a registration the app asked for, going out
+	 * for the first time.
+	 */
+	BARESDK_REG_RECONNECTING,
 } baresdk_reg_state_t;
 
 /* ── Presence enums ────────────────────────────────────────────────────────── */
@@ -333,6 +368,19 @@ typedef struct {
 } baresdk_ev_network_t;
 
 /* ── Event payload structs ────────────────────────────────────────────────── */
+/**
+ * Registration state change.
+ *
+ * `retry_attempt` / `retry_delay_ms` are non-zero on the RECONNECTING event
+ * that announces an armed retry, and render a status line directly:
+ *     "reconnecting — attempt %u in %.1f s"
+ * They are 0 on every other event, including the RECONNECTING that a handover
+ * or a dead keepalive raises before any backoff is involved.
+ *
+ * Two events can describe one lost registration: the failure itself, then the
+ * retry that was armed for it.  Both carry the same state, so an app that only
+ * renders `state` shows "Reconnecting…" once and needs no de-duplication.
+ */
 typedef struct {
 	baresdk_account_handle_t account;
 	baresdk_reg_state_t      state;
@@ -1260,7 +1308,10 @@ BARESDK_EXPORT int baresdk_account_create(const baresdk_account_config_t *cfg,
 /** Destroy account and all associated calls. Unregisters first if registered. */
 BARESDK_EXPORT void baresdk_account_destroy(baresdk_account_handle_t acct);
 
-/** Begin registration. Fires BARESDK_EV_REG_STATE events on state changes. */
+/** Begin registration. Fires BARESDK_EV_REG_STATE events on state changes.
+ *  REGISTERING → REGISTERED on success; a failure the SDK will retry reports
+ *  BARESDK_REG_RECONNECTING, and only a failure it has given up on reports
+ *  BARESDK_REG_FAILED. */
 BARESDK_EXPORT int baresdk_account_register(baresdk_account_handle_t acct);
 
 /** Unregister (sends REGISTER with Expires: 0). */
@@ -1281,7 +1332,10 @@ BARESDK_EXPORT int baresdk_account_set_retry_policy(baresdk_account_handle_t acc
                                                      uint32_t max_attempts);
 
 /** Cancel a pending retry timer and reset the attempt counter.
- *  The account stays in FAILED state; call baresdk_account_register() to restart. */
+ *  The app has taken over, so the recovery stops being the SDK's: an account
+ *  that was RECONNECTING reports FAILED once the retry is cancelled — leaving
+ *  it on "Reconnecting…" would promise an attempt that is never coming.
+ *  Call baresdk_account_register() to restart. */
 BARESDK_EXPORT int baresdk_account_cancel_retry(baresdk_account_handle_t acct);
 
 /** Skip the current backoff delay and re-register immediately.
@@ -1373,7 +1427,9 @@ BARESDK_EXPORT void baresdk_account_foreach(baresdk_account_iter_fn fn, void *ar
 BARESDK_EXPORT int baresdk_account_get_aor(baresdk_account_handle_t acct,
                                             char *buf, size_t sz);
 
-/** Current registration state, as last reported by BARESDK_EV_REG_STATE. */
+/** Current registration state, as last reported by BARESDK_EV_REG_STATE.
+ *  Useful on a cold start or after re-attaching, where no event has been seen
+ *  yet.  Can return BARESDK_REG_RECONNECTING — see the enum. */
 BARESDK_EXPORT baresdk_reg_state_t baresdk_account_get_reg_state(
         baresdk_account_handle_t acct);
 

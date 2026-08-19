@@ -1723,6 +1723,7 @@ abstract class baresdk_reg_state_t {
   static const int BARESDK_REG_REGISTERED = 2;
   static const int BARESDK_REG_FAILED = 3;
   static const int BARESDK_REG_UNREGISTERING = 4;
+  static const int BARESDK_REG_RECONNECTING = 5;
 }
 
 /// ── Presence enums ──────────────────────────────────────────────────────────

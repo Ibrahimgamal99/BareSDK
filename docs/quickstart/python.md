@@ -383,7 +383,9 @@ sdk.version()                   # SDK version string
 
 State string values:
 
-- `RegStateEvent.state`: `"unregistered"` `"registering"` `"registered"` `"failed"` `"unregistering"`
+- `RegStateEvent.state`: `"unregistered"` `"registering"` `"registered"` `"failed"` `"unregistering"` `"reconnecting"`
+  — `"reconnecting"` is a transient loss the SDK is recovering from itself (retry
+  armed, dead keepalive path, network handover); `"failed"` is terminal
 - `CallStateEvent.state`: `"calling"` `"ringing"` `"established"` `"held"` `"ended"` `"cancelled"` `"failed"`
 - `SipTraceEvent.direction`: `"tx"` or `"rx"`
 - `PresenceStateEvent.status`: `"unknown"` `"open"` `"closed"` `"busy"`

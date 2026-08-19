@@ -60,8 +60,13 @@ static void event_handler(const baresdk_event_t *ev, void *ud)
 				atomic_store(&g_ended, 1);
 			}
 			break;
+		/* RECONNECTING carries the same failure with a retry armed; the
+		 * harness has one shot, so it reports and stops either way. */
+		case BARESDK_REG_RECONNECTING:
 		case BARESDK_REG_FAILED:
-			fprintf(stderr, "[REG] Failed: %s\n",
+			fprintf(stderr, "[REG] %s: %s\n",
+			        ev->u.reg.state == BARESDK_REG_RECONNECTING
+			                ? "Reconnecting" : "Failed",
 			        ev->u.reg.error_str ? ev->u.reg.error_str : "?");
 			atomic_store(&g_failed, 1);
 			break;

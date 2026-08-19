@@ -411,6 +411,48 @@ static size_t snapshot_accounts(struct baresdk_account **v, size_t max)
 	return n;
 }
 
+/* Tell every account the app wants registered that its registration is on the
+ * way back, not merely fine.
+ *
+ * A handover invalidates the registrar's binding before anything is re-sent:
+ * the transports are about to be flushed, the Contact points at an address the
+ * device has left, and inbound calls land nowhere until the REGISTER on the new
+ * path is answered.  Leaving the account on REGISTERED through all that reports
+ * a registration that demonstrably does not work, so the app shows a green dot
+ * over a dead path — and the NET_* events, which do describe it, are not what a
+ * registration indicator is bound to.
+ *
+ * Called when the change is first detected and again if the link goes away
+ * entirely, so a long no-address wait is covered too.  The state then holds
+ * through the re-REGISTER (see acct->reconnecting) until it is answered.
+ */
+static void mark_accounts_reconnecting(void)
+{
+	struct baresdk_account *snap[BSDK_NET_MAX_SNAP];
+	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
+
+	for (size_t i = 0; i < n; i++)
+		bsdk_account_reg_reconnecting(snap[i]);
+}
+
+/* Give up driving the re-REGISTER from here and let each account's own retry
+ * policy carry it, backoff and all.  Used when the handover itself has run out
+ * of attempts: the recovery has to stay somebody's job.
+ *
+ * Only the accounts we put in RECONNECTING — those are the ones promised a
+ * recovery.  One that was already terminally FAILED (bad credentials) is not
+ * given a retry it never asked for. */
+static void handover_accounts_to_retry(void)
+{
+	struct baresdk_account *snap[BSDK_NET_MAX_SNAP];
+	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
+
+	for (size_t i = 0; i < n; i++) {
+		if (snap[i]->reg_state == BARESDK_REG_RECONNECTING)
+			bsdk_account_schedule_retry(snap[i]);
+	}
+}
+
 /* ── Per-call migration ──────────────────────────────────────────────────── */
 
 static uint32_t rx_packets(const struct baresdk_call *lc)
@@ -840,6 +882,12 @@ static void reregister_accounts(void)
 		tmr_cancel(&a->retry_tmr);
 		a->retry_attempt = 0;
 
+		/* This REGISTER is the reconnect, so report it as one — including
+		 * for an account that was mid-retry when the network moved, and one
+		 * whose handover was forced without any address change (a WebSocket
+		 * re-bind).  Cleared when it is answered. */
+		a->reconnecting = true;
+
 		netmon_emit(BARESDK_NET_REREGISTERING, NULL, a, 0, 0);
 		(void)ua_register(a->ua);
 		bsdk_account_watch_registration(a);
@@ -872,6 +920,7 @@ static void apply_handover(void)
 			g_nm.down = true;
 			g_nm.cur_laddr[0] = '\0';
 			netmon_emit(BARESDK_NET_DOWN, NULL, NULL, 0, 0);
+			mark_accounts_reconnecting();
 		}
 		/* Backoff for the no-address wait uses its OWN counter.  Sharing
 		 * g_nm.attempt would let a long outage exhaust the reset-failure
@@ -891,6 +940,7 @@ static void apply_handover(void)
 		if (!g_nm.down) {
 			g_nm.down = true;
 			netmon_emit(BARESDK_NET_DOWN, NULL, NULL, 0, 0);
+			mark_accounts_reconnecting();
 		}
 	}
 	else if (g_nm.down) {
@@ -927,6 +977,13 @@ static void apply_handover(void)
 			 * exhausted budget and give up immediately.  The app sees
 			 * attempt == max_attempts on the final HANDOVER_FAILED. */
 			g_nm.attempt = 0;
+
+			/* Hand the accounts to the registration retry policy.  They were
+			 * moved to RECONNECTING when the change was detected and no
+			 * re-REGISTER is coming from here any more, so without this they
+			 * would sit in a recovery nothing is driving until the next
+			 * network change — however long that is. */
+			handover_accounts_to_retry();
 		}
 		return;
 	}
@@ -985,6 +1042,7 @@ static void netmon_trigger(bool forced)
 		g_nm.handover_start = tmr_jiffies();
 		update_cur_laddr();
 		netmon_emit(BARESDK_NET_CHANGE_DETECTED, NULL, NULL, 0, 0);
+		mark_accounts_reconnecting();
 	}
 
 	tmr_start(&g_nm.tmr_settle, g_nm.settle_ms, settle_handler, NULL);

@@ -277,8 +277,11 @@ static void evt(const baresdk_event_t *ev, void *ud)
             printf("  REG: registered OK\n");
             g_reg_ok   = 1;
             g_reg_done = 1;
-        } else if (r->state == BARESDK_REG_FAILED) {
-            printf("  REG: FAILED — %s\n",
+        } else if (r->state == BARESDK_REG_FAILED ||
+                   r->state == BARESDK_REG_RECONNECTING) {
+            printf("  REG: %s — %s\n",
+                   r->state == BARESDK_REG_RECONNECTING ? "RECONNECTING"
+                                                        : "FAILED",
                    r->error_str ? r->error_str : "unknown");
             g_reg_done = 1;
         }

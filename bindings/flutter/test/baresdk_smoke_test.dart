@@ -126,8 +126,10 @@ void main() {
     expect(second.accounts.length, 1);
     final adopted = second.accounts.first;
     expect(adopted.aor, 'sip:alice@192.0.2.1');
-    expect(adopted.regState,
-        anyOf(RegState.registering, RegState.failed, RegState.registered));
+    expect(
+        adopted.regState,
+        anyOf(RegState.registering, RegState.reconnecting, RegState.failed,
+            RegState.registered));
     expect(second.calls, isEmpty);
 
     // Events now reach the new isolate, and route to the adopted account.

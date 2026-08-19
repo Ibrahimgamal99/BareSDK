@@ -240,8 +240,19 @@ def main():
         else:
             say("Waiting for incoming call...")
 
+    @sdk.on("reconnecting")
+    def _(ev):
+        # The SDK is recovering this by itself — say so and keep waiting.
+        detail = ev.error_str or sdk.strerror(ev.error)
+        if ev.retry_attempt:
+            say(f"Reconnecting: {detail} "
+                f"(attempt {ev.retry_attempt} in {ev.retry_delay_ms} ms)")
+        else:
+            say(f"Reconnecting: {detail}")
+
     @sdk.on("reg_failed")
     def _(ev):
+        # Terminal: bad credentials, or the retry budget is spent.
         detail = ev.error_str or sdk.strerror(ev.error)
         say(f"Registration failed: {detail}")
         sdk.stop()

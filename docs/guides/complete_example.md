@@ -312,10 +312,14 @@ static void on_event(const baresdk_event_t *ev, void *ud)
     case BARESDK_EV_REG_STATE:
         if (ev->u.reg.state == BARESDK_REG_REGISTERED)
             printf("Registered\n");
-        else if (ev->u.reg.state == BARESDK_REG_FAILED)
-            printf("Reg failed: %s (retry in %u ms)\n",
+        else if (ev->u.reg.state == BARESDK_REG_RECONNECTING)
+            printf("Reconnecting: %s (attempt %u in %u ms)\n",
                    ev->u.reg.error_str ? ev->u.reg.error_str : "?",
+                   ev->u.reg.retry_attempt,
                    ev->u.reg.retry_delay_ms);
+        else if (ev->u.reg.state == BARESDK_REG_FAILED)
+            printf("Reg failed for good: %s\n",
+                   ev->u.reg.error_str ? ev->u.reg.error_str : "?");
         break;
 
     case BARESDK_EV_INCOMING_CALL:
@@ -388,8 +392,11 @@ sdk.on_event([&](const baresdk_event_t& ev) {
     case BARESDK_EV_REG_STATE:
         if (ev.u.reg.state == BARESDK_REG_REGISTERED)
             std::cout << "Registered\n";
+        else if (ev.u.reg.state == BARESDK_REG_RECONNECTING)
+            std::cout << "Reconnecting: "
+                      << (ev.u.reg.error_str ? ev.u.reg.error_str : "?") << "\n";
         else if (ev.u.reg.state == BARESDK_REG_FAILED)
-            std::cout << "Reg failed: "
+            std::cout << "Reg failed for good: "
                       << (ev.u.reg.error_str ? ev.u.reg.error_str : "?") << "\n";
         break;
 
@@ -486,10 +493,15 @@ def _(ev):
 account.events.listen((ev) {
 
   if (ev is RegStateEvent) {
-    if (ev.state == baresdk_reg_state_t.BARESDK_REG_REGISTERED) {
-      print('Registered');
-    } else if (ev.state == baresdk_reg_state_t.BARESDK_REG_FAILED) {
-      print('Reg failed: ${ev.errorStr}');
+    switch (ev.state) {
+      case RegState.registered:
+        print('Registered');
+      case RegState.reconnecting:
+        print('Reconnecting: ${ev.errorStr ?? ''}');
+      case RegState.failed:
+        print('Reg failed for good: ${ev.errorStr}');
+      default:
+        break;
     }
 
   } else if (ev is IncomingCallEvent) {
@@ -1148,12 +1160,15 @@ internal.nativeBindings.baresdk_account_cancel_retry(account.handle);
 internal.nativeBindings.baresdk_account_retry_now(account.handle);
 ```
 
-Each scheduled retry fires `BARESDK_EV_REG_STATE` with `state == BARESDK_REG_FAILED`:
+A registration the SDK is still working on reports `BARESDK_REG_RECONNECTING`,
+carrying the attempt and the delay; `BARESDK_REG_FAILED` means it has stopped
+(auth, an exhausted budget, a cancelled retry):
 
 **C**
 ```c
 case BARESDK_EV_REG_STATE:
-    if (ev->u.reg.state == BARESDK_REG_FAILED && ev->u.reg.retry_attempt > 0)
+    if (ev->u.reg.state == BARESDK_REG_RECONNECTING &&
+        ev->u.reg.retry_attempt > 0)
         printf("retry %u in %u ms\n",
                ev->u.reg.retry_attempt,
                ev->u.reg.retry_delay_ms);
@@ -1161,18 +1176,22 @@ case BARESDK_EV_REG_STATE:
 
 **Python**
 ```python
-@sdk.on("reg_failed")
+@sdk.on("reconnecting")
 def _(ev):
     if ev.retry_attempt > 0:
         print(f"retry {ev.retry_attempt} in {ev.retry_delay_ms} ms")
+
+@sdk.on("reg_failed")
+def _(ev):
+    print(f"gave up: {ev.error_str}")
 ```
 
 **Flutter**
 ```dart
-} else if (ev is RegStateEvent &&
-           ev.state == baresdk_reg_state_t.BARESDK_REG_FAILED) {
-  // retry_attempt and retry_delay_ms are in the raw C struct;
-  // read via the event pointer if needed, or handle reconnect logic here
+} else if (ev is RegStateEvent && ev.state == RegState.reconnecting) {
+  if (ev.retryAttempt > 0) {
+    print('retry ${ev.retryAttempt} in ${ev.retryDelayMs} ms');
+  }
 }
 ```
 

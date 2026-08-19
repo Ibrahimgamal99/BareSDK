@@ -89,8 +89,10 @@ typedef enum {
  BARESDK_REG_UNREGISTERED = 0,
  BARESDK_REG_REGISTERING,
  BARESDK_REG_REGISTERED,
+
  BARESDK_REG_FAILED,
  BARESDK_REG_UNREGISTERING,
+ BARESDK_REG_RECONNECTING,
 } baresdk_reg_state_t;
 
 typedef enum {
@@ -143,7 +145,6 @@ typedef enum {
  BARESDK_NET_CALL_MIGRATION_FAILED,
  BARESDK_NET_CALL_DEFERRED,
  BARESDK_NET_HANDOVER_FAILED,
-
  BARESDK_NET_CALL_ICE_STALE,
 } baresdk_net_event_t;
 typedef struct {
@@ -154,7 +155,6 @@ typedef struct {
  uint32_t attempt;
  uint32_t max_attempts;
  uint32_t elapsed_ms;
-
  bool ice;
  baresdk_error_t error;
 } baresdk_ev_network_t;
@@ -501,6 +501,7 @@ typedef struct {
  int baresdk_account_create(const baresdk_account_config_t *cfg,
                              baresdk_account_handle_t *out);
  void baresdk_account_destroy(baresdk_account_handle_t acct);
+
  int baresdk_account_register(baresdk_account_handle_t acct);
  int baresdk_account_unregister(baresdk_account_handle_t acct);
  int baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
@@ -508,7 +509,6 @@ typedef struct {
                                                      uint32_t max_ms,
                                                      float backoff,
                                                      uint32_t max_attempts);
-
  int baresdk_account_cancel_retry(baresdk_account_handle_t acct);
 
  int baresdk_account_retry_now(baresdk_account_handle_t acct);

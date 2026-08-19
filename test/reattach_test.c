@@ -249,9 +249,10 @@ int main(void)
 	      "account_get_aor(NULL) did not report ERR_INVAL\n");
 
 	baresdk_reg_state_t rs = baresdk_account_get_reg_state(acct);
-	CHECK(rs == BARESDK_REG_REGISTERING || rs == BARESDK_REG_FAILED,
-	      "reg_state = %d, want REGISTERING or FAILED for a black-hole "
-	      "server\n", (int)rs);
+	CHECK(rs == BARESDK_REG_REGISTERING || rs == BARESDK_REG_FAILED ||
+	      rs == BARESDK_REG_RECONNECTING,
+	      "reg_state = %d, want REGISTERING, RECONNECTING or FAILED for a "
+	      "black-hole server\n", (int)rs);
 
 	/* No calls, but the call side of the reattach path must still answer
 	 * sanely rather than trip over an empty list. */

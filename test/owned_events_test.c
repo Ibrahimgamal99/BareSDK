@@ -6,7 +6,8 @@
  * baresdk_event_release() — even when released from a different thread.
  *
  * No SIP server needed: registration against a black-hole address produces
- * REG_STATE(FAILED) events with error_str strings, plus LOG events.
+ * REG_STATE(RECONNECTING/FAILED) events with error_str strings, plus LOG
+ * events.
  *
  * Build (from repo root, after scripts/build-linux.sh):
  *   gcc -fsanitize=address -g -O1 -std=gnu11 \
@@ -87,7 +88,11 @@ static void *consumer_fn(void *arg)
 			atomic_store(&g_log_seen, 1);
 			break;
 		case BARESDK_EV_REG_STATE:
-			if (ev->u.reg.state == BARESDK_REG_FAILED) {
+			/* A black-hole registrar times out, and a timeout with a
+			 * retry armed is reported as RECONNECTING — the string this
+			 * test is about rides on either one. */
+			if (ev->u.reg.state == BARESDK_REG_FAILED ||
+			    ev->u.reg.state == BARESDK_REG_RECONNECTING) {
 				if (ev->u.reg.error_str)
 					(void)strlen(ev->u.reg.error_str);
 				atomic_store(&g_reg_failed_seen, 1);

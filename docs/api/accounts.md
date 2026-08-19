@@ -146,7 +146,8 @@ Per-account policy overrides the global `reg_retry_*` fields in `baresdk_config_
 ```c
 baresdk_account_cancel_retry(acct);
 // Stops the backoff timer and resets the attempt counter.
-// The account stays in FAILED state — call baresdk_account_register() to restart.
+// An account that was RECONNECTING reports FAILED — the SDK is no longer
+// recovering it — and stays there until baresdk_account_register().
 ```
 
 ### Force immediate retry
@@ -159,16 +160,31 @@ baresdk_account_retry_now(acct);
 
 ### Retry events
 
-Every scheduled retry fires `BARESDK_EV_REG_STATE` with `state == BARESDK_REG_FAILED`:
+A registration the SDK will retry is reported as `BARESDK_REG_RECONNECTING`,
+not `BARESDK_REG_FAILED` — the failure itself, and then each scheduled retry
+with its countdown:
 
 ```c
 case BARESDK_EV_REG_STATE:
-    if (ev->u.reg.state == BARESDK_REG_FAILED) {
-        printf("retry %u in %u ms\n",
-               ev->u.reg.retry_attempt,
-               ev->u.reg.retry_delay_ms);
+    if (ev->u.reg.state == BARESDK_REG_RECONNECTING) {
+        if (ev->u.reg.retry_attempt)
+            printf("reconnecting: attempt %u in %u ms\n",
+                   ev->u.reg.retry_attempt,
+                   ev->u.reg.retry_delay_ms);
+        else
+            printf("reconnecting: %s\n",
+                   ev->u.reg.error_str ? ev->u.reg.error_str : "");
+    }
+    else if (ev->u.reg.state == BARESDK_REG_FAILED) {
+        /* The SDK has given up: auth, an exhausted retry budget, or a retry
+         * this app cancelled.  This is the one worth showing the user. */
     }
 ```
+
+`RECONNECTING` also covers the losses that are not a REGISTER failure at all —
+a dead keepalive path, and a network handover — so a status indicator bound to
+the registration state tracks them without also subscribing to
+`BARESDK_EV_NETWORK`.  See [`BARESDK_EV_REG_STATE`](events.md#baresdk_ev_reg_state).
 
 ---
 

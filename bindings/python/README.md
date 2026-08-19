@@ -141,7 +141,7 @@ sdk.configure(aec_mode=2)   # 2 = WEBRTC; requires cmake -DBARESDK_WITH_WEBRTC_A
 
 | Name | When | Sub-names (also available) |
 |---|---|---|
-| `reg_state` | Registration changed | `registering` · `registered` · `unregistered` · `reg_failed` |
+| `reg_state` | Registration changed | `registering` · `registered` · `unregistered` · `reconnecting` · `reg_failed` |
 | `incoming_call` | INVITE received | — |
 | `call_state` | Call changed | `calling` · `ringing` · `established` · `held` · `ended` · `cancelled` · `call_failed` |
 | `dtmf` | Digit received | — |

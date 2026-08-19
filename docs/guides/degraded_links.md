@@ -102,6 +102,13 @@ proxy. It does two jobs at once:
   response means the path is black-holed, and with `keepalive_reregister` the
   SDK re-REGISTERs immediately instead of waiting up to an hour.
 
+A probe that goes unanswered is also reported: the account moves to
+`BARESDK_REG_RECONNECTING`, so an app whose status indicator is bound to the
+registration state says "Reconnecting…" for a binding that is registered on
+paper and unreachable in fact. It goes back to `BARESDK_REG_REGISTERED` when the
+re-REGISTER lands — or, with `keepalive_reregister` off, when a later probe is
+answered again.
+
 The probe is skipped while a call is up on that account: RTP already holds the
 binding open, and adding a request that competes with media for a congested
 uplink is exactly wrong.

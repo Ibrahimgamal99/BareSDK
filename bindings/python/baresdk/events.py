@@ -15,7 +15,11 @@ from typing import Optional, List
 @dataclass
 class RegStateEvent:
     type: str = field(init=False, default="reg_state")
-    state: str           # "unregistered" | "registering" | "registered" | "failed" | "unregistering"
+    # "reconnecting" is a transient loss the SDK is recovering from by itself
+    # (retry armed, dead keepalive path, network handover) — show it, do not
+    # act on it.  "failed" is terminal: bad credentials, the retry budget is
+    # spent, or the app cancelled the retry.
+    state: str           # "unregistered" | "registering" | "registered" | "failed" | "unregistering" | "reconnecting"
     error: int           # BARESDK_ERR_* or BARESDK_OK
     error_str: Optional[str]
     retry_attempt: int

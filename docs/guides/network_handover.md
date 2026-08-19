@@ -134,6 +134,26 @@ def _(ev):
 | `CALL_MIGRATION_FAILED` | Gave up after `max_attempts` |
 | `HANDOVER_FAILED` | The transport rebind itself failed; retrying with backoff |
 
+### The registration state follows too
+
+An app does not have to subscribe to `BARESDK_EV_NETWORK` just to keep its
+status indicator honest. From `CHANGE_DETECTED` (or `DOWN`, if the link went
+away entirely) every account the app asked to register moves to
+`BARESDK_REG_RECONNECTING`, and stays there through the re-REGISTER until it is
+answered — the binding at the registrar points at an address the device has
+left, so reporting `REGISTERED` across a handover would show a green dot over a
+path that cannot take an inbound call.
+
+A handover that exhausts its transport-rebind attempts (`HANDOVER_FAILED` with
+`attempt == max_attempts`) hands those accounts to their own registration retry
+policy, so the reconnect keeps being driven by something rather than waiting for
+the next network change.
+
+The `NET_*` stages above are still the ones that describe *what* is being
+repaired, and the per-call migration events are the only place media recovery
+is reported. `RECONNECTING` is just the one-line summary a registration
+indicator can bind to.
+
 ---
 
 ## Media is verified, not assumed

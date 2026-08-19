@@ -270,9 +270,14 @@ class _PhonePageState extends State<PhonePage>
         setState(() {
           _regState = e.state;
           _regDetail = switch (e.state) {
-            RegState.failed =>
-              '${e.errorStr ?? e.error.name} — retry #${e.retryAttempt} '
-                  'in ${(e.retryDelayMs / 1000).toStringAsFixed(0)}s',
+            // A retry is armed: count it down.  Reconnecting without one is a
+            // handover or a dead keepalive path, where there is no delay to
+            // show — just why.
+            RegState.reconnecting when e.retryAttempt > 0 =>
+              'attempt #${e.retryAttempt} in '
+                  '${(e.retryDelayMs / 1000).toStringAsFixed(0)}s',
+            RegState.reconnecting => e.errorStr ?? '',
+            RegState.failed => e.errorStr ?? e.error.name,
             _ => '',
           };
         });
@@ -423,6 +428,11 @@ class _PhonePageState extends State<PhonePage>
     final (color, text) = switch (_regState) {
       RegState.registered => (Colors.green, 'Registered'),
       RegState.registering => (Colors.orange, 'Registering…'),
+      // Amber, not red: the SDK is fixing this one itself.
+      RegState.reconnecting => (
+          Colors.amber.shade700,
+          _regDetail.isEmpty ? 'Reconnecting…' : 'Reconnecting — $_regDetail'
+        ),
       RegState.failed => (Colors.red, 'Failed: $_regDetail'),
       RegState.unregistering => (Colors.orange, 'Unregistering…'),
       RegState.unregistered => (Colors.grey, 'Not registered'),
@@ -435,7 +445,8 @@ class _PhonePageState extends State<PhonePage>
           Icon(Icons.circle, color: color, size: 12),
           const SizedBox(width: 8),
           Expanded(child: Text(text)),
-          if (_regState == RegState.failed) ...[
+          if (_regState == RegState.failed ||
+              _regState == RegState.reconnecting) ...[
             TextButton(
               onPressed: () => _account?.retryNow(),
               child: const Text('Retry now'),
@@ -451,8 +462,11 @@ class _PhonePageState extends State<PhonePage>
   }
 
   Widget _buildAccountTab() {
+    // Reconnecting counts as registered here: the account object is alive and
+    // the SDK is still working on it, so the credential fields stay locked.
     final registered = _regState == RegState.registered ||
-        _regState == RegState.registering;
+        _regState == RegState.registering ||
+        _regState == RegState.reconnecting;
     return ListView(padding: const EdgeInsets.all(16), children: [
       _statusBanner(),
       const SizedBox(height: 16),

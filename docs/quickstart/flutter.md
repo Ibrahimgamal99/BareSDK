@@ -218,7 +218,13 @@ sdk.events.listen((ev) {
 Registration retries automatically with exponential backoff
 (`BareSDKConfig.regRetry*` or per-account `setRetryPolicy`). On a network
 change (Wi-Fi ↔ cellular) the SDK re-binds transports, re-REGISTERs, and
-re-INVITEs active calls; progress arrives as `NetworkEvent` stages:
+re-INVITEs active calls; progress arrives as `NetworkEvent` stages.
+
+Throughout any of that the account reports `RegState.reconnecting` — a bad link,
+a lost one, a handover, a keepalive probe the proxy stopped answering — so a
+status indicator has one state to render as "Reconnecting…". `RegState.failed`
+is kept for what the SDK has given up on: bad credentials, an exhausted retry
+budget, a retry the app cancelled.
 
 ```dart
 account.setRetryPolicy(initialMs: 2000, maxMs: 60000, backoff: 2.0);
@@ -226,6 +232,11 @@ account.retryNow();     // skip the current backoff
 account.cancelRetry();  // stop retrying
 
 sdk.events.listen((ev) {
+  if (ev is RegStateEvent && ev.state == RegState.reconnecting) {
+    print(ev.retryAttempt > 0
+        ? 'reconnecting — attempt ${ev.retryAttempt} in ${ev.retryDelayMs} ms'
+        : 'reconnecting…');
+  }
   if (ev is NetworkEvent && ev.stage == NetworkStage.callMigrated) {
     print('audio recovered after ${ev.elapsedMs} ms');
   }

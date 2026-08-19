@@ -603,7 +603,9 @@ class Account {
       internal.nativeBindings.baresdk_account_set_retry_policy(
           _handle, initialMs, maxMs, backoff, maxAttempts);
 
-  /// Cancel a pending retry timer (account stays FAILED until [register]).
+  /// Cancel a pending retry timer.  An account that was
+  /// [RegState.reconnecting] reports [RegState.failed] — the SDK is no longer
+  /// recovering it — and stays there until [register].
   int cancelRetry() =>
       internal.nativeBindings.baresdk_account_cancel_retry(_handle);
 
@@ -615,8 +617,9 @@ class Account {
   ///
   /// Worth calling when the app returns to the foreground or wakes on a push:
   /// it answers "is my registration still reachable?" before the user tries to
-  /// place a call.  Nothing is reported on success; on failure the account
-  /// goes to `RegState.failed` and, with
+  /// place a call.  Nothing is reported on success — except when it recovers a
+  /// path we had reported as gone, which comes back as `RegState.registered`.
+  /// On failure the account goes to `RegState.reconnecting` and, with
   /// `BareSDKConfig.keepaliveReregister`, re-registers.
   int keepaliveNow() =>
       internal.nativeBindings.baresdk_account_keepalive_now(_handle);

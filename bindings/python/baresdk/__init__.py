@@ -52,7 +52,7 @@ _VALID_NAMES = frozenset({
     # umbrella
     "reg_state", "call_state",
     # reg sub-states
-    "registering", "registered", "unregistered", "reg_failed",
+    "registering", "registered", "unregistered", "reg_failed", "reconnecting",
     # call sub-states
     "calling", "ringing", "established", "held", "ended", "cancelled", "call_failed",
     # direct events
@@ -218,8 +218,10 @@ def _global_event_cb(ev_ptr, _userdata):
     typ = ev.type
 
     try:
+        # Index by the C enum value, so "reconnecting" sits at 5 where the
+        # header appends it — not next to "failed", where it reads better.
         _REG_STATES  = ("unregistered", "registering", "registered",
-                        "failed", "unregistering")
+                        "failed", "unregistering", "reconnecting")
         _CALL_STATES = ("calling", "ringing", "established", "held",
                         "ended", "cancelled", "failed")
         _PRESENCE    = ("unknown", "open", "closed", "busy")
@@ -490,7 +492,7 @@ def on(name: str):
 
     Valid names:
       reg_state, call_state
-      registering, registered, unregistered, reg_failed
+      registering, registered, unregistered, reg_failed, reconnecting
       calling, ringing, established, held, ended, cancelled, call_failed
       incoming_call, dtmf, sdp_negotiation, sip_trace, media_stats,
       log, registrar_warning, transfer_request, transfer_failed, mwi, message,

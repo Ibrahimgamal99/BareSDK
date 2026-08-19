@@ -30,7 +30,11 @@ static void event_handler(const baresdk_event_t *ev, void *ud)
 	case BARESDK_EV_REG_STATE:
 		if (ev->u.reg.state == BARESDK_REG_REGISTERED)
 			atomic_store(&g_reg_state, 1);
-		else if (ev->u.reg.state == BARESDK_REG_FAILED) {
+		/* RECONNECTING is the same wire failure with a retry armed behind
+		 * it; for a gate test it is just as fatal, and reporting it here
+		 * keeps the failure fast instead of waiting out the timeout. */
+		else if (ev->u.reg.state == BARESDK_REG_FAILED ||
+		         ev->u.reg.state == BARESDK_REG_RECONNECTING) {
 			snprintf(g_reg_err, sizeof(g_reg_err), "%s",
 			         ev->u.reg.error_str ? ev->u.reg.error_str : "?");
 			atomic_store(&g_reg_state, 0);

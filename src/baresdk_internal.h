@@ -143,6 +143,13 @@ struct baresdk_account {
 	baresdk_reg_state_t       reg_state;
 	baresdk_error_t           reg_error;
 	char                      reg_error_str[256];
+	/* True while the SDK is recovering this registration on its own — a
+	 * retry loop, a dead keepalive path, a network handover.  It is what
+	 * makes the recovery's own REGISTER report RECONNECTING instead of
+	 * REGISTERING, so the app's status line does not flicker between the
+	 * two for every attempt.  Cleared on REGISTERED, on a terminal FAILED
+	 * and on unregister. */
+	bool                      reconnecting;
 	uint32_t                  retry_attempt;
 	struct tmr                retry_tmr;
 	/* Registration watchdog — see bsdk_account_watch_registration(). */
@@ -173,6 +180,10 @@ struct baresdk_account {
 	/* ── Keepalive / reachability probe (account.c) ──────────────────── */
 	struct tmr                ka_tmr;
 	bool                      ka_in_flight;
+	/* Last probe went unanswered.  A probe that answers again is the only
+	 * signal that such a path recovered without a re-REGISTER, so it is
+	 * what turns RECONNECTING back into REGISTERED. */
+	bool                      ka_failed;
 };
 
 /* ── Call ──────────────────────────────────────────────────────────────── */
@@ -347,6 +358,19 @@ int bsdk_platform_audio_init(bool activate);
 struct baresdk_account *bsdk_account_find_by_ua(const struct ua *ua);
 void bsdk_account_schedule_retry(struct baresdk_account *acct);
 void bsdk_account_watch_registration(struct baresdk_account *acct);
+
+/* Which state a registration failure should be reported as: RECONNECTING when
+ * the SDK will keep trying by itself, FAILED when it is done.  Updates
+ * acct->reconnecting to match, so call it once per failure, before posting the
+ * event.  re_main thread only. */
+baresdk_reg_state_t bsdk_account_reg_fail_state(struct baresdk_account *acct,
+                                                baresdk_error_t err);
+
+/* Report that a registration is recovering (network handover, link loss):
+ * moves a REGISTERED/REGISTERING account to RECONNECTING and posts the event.
+ * A no-op for an account that is already there, or that the app never asked to
+ * register.  re_main thread only. */
+void bsdk_account_reg_reconnecting(struct baresdk_account *acct);
 
 /* Keepalive / reachability probe — cfg.keepalive_interval.  _arm() on a
  * successful registration, _cancel() when the account stops being

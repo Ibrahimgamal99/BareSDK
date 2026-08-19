@@ -121,7 +121,10 @@ static void event_handler(const baresdk_event_t *ev, void *ud)
 	case BARESDK_EV_REG_STATE:
 		if (ev->u.reg.state == BARESDK_REG_REGISTERED)
 			atomic_store(&g_registered, 1);
-		else if (ev->u.reg.state == BARESDK_REG_FAILED)
+		/* RECONNECTING too: a registration that needs retrying has not
+		 * come up, and this test has nothing to wait for. */
+		else if (ev->u.reg.state == BARESDK_REG_FAILED ||
+		         ev->u.reg.state == BARESDK_REG_RECONNECTING)
 			atomic_store(&g_failed, 1);
 		break;
 

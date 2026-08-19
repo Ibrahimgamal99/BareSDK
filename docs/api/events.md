@@ -86,11 +86,26 @@ Fires on every registration state change.
 | Field | Type | Description |
 |---|---|---|
 | `account` | handle | The account that changed state |
-| `state` | `baresdk_reg_state_t` | `UNREGISTERED`, `REGISTERING`, `REGISTERED`, `FAILED`, `UNREGISTERING` |
+| `state` | `baresdk_reg_state_t` | `UNREGISTERED`, `REGISTERING`, `REGISTERED`, `RECONNECTING`, `FAILED`, `UNREGISTERING` |
 | `error` | `baresdk_error_t` | `BARESDK_OK` when `REGISTERED` |
 | `error_str` | `const char *` | Human-readable error; NULL on OK |
 | `retry_attempt` | `uint32_t` | How many retries so far |
 | `retry_delay_ms` | `uint32_t` | Next retry in this many ms |
+
+`RECONNECTING` vs `FAILED` is the difference between a status line and an error
+dialog:
+
+| State | Meaning | What the app does |
+|---|---|---|
+| `RECONNECTING` | The registration is down and the SDK is getting it back itself — a retry armed after a timeout or 5xx, a keepalive probe the proxy stopped answering, a network handover (Wi-Fi ↔ cellular, VPN, dock). | Show "Reconnecting…". Nothing else. |
+| `FAILED` | The SDK has stopped trying: `BARESDK_ERR_AUTH`, an exhausted `reg_retry_max_attempts`, or a retry the app cancelled. | Surface it — new credentials, or `baresdk_account_retry_now()`. |
+
+A recovery reports `RECONNECTING` once and stays there for every attempt it
+makes, ending at `REGISTERED` or `FAILED`; it does not flip back to
+`REGISTERING` per attempt. `retry_attempt` / `retry_delay_ms` are non-zero on
+the event that announces an armed retry and zero on the rest, so
+`"reconnecting — attempt %u in %.1f s"` renders only when there is a countdown
+to render.
 
 ---
 

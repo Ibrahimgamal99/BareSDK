@@ -11,7 +11,7 @@ Built on [baresip](https://github.com/baresip/baresip) and [libre](https://githu
 | **Transport** | UDP · TCP · TLS · WS · WSS |
 | **Crypto** | SRTP-SDES · DTLS-SRTP |
 | **NAT** | ICE · STUN · TURN |
-| **Mobility** | Network handover (Wi-Fi ↔ 4G/5G) — transport rebind · re-REGISTER · call re-INVITE with media verification |
+| **Mobility** | Network handover (Wi-Fi ↔ 4G/5G) — transport rebind · re-REGISTER · call re-INVITE with media verification · `RECONNECTING` registration state for the whole recovery |
 | **Calls** | Invite · Answer · Hangup · Hold/Resume · DTMF |
 | **Transfer** | Blind (REFER) · Attended (REFER w/ Replaces) |
 | **Messaging** | SIP MESSAGE send/receive |
