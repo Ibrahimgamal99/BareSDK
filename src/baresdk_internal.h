@@ -231,9 +231,25 @@ struct baresdk_call {
 	bool                       xfer_pending;
 	/* Session stats history — maintained by stats.c */
 	float                      stats_mos_min;    /* worst mos_lq this call */
-	float                      stats_mos_sum;    /* running sum for average */
+	/* Running sum for the session average.  Accumulated in the R-factor
+	 * domain for the E-model (MOS is a non-linear function of R, so
+	 * averaging MOS directly is not statistically valid) and in the MOS
+	 * domain for the simplified method, which has no R factor. */
+	float                      stats_q_sum;
+	uint32_t                   stats_mos_n;      /* samples folded into q_sum */
 	uint32_t                   stats_tick;       /* poll counter (1-based) */
 	uint64_t                   stats_call_start; /* tmr_jiffies() at ESTABLISHED */
+	/* Previous RTCP/jitter-buffer counters.  RTCP reports lifetime
+	 * cumulative totals (RFC 3550 A.3); loss *rates* must be differenced
+	 * over the poll window or one early burst depresses the figure for the
+	 * rest of the call and recovery never shows.  Advanced only by the
+	 * polling tick — the sync getter reads the same window read-only. */
+	uint32_t                   stats_prev_tx_sent;
+	int32_t                    stats_prev_tx_lost;
+	uint32_t                   stats_prev_rx_recv;
+	int32_t                    stats_prev_rx_lost;
+	uint32_t                   stats_prev_jb_get;
+	uint32_t                   stats_prev_jb_discard;
 	/* Previous-tick values for quality alert threshold crossing detection */
 	float                      last_mos_lq;
 	float                      last_loss_pct;

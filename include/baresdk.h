@@ -434,20 +434,28 @@ typedef struct {
 	/* ── Packet counters ───────────────────────────────────────────────── */
 	uint32_t packets_sent;
 	uint32_t packets_received;
-	uint32_t packets_lost;      /* TX-side: packets remote did not receive */
-	uint32_t packets_lost_rx;   /* RX-side: packets we did not receive */
+	uint32_t packets_lost;      /* TX-side: packets remote did not receive
+	                               (cumulative for the call, per RFC 3550) */
+	uint32_t packets_lost_rx;   /* RX-side: packets we did not receive
+	                               (cumulative for the call, per RFC 3550) */
 	uint32_t bytes_sent;        /* total RTP bytes sent */
 	uint32_t bytes_received;    /* total RTP bytes received */
 	uint32_t tx_errors;         /* RTP transmit errors */
 	uint32_t rx_errors;         /* RTP receive errors */
 
 	/* ── Loss ──────────────────────────────────────────────────────────── */
-	float    loss_pct;          /* TX-side loss % */
-	float    loss_pct_rx;       /* RX-side loss % */
+	/* Rates over the last poll window (stats_interval_ms), NOT lifetime
+	 * averages — a rate computed over the whole call can never recover
+	 * from an early burst.  The packets_lost* counters above stay
+	 * cumulative; these are the derived rates. */
+	float    loss_pct;          /* TX-side loss % this window */
+	float    loss_pct_rx;       /* RX-side loss % this window */
 
 	/* ── Delay / jitter ────────────────────────────────────────────────── */
-	float    jitter_ms;         /* RX interarrival jitter (what we observe) */
-	float    tx_jitter_ms;      /* TX interarrival jitter (what remote reports) */
+	float    jitter_ms;         /* RX interarrival jitter ms (what we observe),
+	                               RFC 3550 6.4.1 */
+	float    tx_jitter_ms;      /* TX interarrival jitter ms (what remote
+	                               reports in its RR) */
 	float    rtt_ms;            /* round-trip time ms */
 
 	/* ── Jitter buffer ─────────────────────────────────────────────────── */
@@ -469,6 +477,13 @@ typedef struct {
 	uint32_t avg_bandwidth_kbps_rx; /* session-average RX bitrate (kbps) */
 
 	/* ── MOS scores — zero when RTCP not yet available ─────────────────── */
+	/* LQ is listening quality: the received signal alone, no delay term.
+	 * CQ is conversational quality: LQ plus the ITU-T G.107 delay
+	 * impairment Id, computed from RTT/2 plus jitter buffer depth.
+	 * CQ <= LQ always.  Each direction is scored from its own loss and
+	 * its own jitter.  The RX scores use effective loss (network loss
+	 * plus jitter buffer discards); the TX scores cannot, because the
+	 * peer's jitter buffer is not visible from here. */
 	float    mos_lq;            /* TX-path listening quality  (1.0–4.5) */
 	float    mos_cq;            /* TX-path conversational quality (1.0–4.5) */
 	float    mos_lq_rx;         /* RX-path listening quality (patient → you) */
@@ -495,7 +510,9 @@ typedef struct {
 
 	/* ── Session history — populated after first stats tick ────────────── */
 	float    mos_lq_min;        /* worst mos_lq tick this call */
-	float    mos_lq_avg;        /* session average mos_lq */
+	float    mos_lq_avg;        /* session average mos_lq — averaged in the
+	                               R-factor domain and converted once, since
+	                               MOS is non-linear in R */
 	uint32_t stats_tick;        /* which poll this is (1-based) */
 	uint64_t call_duration_ms;  /* elapsed ms since CALL_ESTABLISHED */
 	bool     is_final;          /* true on the last event before teardown */
@@ -1925,6 +1942,16 @@ BARESDK_EXPORT int baresdk_call_get_info(baresdk_call_handle_t  call,
  * Synchronously retrieve current stats for a call.
  * Also delivered automatically via BARESDK_EV_MEDIA_STATS if
  * cfg.stats_interval_ms > 0.
+ *
+ * `out` is zeroed before anything else, so it is fully defined whatever this
+ * returns: on an error every field reads 0, never uninitialised garbage.
+ *
+ * Note which numbers need RTCP to exist at all.  rtt_ms comes only from the
+ * peer's receiver report (RFC 3550 LSR/DLSR), so it reads 0.0 until the first
+ * RR carrying both arrives — typically one RTCP interval into the call, and
+ * for the whole call against a peer that sends no RTCP.  0.0 there means
+ * "not measured yet", not "zero delay".  The only fields that are ever NaN
+ * are audio_level_dbov and mic_level_dbov, which use NaN for "unavailable".
  */
 BARESDK_EXPORT int baresdk_call_get_stats(baresdk_call_handle_t     call,
                             baresdk_ev_media_stats_t *out);

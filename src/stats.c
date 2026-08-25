@@ -4,19 +4,40 @@
  * A tmr fires on re_main every cfg->stats_interval_ms. For each active call
  * it reads RTCP stats from the audio stream and posts BARESDK_EV_MEDIA_STATS.
  *
- * E-model MOS (ITU-T G.107):
- *   Ta     = RTT/2 + 2·jitter_ms   (one-way delay estimate incl. jitter buffer)
+ * ── Loss rates are windowed, not cumulative ──────────────────────────────
+ * RTCP carries lifetime cumulative counters (RFC 3550 A.3), the same
+ * convention as WebRTC getStats() and PJSIP, both of which expect the
+ * application to difference consecutive samples to obtain a rate.  We do
+ * that differencing here: packets_lost/packets_lost_rx stay cumulative (they
+ * are counters and documented as such), while loss_pct/loss_pct_rx are rates
+ * over the last poll window.  Feeding a lifetime average into the E-model
+ * would let one early burst depress MOS for the rest of the call with no
+ * way to recover.
+ *
+ * ── E-model (ITU-T G.107 narrowband, G.107.1 wideband) ───────────────────
+ *   Ie-eff = Ie + (95-Ie)·Ppl/(Ppl+Bpl)      per-codec, ITU-T G.113
+ *   R-LQ   = Ro - Ie-eff                     listening quality: no delay term
  *   Id     = 0.024·Ta + 0.11·(Ta-177.3)·[Ta>177.3]
- *   Ie-eff = Ie + (95-Ie)·Ppl/(Ppl+Bpl)   per-codec per ITU-T G.113 Appendix I
- *   R      = 93.2 - Id - Ie-eff    (clamped [0,100])
- *   MOS    = 1 + 0.035·R + 7e-6·R·(R-60)·(100-R)
+ *   R-CQ   = R-LQ - Id                       conversational: delay included
+ *   MOS    = 1 + 0.035·R' + 7e-6·R'·(R'-60)·(100-R'),  R' = R·100/Rmax
  *
- * Simplified MOS (Telchemy/CISCO standard form):
- *   MOS = 4.5 - 0.09·loss_pct - 0.0009·jitter_ms - 0.0005·RTT
- *         (0.0005·RTT = 0.001 × RTT/2 one-way delay)
+ * MOS-LQ excludes delay by definition — it scores the received signal alone.
+ * MOS-CQ is the one that carries Id.  Ta is a real one-way delay estimate:
+ * network one-way (RTT/2) plus the jitter buffer depth actually in use.
  *
- * MOS-CQ (conversational quality, ITU-T G.114):
- *   Additional penalty for RTT > 300 ms (150 ms one-way).
+ * Ro/Rmax are 93.2/100 narrowband and 129/129 wideband.  The wideband
+ * normalisation is checked against ITU's own reference calculator, which
+ * reports R=128.8 -> MOS-CQE-wb=4.50.
+ *
+ * Ppl is *effective* loss — network loss plus packets the jitter buffer
+ * threw away (late/overflow/flush).  A packet discarded by the buffer is as
+ * gone as one lost in the network, and omitting it is the single largest
+ * source of MOS over-estimation in a jittery call.  This only applies to the
+ * RX direction: the peer's jitter buffer is not observable from here.
+ *
+ * Simplified MOS (Telchemy/Cisco standard form):
+ *   MOS-LQ = 4.5 - 0.09·loss_pct - 0.0009·jitter_ms
+ *   MOS-CQ = MOS-LQ - 0.0005·RTT     (= 0.001 per ms of one-way delay)
  */
 
 #include <math.h>
@@ -24,89 +45,177 @@
 
 /* ── MOS calculations ───────────────────────────────────────────────────── */
 
+/** Audio bandwidth class — selects the narrowband or wideband R scale. */
+typedef enum {
+	BSDK_BW_NARROW,   /**< ITU-T G.107:   Ro = 93.2, R in [0,100] */
+	BSDK_BW_WIDE      /**< ITU-T G.107.1: Ro = 129,  R in [0,129] */
+} bsdk_bw_class_t;
+
 /* ITU-T G.113 Appendix I codec parameters: Ie (baseline impairment at 0 loss)
  * and Bpl (packet-loss robustness factor). */
-typedef struct { float ie; float bpl; } codec_params_t;
+typedef struct {
+	float           ie;
+	float           bpl;
+	bsdk_bw_class_t bw;
+} codec_params_t;
 
-static codec_params_t codec_emodel_params(const char *name, uint32_t bitrate_kbps)
+static codec_params_t codec_emodel_params(const char *name, uint32_t srate,
+                                          uint32_t bitrate_kbps)
 {
-	if (!name)                                                return (codec_params_t){ 0.f,  4.3f};
+	/* G.711 is the narrowband reference codec: Ie = 0 by definition. */
+	if (!name)
+		return (codec_params_t){0.f, 4.3f, BSDK_BW_NARROW};
 	if (!str_casecmp(name, "PCMU") || !str_casecmp(name, "PCMA"))
-	                                                          return (codec_params_t){ 0.f,  4.3f};
-	if (!str_casecmp(name, "G722"))                           return (codec_params_t){ 5.f,  7.0f};
-	if (!str_casecmp(name, "G729"))                           return (codec_params_t){11.f, 19.0f};
-	if (!str_casecmp(name, "G723"))                           return (codec_params_t){15.f, 16.0f};
+		return (codec_params_t){0.f, 4.3f, BSDK_BW_NARROW};
+	if (!str_casecmp(name, "G729"))
+		return (codec_params_t){11.f, 19.0f, BSDK_BW_NARROW};
+	if (!str_casecmp(name, "G723"))
+		return (codec_params_t){15.f, 16.0f, BSDK_BW_NARROW};
+
+	/* G.722 is the *wideband* reference codec, exactly as G.711 is the
+	 * narrowband one: Ie,wb = 0 on the G.107.1 scale.  Scoring it as a
+	 * narrowband codec with an invented Ie penalty (as this used to) both
+	 * penalises it for nothing and caps it at the narrowband ceiling. */
+	if (!str_casecmp(name, "G722"))
+		return (codec_params_t){0.f, 4.3f, BSDK_BW_WIDE};
+
 	if (!str_casecmp(name, "opus")) {
-		/* Opus Ie varies by bitrate per 2020 Opus E-model research paper */
-		if (bitrate_kbps <= 8)  return (codec_params_t){14.f, 12.0f};
-		if (bitrate_kbps <= 12) return (codec_params_t){11.f, 14.0f};
-		return                         (codec_params_t){ 7.f, 14.0f};
+		/* Opus Ie/Bpl are approximations from the published instrumental
+		 * derivations (Voznak et al.); ITU-T G.113 does not tabulate
+		 * Opus.  Treat as indicative, not normative. */
+		bsdk_bw_class_t bw = (srate >= 16000) ? BSDK_BW_WIDE
+		                                      : BSDK_BW_NARROW;
+		if (bitrate_kbps <= 8)  return (codec_params_t){14.f, 12.0f, bw};
+		if (bitrate_kbps <= 12) return (codec_params_t){11.f, 14.0f, bw};
+		return (codec_params_t){7.f, 14.0f, bw};
 	}
-	return (codec_params_t){0.f, 4.3f};
+
+	return (codec_params_t){0.f, 4.3f, (srate >= 16000) ? BSDK_BW_WIDE
+	                                                    : BSDK_BW_NARROW};
 }
 
-static float mos_emodel(float loss_pct, float jitter_ms, float rtt_ms,
-                         float ie_codec, float bpl)
+/** Listening- and conversational-quality scores from one sample. */
+typedef struct {
+	float lq;   /**< MOS-LQ (1.0 .. 4.5) */
+	float cq;   /**< MOS-CQ (1.0 .. 4.5) */
+	float q;    /**< quantity to average over the session (see stats_q_sum) */
+} mos_pair_t;
+
+/* Convert an R factor to MOS.  The G.107 polynomial is defined on a 0..100
+ * scale, so the wideband R (0..129) is normalised onto it first. */
+static float r_to_mos(float R, bsdk_bw_class_t bw)
 {
-	float Ta    = rtt_ms * 0.5f + 2.0f * jitter_ms;
-	float Id    = 0.024f * Ta
-	            + 0.11f * (Ta - 177.3f) * (Ta > 177.3f ? 1.f : 0.f);
+	float rmax = (bw == BSDK_BW_WIDE) ? 129.f : 100.f;
+	float r    = R * 100.f / rmax;
+
+	if (r <= 0.f)   return 1.0f;
+	if (r >= 100.f) return 4.5f;
+
+	return 1.0f + 0.035f * r + 7e-6f * r * (r - 60.f) * (100.f - r);
+}
+
+/**
+ * E-model score.
+ *
+ * @param loss_pct  effective loss % over the poll window (network +, for the
+ *                  RX direction, jitter buffer discards)
+ * @param jb_ms     jitter buffer depth in ms on the path being scored
+ * @param rtt_ms    round-trip time in ms
+ */
+static mos_pair_t mos_emodel(float loss_pct, float jb_ms, float rtt_ms,
+                             codec_params_t cp)
+{
+	float Ro = (cp.bw == BSDK_BW_WIDE) ? 129.f : 93.2f;
+	mos_pair_t out;
+
 	/* ITU-T G.107: Ie-eff = Ie + (95-Ie) * Ppl / (Ppl + Bpl) */
-	float Ie_eff = ie_codec + (95.f - ie_codec) * loss_pct / (loss_pct + bpl);
-	float R = 93.2f - Id - Ie_eff;
-	if (R < 0.f)   R = 0.f;
-	if (R > 100.f) R = 100.f;
-	return 1.0f + 0.035f * R + 7e-6f * R * (R - 60.f) * (100.f - R);
+	float Ie_eff = cp.ie
+	             + (95.f - cp.ie) * loss_pct / (loss_pct + cp.bpl);
+
+	/* Listening quality carries no delay impairment. */
+	float R_lq = Ro - Ie_eff;
+
+	/* Conversational quality adds Id from the one-way delay Ta. */
+	float Ta = rtt_ms * 0.5f + jb_ms;
+	float Id = 0.024f * Ta
+	         + 0.11f * (Ta - 177.3f) * (Ta > 177.3f ? 1.f : 0.f);
+	if (Id < 0.f)
+		Id = 0.f;
+
+	out.lq = r_to_mos(R_lq, cp.bw);
+	out.cq = r_to_mos(R_lq - Id, cp.bw);
+	out.q  = R_lq;   /* average in the R domain — MOS is non-linear in R */
+	return out;
 }
 
-static float mos_simplified(float loss_pct, float jitter_ms, float rtt_ms)
+static mos_pair_t mos_simplified(float loss_pct, float jitter_ms, float rtt_ms)
 {
-	/* Telchemy/CISCO standard simplified VoIP MOS:
-	 *   -0.09  per 1% packet loss
+	/* Telchemy/Cisco simplified VoIP MOS:
+	 *   -0.09   per 1% packet loss
 	 *   -0.0009 per ms jitter
-	 *   -0.0005 per ms RTT  (= -0.001 per ms one-way delay, RTT/2)  */
-	float m = 4.5f
-	        - 0.09f   * loss_pct
-	        - 0.0009f * jitter_ms
-	        - 0.0005f * rtt_ms;
-	if (m < 1.0f) m = 1.0f;
-	if (m > 4.5f) m = 4.5f;
-	return m;
+	 *   -0.0005 per ms RTT  (= -0.001 per ms one-way delay, RTT/2)
+	 * The RTT term is a delay impairment, so it belongs to CQ only. */
+	mos_pair_t out;
+	float lq = 4.5f - 0.09f * loss_pct - 0.0009f * jitter_ms;
+	float cq = lq - 0.0005f * rtt_ms;
+
+	if (lq < 1.0f) lq = 1.0f;
+	if (lq > 4.5f) lq = 4.5f;
+	if (cq < 1.0f) cq = 1.0f;
+	if (cq > 4.5f) cq = 4.5f;
+
+	out.lq = lq;
+	out.cq = cq;
+	out.q  = lq;   /* no R factor — average in the MOS domain */
+	return out;
 }
 
-static float calc_mos(float loss_pct, float jitter_ms, float rtt_ms,
-                       baresdk_mos_method_t method, codec_params_t cp)
+static mos_pair_t calc_mos(float loss_pct, float jitter_ms, float jb_ms,
+                           float rtt_ms, baresdk_mos_method_t method,
+                           codec_params_t cp)
 {
 	if (method == BARESDK_MOS_SIMPLIFIED)
 		return mos_simplified(loss_pct, jitter_ms, rtt_ms);
-	return mos_emodel(loss_pct, jitter_ms, rtt_ms, cp.ie, cp.bpl);
+	return mos_emodel(loss_pct, jb_ms, rtt_ms, cp);
 }
 
-static float calc_mos_cq(float mos_lq, float rtt_ms)
+/* ── Counter differencing ────────────────────────────────────────────────── */
+
+/* Delta between two cumulative counters, clamped at zero.  A negative delta
+ * means the counters were reset under us (SSRC change, stream restart after
+ * an ICE restart or re-INVITE); report nothing rather than a wild value and
+ * let the next window re-establish the baseline. */
+static uint32_t counter_delta(uint32_t now, uint32_t prev)
 {
-	/* ITU-T G.114: 150 ms one-way (300 ms RTT) is the practical limit for
-	 * conversational quality. Apply 0.5 MOS penalty per extra 300 ms RTT. */
-	float penalty = 0.0f;
-	if (rtt_ms > 300.f)
-		penalty = 0.5f * (rtt_ms - 300.f) / 300.f;
-	float cq = mos_lq - penalty;
-	if (cq < 1.0f) cq = 1.0f;
-	return cq;
+	return (now >= prev) ? (now - prev) : 0u;
 }
 
-/* ── Shared stats population ─────────────────────────────────────────────── */
+static uint32_t counter_delta_i(int32_t now, int32_t prev)
+{
+	/* RTCP lost counts are signed and may legitimately decrease when
+	 * duplicates arrive after a reordering burst (RFC 3550 A.3). */
+	return (now > prev) ? (uint32_t)(now - prev) : 0u;
+}
+
+/* ── Shared stats population ──────────────────────────────────── */
 
 /* Fill all numeric/address fields of *s from the live audio stream.
  * Does NOT set s->codec_name (pointer lifetime differs per caller).
+ *
+ * @param advance  true on the polling tick, which owns the loss window and
+ *                 rolls it forward; false for the sync getter, which reads
+ *                 the same window without consuming it.
+ *
  * Returns the aucodec so the caller can set codec_name appropriately. */
 static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
                                                struct baresdk_call *lc,
                                                struct audio *au,
-                                               struct stream *strm)
+                                               struct stream *strm,
+                                               bool advance)
 {
 	s->call = lc;
 
-	/* ── Packet counters ─────────────────────────────────────────────── */
+	/* ── Packet counters ─────────────────────────────────────── */
 	s->packets_sent      = stream_metric_get_tx_n_packets(strm);
 	s->packets_received  = stream_metric_get_rx_n_packets(strm);
 	s->bytes_sent        = stream_metric_get_tx_n_bytes(strm);
@@ -114,13 +223,13 @@ static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
 	s->tx_errors         = stream_metric_get_tx_n_err(strm);
 	s->rx_errors         = stream_metric_get_rx_n_err(strm);
 
-	/* ── Bandwidth ───────────────────────────────────────────────────── */
+	/* ── Bandwidth ─────────────────────────────────────────── */
 	s->bandwidth_kbps_tx     = stream_metric_get_tx_bitrate(strm) / 1000;
 	s->bandwidth_kbps_rx     = stream_metric_get_rx_bitrate(strm) / 1000;
 	s->avg_bandwidth_kbps_tx = (uint32_t)(stream_metric_get_tx_avg_bitrate(strm) / 1000.0);
 	s->avg_bandwidth_kbps_rx = (uint32_t)(stream_metric_get_rx_avg_bitrate(strm) / 1000.0);
 
-	/* ── Codec (needed before RTCP for clock-rate-based jitter conversion) */
+	/* ── Codec ───────────────────────────────────────────── */
 	const struct aucodec *ac = audio_codec(au, true);
 	if (ac) {
 		s->codec_clock_rate  = ac->crate;
@@ -128,51 +237,9 @@ static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
 		s->codec_channels    = ac->ch;
 	}
 
-	/* ── RTCP (may be absent early in a call; leave zeros if so) ─────── */
-	s->mos_method = g_bsdk.cfg.mos_method;
-
-	const struct rtcp_stats *rs = stream_rtcp_stats(strm);
-	if (rs) {
-		/* rtt is in µs — confirmed by libre/src/rtp/rtcp.h */
-		s->rtt_ms = (float)rs->rtt / 1000.f;
-
-		/* jit is in RTP timestamp units (RFC 3550 §6.4.1).
-		 * Convert: jit_ms = jit_ts * 1000 / clock_rate
-		 * Source: baresip/src/rtpstat.c */
-		uint32_t clock = s->codec_clock_rate > 0 ? s->codec_clock_rate : 8000u;
-		s->jitter_ms    = (float)rs->rx.jit * 1000.f / (float)clock;
-		s->tx_jitter_ms = (float)rs->tx.jit * 1000.f / (float)clock;
-
-		/* TX loss: lost ⊂ sent, so denominator = rs->tx.sent.
-		 * rs->tx.lost is signed — can go negative on seq reorder. */
-		int32_t raw_tx_lost = (int32_t)rs->tx.lost;
-		s->packets_lost = (raw_tx_lost > 0) ? (uint32_t)raw_tx_lost : 0u;
-		s->loss_pct = rs->tx.sent > 0
-		            ? (float)s->packets_lost * 100.f / (float)rs->tx.sent
-		            : 0.f;
-
-		/* RX loss: rs->rx.lost (RTCP) only valid after ~50 packets.
-		 * Gate to avoid early-call denominator mismatch. */
-		bool rtcp_stable = (s->packets_received > 50) && (rs->rx.lost >= 0);
-		int32_t raw_rx_lost = (int32_t)rs->rx.lost;
-		s->packets_lost_rx = (rtcp_stable && raw_rx_lost > 0)
-		                   ? (uint32_t)raw_rx_lost : 0u;
-		uint32_t total_rx  = s->packets_received + s->packets_lost_rx;
-		s->loss_pct_rx = (rtcp_stable && total_rx > 0)
-		               ? (float)s->packets_lost_rx * 100.f / (float)total_rx
-		               : 0.f;
-
-		codec_params_t cp = codec_emodel_params(ac ? ac->name : NULL,
-		                                        s->avg_bandwidth_kbps_tx);
-		s->mos_lq    = calc_mos(s->loss_pct,    s->jitter_ms, s->rtt_ms,
-		                        g_bsdk.cfg.mos_method, cp);
-		s->mos_cq    = calc_mos_cq(s->mos_lq,    s->rtt_ms);
-		s->mos_lq_rx = calc_mos(s->loss_pct_rx, s->jitter_ms, s->rtt_ms,
-		                        g_bsdk.cfg.mos_method, cp);
-		s->mos_cq_rx = calc_mos_cq(s->mos_lq_rx, s->rtt_ms);
-	}
-
-	/* ── Jitter buffer ───────────────────────────────────────────────── */
+	/* ── Jitter buffer (read before RTCP: its discard count feeds Ppl) ── */
+	uint32_t jb_discard_total = 0;
+	uint32_t jb_get_total     = 0;
 	struct jbuf_stat jb;
 	if (stream_jbuf_stats(strm, &jb) == 0) {
 		s->jitter_buffer_ms        = jb.c_delay;
@@ -185,15 +252,130 @@ static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
 		s->plc_frames = jb.n_lost;
 		s->plc_ratio  = jb.n_get > 0
 		              ? (float)jb.n_lost / (float)jb.n_get : 0.f;
+
+		/* Frames the buffer threw away rather than played out.  These
+		 * never reach the ear, so to the E-model they are loss. */
+		jb_discard_total = jb.n_late + jb.n_overflow + jb.n_flush;
+		jb_get_total     = jb.n_get;
 	}
 
-	/* ── Audio levels (dBov) — computed from PCM in media_tap.c ────── */
+	/* ── RTCP (may be absent early in a call; leave zeros if so) ─── */
+	s->mos_method = g_bsdk.cfg.mos_method;
+
+	const struct rtcp_stats *rs = stream_rtcp_stats(strm);
+	if (rs) {
+		/* rtt and jit are both in microseconds.  libre has already done
+		 * the RTP-timestamp-to-time conversion using the codec clock
+		 * rate baresip handed it (re/src/rtp/sess.c: rtcp_stats() and
+		 * handle_rr_block(), both `1000000 * jitter / srate`), so the
+		 * only thing left to do is us -> ms.  Dividing by the clock
+		 * rate a second time inflated jitter by 1e6/crate — 125x at
+		 * 8 kHz — which pinned MOS at 1.0 and made the jitter alert
+		 * fire permanently. */
+		s->rtt_ms       = (float)rs->rtt / 1000.f;
+		s->jitter_ms    = (float)rs->rx.jit / 1000.f;
+		s->tx_jitter_ms = (float)rs->tx.jit / 1000.f;
+
+		/* Cumulative counters stay cumulative — same convention as
+		 * WebRTC getStats() and PJSIP. */
+		int32_t cum_tx_lost = (int32_t)rs->tx.lost;
+		int32_t cum_rx_lost = (int32_t)rs->rx.lost;
+		s->packets_lost    = cum_tx_lost > 0 ? (uint32_t)cum_tx_lost : 0u;
+		s->packets_lost_rx = cum_rx_lost > 0 ? (uint32_t)cum_rx_lost : 0u;
+
+		/* ── TX loss rate over the poll window ──────────────── */
+		/* Denominator is what we sent in the window; the peer's RR is
+		 * the only source for the numerator and can lag it by up to one
+		 * RTCP interval, so a burst shows up slightly smeared. */
+		uint32_t d_tx_sent = counter_delta(rs->tx.sent,
+		                                   lc->stats_prev_tx_sent);
+		uint32_t d_tx_lost = counter_delta_i(cum_tx_lost,
+		                                     lc->stats_prev_tx_lost);
+		if (d_tx_lost > d_tx_sent)
+			d_tx_lost = d_tx_sent;
+		s->loss_pct = d_tx_sent > 0
+		            ? (float)d_tx_lost * 100.f / (float)d_tx_sent : 0.f;
+
+		/* ── RX loss rate over the poll window ──────────────── */
+		/* rs->rx.sent is the RTCP source's own received count — the
+		 * very counter rtp_source_calc_lost() differences against, so
+		 * received + lost is exactly `expected`.  Using the stream
+		 * metric here instead mixed two counters that do not agree. */
+		uint32_t d_rx_recv = counter_delta(rs->rx.sent,
+		                                   lc->stats_prev_rx_recv);
+		uint32_t d_rx_lost = counter_delta_i(cum_rx_lost,
+		                                     lc->stats_prev_rx_lost);
+		uint32_t d_rx_expected = d_rx_recv + d_rx_lost;
+		s->loss_pct_rx = d_rx_expected > 0
+		               ? (float)d_rx_lost * 100.f / (float)d_rx_expected
+		               : 0.f;
+
+		/* ── Jitter buffer discard rate over the window ───────── */
+		uint32_t d_jb_disc = counter_delta(jb_discard_total,
+		                                   lc->stats_prev_jb_discard);
+		uint32_t d_jb_get  = counter_delta(jb_get_total,
+		                                   lc->stats_prev_jb_get);
+		uint32_t d_jb_total = d_jb_get + d_jb_disc;
+		float discard_pct = d_jb_total > 0
+		                  ? (float)d_jb_disc * 100.f / (float)d_jb_total
+		                  : 0.f;
+
+		/* Effective loss drives Ppl on the RX path only — our jitter
+		 * buffer is ours; the peer's is not observable from here. */
+		float eff_loss_rx = s->loss_pct_rx + discard_pct;
+		if (eff_loss_rx > 100.f)
+			eff_loss_rx = 100.f;
+
+		codec_params_t cp = codec_emodel_params(ac ? ac->name : NULL,
+		                                        s->codec_sample_rate,
+		                                        s->avg_bandwidth_kbps_tx);
+
+		/* Each direction is scored from its own loss and its own jitter.
+		 * Pairing TX loss with RX jitter (as this used to) described a
+		 * path that does not exist. */
+
+		/* Far end: what the peer hears.  Their buffer depth is not
+		 * reported, so estimate it from the jitter they report — an
+		 * adaptive buffer tracks roughly twice the jitter estimate. */
+		float peer_jb_ms = 2.0f * s->tx_jitter_ms;
+		mos_pair_t tx = calc_mos(s->loss_pct, s->tx_jitter_ms,
+		                         peer_jb_ms, s->rtt_ms,
+		                         g_bsdk.cfg.mos_method, cp);
+		s->mos_lq = tx.lq;
+		s->mos_cq = tx.cq;
+
+		/* Near end: what we hear.  Real measured buffer depth. */
+		mos_pair_t rx = calc_mos(eff_loss_rx, s->jitter_ms,
+		                         (float)s->jitter_buffer_ms, s->rtt_ms,
+		                         g_bsdk.cfg.mos_method, cp);
+		s->mos_lq_rx = rx.lq;
+		s->mos_cq_rx = rx.cq;
+
+		if (advance) {
+			lc->stats_prev_tx_sent    = rs->tx.sent;
+			lc->stats_prev_tx_lost    = cum_tx_lost;
+			lc->stats_prev_rx_recv    = rs->rx.sent;
+			lc->stats_prev_rx_lost    = cum_rx_lost;
+			lc->stats_prev_jb_discard = jb_discard_total;
+			lc->stats_prev_jb_get     = jb_get_total;
+
+			/* Session history folds in the R factor, not the MOS:
+			 * MOS is a non-linear function of R, so averaging MOS
+			 * across ticks is not statistically meaningful. */
+			lc->stats_q_sum += tx.q;
+			lc->stats_mos_n++;
+			if (lc->stats_mos_min == 0.f || tx.lq < lc->stats_mos_min)
+				lc->stats_mos_min = tx.lq;
+		}
+	}
+
+	/* ── Audio levels (dBov) — computed from PCM in media_tap.c ──── */
 	uint32_t rx_bits = re_atomic_rlx(&lc->rx_level_bits);
 	memcpy(&s->audio_level_dbov, &rx_bits, 4);
 	uint32_t tx_bits = re_atomic_rlx(&lc->tx_level_bits);
 	memcpy(&s->mic_level_dbov, &tx_bits, 4);
 
-	/* ── Stream identity ─────────────────────────────────────────────── */
+	/* ── Stream identity ───────────────────────────────────── */
 	struct rtp_sock *rsock = stream_rtp_sock(strm);
 	if (rsock)
 		s->ssrc_tx = rtp_sess_ssrc(rsock);
@@ -206,6 +388,25 @@ static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
 		re_snprintf(s->remote_addr, sizeof(s->remote_addr), "%J", raddr);
 
 	return ac;
+}
+
+/* Session-average MOS.  The running sum is in the R domain for the E-model,
+ * so the conversion to MOS happens once, on the mean — not per tick. */
+static float session_mos_avg(const struct baresdk_call *lc,
+                             const baresdk_ev_media_stats_t *s)
+{
+	if (!lc->stats_mos_n)
+		return 0.f;
+
+	float mean = lc->stats_q_sum / (float)lc->stats_mos_n;
+
+	if (g_bsdk.cfg.mos_method == BARESDK_MOS_SIMPLIFIED)
+		return mean;   /* already a MOS */
+
+	codec_params_t cp = codec_emodel_params(s->codec_name,
+	                                        s->codec_sample_rate,
+	                                        s->avg_bandwidth_kbps_tx);
+	return r_to_mos(mean, cp.bw);
 }
 
 /* ── Quality alert helper ────────────────────────────────────────────────── */
@@ -248,22 +449,18 @@ static void collect_call_stats(struct baresdk_call *lc)
 	qev->ev.type = BARESDK_EV_MEDIA_STATS;
 	baresdk_ev_media_stats_t *s = &qev->ev.u.stats;
 
-	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm);
+	/* advance=true: this is the tick that owns the loss window. */
+	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm, true);
 	if (ac) {
 		str_ncpy(qev->buf, ac->name, sizeof(qev->buf));
 		s->codec_name = qev->buf;
 	}
 
-	/* Session history */
+	/* Session history — min/sum are folded in by fill_audio_stats(), which
+	 * is where the R factor behind the score is still in scope. */
 	lc->stats_tick++;
-	if (s->mos_lq > 0.f) {
-		if (lc->stats_mos_min == 0.f || s->mos_lq < lc->stats_mos_min)
-			lc->stats_mos_min = s->mos_lq;
-		lc->stats_mos_sum += s->mos_lq;
-	}
 	s->mos_lq_min      = lc->stats_mos_min;
-	s->mos_lq_avg      = lc->stats_tick > 0
-	                   ? lc->stats_mos_sum / (float)lc->stats_tick : 0.f;
+	s->mos_lq_avg      = session_mos_avg(lc, s);
 	s->stats_tick      = lc->stats_tick;
 	s->call_duration_ms = lc->stats_call_start
 	                    ? (tmr_jiffies() - lc->stats_call_start) : 0u;
@@ -327,7 +524,10 @@ void bsdk_stats_collect_final(struct baresdk_call *lc)
 	qev->ev.type = BARESDK_EV_MEDIA_STATS;
 	baresdk_ev_media_stats_t *s = &qev->ev.u.stats;
 
-	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm);
+	/* advance=false: the teardown snapshot reports the window since the
+	 * last tick but must not fold itself into the session average, which
+	 * belongs to the polling cadence. */
+	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm, false);
 	if (ac) {
 		str_ncpy(qev->buf, ac->name, sizeof(qev->buf));
 		s->codec_name = qev->buf;
@@ -335,8 +535,7 @@ void bsdk_stats_collect_final(struct baresdk_call *lc)
 
 	s->is_final        = true;
 	s->mos_lq_min      = lc->stats_mos_min;
-	s->mos_lq_avg      = lc->stats_tick > 0
-	                   ? lc->stats_mos_sum / (float)lc->stats_tick : 0.f;
+	s->mos_lq_avg      = session_mos_avg(lc, s);
 	s->stats_tick      = lc->stats_tick;
 	s->call_duration_ms = lc->stats_call_start
 	                    ? (tmr_jiffies() - lc->stats_call_start) : 0u;
@@ -400,9 +599,11 @@ static void getstats_fn(void *arg)
 	if (!strm) { ctx->result = ENOENT; return; }
 
 	baresdk_ev_media_stats_t *s = ctx->out;
-	memset(s, 0, sizeof(*s));
 
-	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm);
+	/* advance=false: a getter must not consume the polling tick's loss
+	 * window, or an app that polls between ticks would zero the rates the
+	 * next MEDIA_STATS event is meant to report. */
+	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm, false);
 	/* codec_name points directly into baresip's stable registered-codec list */
 	if (ac)
 		s->codec_name = ac->name;
@@ -415,8 +616,7 @@ static void getstats_fn(void *arg)
 	 * getter reported 0 for all of them at every point in a call, however
 	 * many ticks had already run. */
 	s->mos_lq_min       = lc->stats_mos_min;
-	s->mos_lq_avg       = lc->stats_tick > 0
-	                    ? lc->stats_mos_sum / (float)lc->stats_tick : 0.f;
+	s->mos_lq_avg       = session_mos_avg(lc, s);
 	s->stats_tick       = lc->stats_tick;
 	s->call_duration_ms = lc->stats_call_start
 	                    ? (tmr_jiffies() - lc->stats_call_start) : 0u;
@@ -429,6 +629,14 @@ int baresdk_call_get_stats(baresdk_call_handle_t call,
                             baresdk_ev_media_stats_t *out)
 {
 	if (!call || !out) return BARESDK_ERR_INVAL;
+
+	/* Zero before anything can fail.  Every early return below — no call
+	 * object, no audio, no stream, or a dispatch that never runs — used to
+	 * leave *out exactly as the caller passed it, so a caller with a stack
+	 * struct that skips the return code read uninitialised memory: floats
+	 * come back as garbage or NaN, not as the documented zeros. */
+	memset(out, 0, sizeof(*out));
+
 	getstats_ctx_t ctx = {.lc = call, .out = out, .result = 0};
 	int err = bsdk_dispatch_sync(getstats_fn, &ctx);
 	return err ? err : ctx.result;
