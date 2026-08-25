@@ -34,36 +34,14 @@ jobs:
         run: bash scripts/build-linux.sh
 
       - name: Generate CFFI header
+        # Shared with bindings/python/build.sh so the wheels users install
+        # cannot drift from locally built ones.  This step used to be a
+        # near-copy of that pipeline missing -DBARESDK_NO_PACKED_ENUM, which
+        # widened baresdk_aec_mode_t from 1 to 4 bytes in the cffi view and
+        # mis-offset every baresdk_config_t field after cfg.aec_mode.
         run: |
-          cd bindings/python
-          gcc -E \
-              -D'__extension__=' \
-              -D'__attribute__(x)=' \
-              -D'__restrict=' \
-              -D'__inline__=inline' \
-              -D'inline=' \
-              ../../include/baresdk.h \
-              | awk -v src="../../include/baresdk.h" '
-                  /^# [0-9]+ / {
-                      match($0, /"([^"]+)"/, a)
-                      in_sdk = (a[1] == src)
-                      next
-                  }
-                  in_sdk { print }
-              ' \
-              | grep -v '__typeof__' \
-              | grep -v 'nullptr_t' \
-              | grep -v '__max_align' \
-              | grep -v 'max_align_t' \
-              | sed 's/_Bool/int/g' \
-              | sed '/^[[:space:]]*$/N;/^\n$/d' \
-              > baresdk/_baresdk_clean.h
-          {
-            printf 'typedef unsigned long size_t;\n'
-            printf 'typedef int wchar_t;\n'
-            cat baresdk/_baresdk_clean.h
-          } > baresdk/_baresdk_clean.h.tmp && mv baresdk/_baresdk_clean.h.tmp baresdk/_baresdk_clean.h
-          cp ../../dist/linux/x86_64/baresdk.so baresdk/baresdk.so
+          bash bindings/python/gen_header.sh
+          cp dist/linux/x86_64/baresdk.so bindings/python/baresdk/baresdk.so
 
       - name: Build wheel
         run: |

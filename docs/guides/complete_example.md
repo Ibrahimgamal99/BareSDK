@@ -24,6 +24,8 @@ then jump to whichever operation you need.
 | DTMF | ✓ | ✓ | ✓ | ✓ |
 | Blind transfer | ✓ | ✓ | ✓ | ✓ |
 | Attended transfer | ✓ | ✓ | — | — |
+| Incoming transfer accept / reject | ✓ | ✓ | ✓ | ✓ |
+| Call info (peer, duration, Call-ID…) | ✓ | ✓ | ✓ | ✓ |
 | Custom SIP headers | ✓ | ✓ | ✓ | ✓ |
 | Audio devices | ✓ | ✓ | ✓ | ✓ |
 | AEC on/off + mode (SUPPRESSOR/WEBRTC) | ✓ | ✓ | ✓ | ✓ |
@@ -725,6 +727,95 @@ call_a.attended_transfer(call_b);
 
 > Python and Flutter do not currently expose `attended_transfer`.
 > Call `baresdk_call_attended_transfer` via cffi / native plugin if needed.
+
+---
+
+## 9a. Receiving a transfer (incoming REFER)
+
+The other side of a transfer: someone REFERs a call **to** you.
+
+A REFER creates an implicit subscription (RFC 3515), so the transferor is
+waiting for a final NOTIFY telling it what happened. The SDK sends the
+provisional replies and then hands you the decision — answer every
+`TRANSFER_REQUEST` with exactly one of accept or reject.
+
+> **Do not hang up and dial the Refer-To URI.** It looks like the obvious
+> implementation and it silently breaks the transfer: the new call is unrelated
+> to the REFER, so the subscription is never answered and the transferor never
+> learns it worked. Accepting keeps the two linked, which is what lets the SDK
+> report the outcome for you.
+
+**C**
+```c
+case BARESDK_EV_TRANSFER_REQUEST: {
+    baresdk_call_handle_t call = ev->u.transfer_req.call;
+    baresdk_call_handle_t moved = NULL;
+
+    if (baresdk_call_transfer_accept(call, &moved) == BARESDK_OK) {
+        /* `moved` is the new call to the target; the original stays up. */
+    }
+    else {
+        baresdk_call_transfer_reject(call, 603, "Declined");
+    }
+    break;
+}
+```
+
+**C++**
+```cpp
+auto moved = call.transfer_accept();   // or call.transfer_reject(603);
+```
+
+**Python**
+```python
+@sdk.on("transfer_request")
+def on_transfer(ev):
+    if accept_it(ev.refer_to_uri):
+        new_call = ev.call.transfer_accept()
+    else:
+        ev.call.transfer_reject(603, "Declined")
+```
+
+**Flutter**
+```dart
+if (e is TransferRequestEvent) {
+  final moved = e.call.transferAccept();   // or e.call.transferReject();
+}
+```
+
+---
+
+## 9b. Call information
+
+`get_info` is the call's identity and timing; `stats` (section 12) stays the
+per-tick media numbers.
+
+**C**
+```c
+baresdk_call_info_t info;
+if (baresdk_call_get_info(call, &info) == BARESDK_OK)
+    printf("%s %s, up %llu ms\n",
+           info.is_outgoing ? "to" : "from", info.peer_uri,
+           (unsigned long long)info.duration_ms);
+```
+
+**C++**
+```cpp
+auto i = call.info();
+std::cout << i.peer_uri << " up " << i.duration_ms << " ms\n";
+```
+
+**Python**
+```python
+i = call.info()
+print(i["peer_uri"], i["duration_ms"], i["transport"])
+```
+
+**Flutter**
+```dart
+final i = call.info();
+print('${i?.peerUri} up ${i?.duration.inMilliseconds} ms');
+```
 
 ---
 

@@ -77,6 +77,10 @@ check_sym "baresdk_version"
 
 # Phase 2
 check_sym "baresdk_call_attended_transfer"
+# Incoming REFER completion (RFC 3515) + call metadata
+check_sym "baresdk_call_transfer_accept"
+check_sym "baresdk_call_transfer_reject"
+check_sym "baresdk_call_get_info"
 check_sym "baresdk_message_send"
 check_sym "baresdk_account_publish_presence"
 check_sym "baresdk_account_set_100rel"

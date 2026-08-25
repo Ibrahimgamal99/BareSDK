@@ -357,6 +357,13 @@ class _PhonePageState extends State<PhonePage>
 
       case TransferRequestEvent e:
         _snack('Peer asks to transfer us to ${e.referToUri}');
+        // Answer it. The far end is waiting for the SIP NOTIFY that says what
+        // happened, and only accept/reject sends one. Accepting keeps the new
+        // call linked to this one so the SDK reports the outcome for us —
+        // hanging up and dialling the URI would not.
+        if (e.call.transferAccept() == null) {
+          e.call.transferReject();
+        }
 
       case RegistrarWarningEvent e:
         _logLine('registrar warning: ${e.message}');

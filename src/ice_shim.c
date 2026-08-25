@@ -334,9 +334,17 @@ static void gather_deadline(void *arg)
 	        s->restarting ? "restart" : "candidate",
 	        g_bsdk.cfg.ice_gathering_timeout_ms);
 
-	/* Not cleared: a real gather that reports after this takes the
-	 * `released` path above, which re-offers the complete set. */
-	s->released = true;
+	/* `released` is not cleared: a real gather that reports after this takes
+	 * the `released` path in ice_estab(), which re-offers the complete set.
+	 *
+	 * `restarting` IS cleared, and must be.  It gates bsdk_ice_restart()
+	 * against re-entry, and the gather this deadline just gave up on may
+	 * never report at all — that is the failure the deadline exists for.
+	 * Leaving the flag set would make every later restart on this call
+	 * return EALREADY, so a second handover would silently skip the ICE
+	 * restart and migrate with the candidates of a network that is gone. */
+	s->restarting = false;
+	s->released   = true;
 	s->estabh(0, 0, NULL, s->arg);
 }
 

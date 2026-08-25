@@ -355,7 +355,16 @@ def main():
     def _(ev):
         kind = "attended" if ev.has_replaces else "blind"
         say(f"=== Transfer request ({kind}): REFER to {ev.refer_to_uri}")
-        say("    (to follow: hang up current call and dial the refer_to_uri)")
+        # Answer it: the far end is waiting for the NOTIFY that says what
+        # happened, and only accept/reject sends one. Accepting keeps the new
+        # call linked to this one so the SDK reports the outcome for us —
+        # hanging up and dialling the URI would not.
+        try:
+            ev.call.transfer_accept()
+            say("    following the transfer")
+        except Exception as exc:
+            say(f"    could not follow ({exc}); declining")
+            ev.call.transfer_reject(603, "Declined")
 
     @sdk.on("sip_trace")
     def _(ev):

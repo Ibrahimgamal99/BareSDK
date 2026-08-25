@@ -268,6 +268,7 @@ typedef struct {
  baresdk_call_handle_t call;
  const char *refer_to_uri;
  bool has_replaces;
+ bool auto_followed;
 } baresdk_ev_transfer_req_t;
 typedef struct {
  baresdk_account_handle_t account;
@@ -428,6 +429,7 @@ typedef struct {
 
  bool net_hangup_on_migration_failure;
  uint32_t net_verify_ms;
+
  uint32_t net_max_attempts;
  bool deliver_owned_events;
  char audio_codec_names[8][32];
@@ -545,6 +547,12 @@ typedef void (*baresdk_account_iter_fn)(baresdk_account_handle_t acct, void *arg
  int baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
  int baresdk_call_add_header(baresdk_call_handle_t call,
                              const char *name, const char *value);
+ int baresdk_call_transfer_accept(baresdk_call_handle_t call,
+                                                 baresdk_call_handle_t *out);
+ int baresdk_call_transfer_reject(baresdk_call_handle_t call,
+                                                 uint16_t scode,
+                                                 const char *reason);
+
  int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
                                     baresdk_call_handle_t call_b);
 typedef void (*baresdk_call_iter_fn)(baresdk_call_handle_t call, void *arg);
@@ -614,6 +622,26 @@ typedef struct {
  int baresdk_call_record_start(baresdk_call_handle_t call,
                                               const char *path);
  int baresdk_call_record_stop(baresdk_call_handle_t call);
+typedef struct {
+ char peer_uri[256];
+ char peer_display_name[128];
+ char local_uri[256];
+ char contact_uri[256];
+ char call_id[128];
+
+ char diverter_uri[256];
+ bool is_outgoing;
+
+ bool is_remote_hold;
+ uint16_t sip_status;
+ uint64_t duration_ms;
+ uint32_t setup_duration_ms;
+ uint32_t line_number;
+ baresdk_transport_t transport;
+ baresdk_call_state_t state;
+} baresdk_call_info_t;
+ int baresdk_call_get_info(baresdk_call_handle_t call,
+                                          baresdk_call_info_t *out);
  int baresdk_call_get_stats(baresdk_call_handle_t call,
                             baresdk_ev_media_stats_t *out);
  int baresdk_network_changed(void);

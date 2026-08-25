@@ -129,10 +129,9 @@ void bsdk_presence_handle_mwi(struct bevent *event)
 
 	struct baresdk_account *acct = ua ? bsdk_account_find_by_ua(ua) : NULL;
 
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type = BARESDK_EV_MWI;
 	baresdk_ev_mwi_t *m = &qev->ev.u.mwi;
@@ -147,10 +146,7 @@ void bsdk_presence_handle_mwi(struct bevent *event)
 		m->raw_body = qev->buf;
 	}
 
-	mtx_lock(&g_bsdk.ev_lock);
-	list_append(&g_bsdk.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+	bsdk_event_post_qev(qev);   /* warns and frees qev when the queue is full */
 }
 
 /* ── Contact/BLF presence update handler ────────────────────────────────── */
@@ -175,10 +171,9 @@ static void contact_update_handler(struct contact *c, bool removed, void *arg)
 	baresdk_presence_status_t status =
 		from_baresip_status(contact_presence(c));
 
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type = BARESDK_EV_PRESENCE_STATE;
 	baresdk_ev_presence_state_t *ps = &qev->ev.u.presence;
@@ -190,10 +185,7 @@ static void contact_update_handler(struct contact *c, bool removed, void *arg)
 		ps->target_uri = qev->buf;
 	}
 
-	mtx_lock(&g_bsdk.ev_lock);
-	list_append(&g_bsdk.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+	bsdk_event_post_qev(qev);   /* warns and frees qev when the queue is full */
 }
 
 /* ── Presence subscribe / unsubscribe ─────────────────────────────────── */

@@ -306,6 +306,7 @@ def _global_event_cb(ev_ptr, _userdata):
                 call=None,
                 refer_to_uri = _s(ev.u.transfer_req.refer_to_uri) or "",
                 has_replaces = bool(ev.u.transfer_req.has_replaces),
+                auto_followed = bool(ev.u.transfer_req.auto_followed),
             )
 
         elif typ == 10: # MWI
@@ -942,6 +943,68 @@ class Call:
 
     def transfer(self, uri: str):
         _check(lib.baresdk_call_transfer(self._h, uri.encode()), "transfer")
+
+    def transfer_accept(self) -> "Call":
+        """Follow an incoming REFER; returns the new Call to the target.
+
+        Answer a ``transfer_request`` event with this or :meth:`transfer_reject`
+        — exactly one. Until you do, the transferor is still waiting on the
+        NOTIFY that says what happened, and will sit there until its
+        subscription expires.
+
+        Do not implement a transfer by hanging up and dialling: that breaks the
+        REFER subscription, and the far end never learns it worked. This keeps
+        the two calls linked so the SDK reports the outcome for you.
+
+        The original call stays up; end it when the new one connects.
+        """
+        out = ffi.new("baresdk_call_handle_t *")
+        _check(lib.baresdk_call_transfer_accept(self._h, out),
+               "transfer_accept")
+        return Call(out[0])
+
+    def transfer_reject(self, scode: int = 603, reason: str = "Declined"):
+        """Refuse an incoming REFER, leaving this call up.
+
+        ``scode`` is the SIP status the transferor is told, 400-699; 603
+        Decline is the usual "the user said no", 486 for busy.
+        """
+        _check(lib.baresdk_call_transfer_reject(self._h, scode,
+                                                reason.encode()),
+               "transfer_reject")
+
+    def info(self) -> dict:
+        """Return the call's metadata: peer, URIs, direction, duration.
+
+        Complements :meth:`stats`, which is the per-tick media numbers. Safe
+        to call at any point in the call's life, including after it ends.
+        """
+        i = ffi.new("baresdk_call_info_t *")
+        _check(lib.baresdk_call_get_info(self._h, i), "get_info")
+        _TRANSPORTS = ("udp", "tcp", "tls", "ws", "wss")
+        _STATES     = ("calling", "ringing", "established", "held",
+                       "ended", "cancelled", "failed")
+        def _fixed(arr) -> str:
+            return ffi.string(arr).decode("utf-8", errors="replace")
+        return {
+            "peer_uri":          _fixed(i.peer_uri),
+            "peer_display_name": _fixed(i.peer_display_name),
+            "local_uri":         _fixed(i.local_uri),
+            "contact_uri":       _fixed(i.contact_uri),
+            "call_id":           _fixed(i.call_id),
+            "diverter_uri":      _fixed(i.diverter_uri),
+            "is_outgoing":       bool(i.is_outgoing),
+            "is_remote_hold":    bool(i.is_remote_hold),
+            "sip_status":        int(i.sip_status),
+            "duration_ms":       int(i.duration_ms),
+            "setup_duration_ms": int(i.setup_duration_ms),
+            "line_number":       int(i.line_number),
+            "transport":         _TRANSPORTS[i.transport]
+                                 if 0 <= i.transport < len(_TRANSPORTS)
+                                 else "unknown",
+            "state":             _STATES[i.state]
+                                 if 0 <= i.state < len(_STATES) else "unknown",
+        }
 
     def mute(self, muted: bool = True):
         lib.baresdk_audio_mute(self._h, muted)

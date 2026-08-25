@@ -13,7 +13,7 @@ Built on [baresip](https://github.com/baresip/baresip) and [libre](https://githu
 | **NAT** | ICE · STUN · TURN |
 | **Mobility** | Network handover (Wi-Fi ↔ 4G/5G) — transport rebind · re-REGISTER · call re-INVITE with media verification · `RECONNECTING` registration state for the whole recovery |
 | **Calls** | Invite · Answer · Hangup · Hold/Resume · DTMF |
-| **Transfer** | Blind (REFER) · Attended (REFER w/ Replaces) |
+| **Transfer** | Blind (REFER) · Attended (REFER w/ Replaces) · Accept/reject an incoming REFER (RFC 3515 NOTIFY) |
 | **Messaging** | SIP MESSAGE send/receive |
 | **Presence** | PUBLISH · SUBSCRIBE/NOTIFY · BLF · MWI |
 | **Reliability** | PRACK / 100rel (RFC 3262) |

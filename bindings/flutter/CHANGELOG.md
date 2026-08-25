@@ -2,7 +2,33 @@
 
 ## Unreleased
 
+### Fixed
+
+- One incoming SIP MESSAGE, presence NOTIFY, MWI NOTIFY or REFER used to stop
+  the event stream permanently. Four native event producers skipped the queue
+  length accounting, which underflowed a `size_t` counter and made every
+  producer believe the queue was full from then on — so a Dart app subscribed to
+  presence or BLF stopped receiving *any* event, including call and registration
+  state, seconds after start-up. Requires the refreshed `jniLibs` in this
+  release.
+
 ### Added
+
+- `Call.transferAccept()` / `Call.transferReject()` — answer an incoming
+  `TransferRequestEvent`. `transferAccept()` returns the new `Call` placed to
+  the transfer target and keeps it linked to the original, so the far end gets
+  the SIP NOTIFY that says the transfer worked; `transferReject()` refuses it
+  and leaves the call up. Answer every `TransferRequestEvent` with exactly one
+  of them — do **not** hang up and dial the URI yourself, which breaks the REFER
+  subscription and leaves the transferor waiting.
+  `TransferRequestEvent` gains `autoFollowed` (always false today).
+
+- `Call.info()` returns a `CallInfo`: peer URI and display name, local and
+  contact URIs, Call-ID, diverter URI, direction, remote-hold state, last SIP
+  status, `duration`, `setupDuration`, line number, transport and state. The
+  complement to `Call.stats()`, which stays the per-tick media numbers. Safe to
+  call at any point, including after the call has ended.
+
 
 - `RegState.reconnecting` — a registration the SDK is recovering by itself no
   longer reports `RegState.failed`. It covers a retry armed after a timeout or

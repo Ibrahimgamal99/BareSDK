@@ -223,6 +223,73 @@ void bsdk_call_destructor(void *data)
 	mtx_destroy(&lc->rec_lock);
 }
 
+/**
+ * Wrap a baresip call in a baresdk_call and register it.
+ *
+ * Three paths produce a call the app must be able to hold a handle to:
+ * baresdk_call_invite() (outgoing), the BEVENT_CALL_INCOMING branch of
+ * event.c, and baresdk_call_transfer_accept() (following a REFER).  They all
+ * need the same construction — both mutexes, the custom-header list, the NaN
+ * audio-level seeding — and getting any of it wrong is quiet: event.c tolerates
+ * a NULL wrapper everywhere, so a call with none simply emits state events
+ * carrying a NULL handle and the app never sees it.
+ *
+ * @param bc     baresip call to wrap (borrowed; the wrapper holds a weak ref).
+ * @param acct   Owning account.
+ * @param state  Initial state — CALLING for outgoing, RINGING for incoming.
+ * @param inherit_hdrs  Copy the account's custom headers onto the call, which
+ *                      an outgoing INVITE wants and an incoming call does not.
+ *
+ * @return The registered wrapper, or NULL on allocation failure.
+ */
+struct baresdk_call *bsdk_call_wrap_new(struct call *bc,
+					struct baresdk_account *acct,
+					baresdk_call_state_t state,
+					bool inherit_hdrs)
+{
+	struct baresdk_call *lc = mem_zalloc(sizeof(*lc), bsdk_call_destructor);
+	if (!lc)
+		return NULL;
+
+	mtx_init(&lc->tap_lock, mtx_plain);
+	mtx_init(&lc->rec_lock, mtx_plain);
+	list_init(&lc->custom_hdrs);
+	lc->bc    = bc;
+	lc->acct  = acct;
+	lc->state = state;
+
+	/* NaN, not -127: the header documents NaN for "unavailable" and -127 for
+	 * "silent", and tap_compute_dbov() genuinely returns -127 for all-zero
+	 * PCM.  Seeding -127 collapsed the two, so a microphone delivering
+	 * digital silence and a level that was never measured at all read back
+	 * identically — which is precisely the distinction you need when audio
+	 * is missing and you are trying to work out whether the capture path is
+	 * dead or merely quiet. */
+	uint32_t _sil_bits; float _sil = NAN; memcpy(&_sil_bits, &_sil, 4);
+	re_atomic_rlx_set(&lc->rx_level_bits, _sil_bits);
+	re_atomic_rlx_set(&lc->tx_level_bits, _sil_bits);
+
+	if (inherit_hdrs && acct) {
+		struct le *le;
+		LIST_FOREACH(&acct->custom_hdrs, le) {
+			struct bsdk_custom_hdr *acct_hdr = le->data;
+			struct bsdk_custom_hdr *ch =
+				mem_zalloc(sizeof(*ch), custom_hdr_destructor);
+			if (!ch) continue;
+			ch->name  = bsdk_strdup(acct_hdr->name);
+			ch->value = bsdk_strdup(acct_hdr->value);
+			if (!ch->name || !ch->value) {
+				mem_deref(ch);
+				continue;
+			}
+			list_append(&lc->custom_hdrs, &ch->le, ch);
+		}
+	}
+
+	bsdk_call_register(lc);
+	return lc;
+}
+
 /* ── baresdk_call_invite ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -316,53 +383,20 @@ static void invite_fn(void *arg)
 		return;
 	}
 
-	struct baresdk_call *lc = mem_alloc(sizeof(*lc), bsdk_call_destructor);
+	struct baresdk_call *lc = bsdk_call_wrap_new(bc, ctx->acct,
+						     BARESDK_CALL_CALLING, true);
 	if (!lc) {
 		ua_hangup(ctx->acct->ua, bc, 500, "Out of Memory");
 		ctx->result = ENOMEM;
 		return;
 	}
-	memset(lc, 0, sizeof(*lc));
-	mtx_init(&lc->tap_lock, mtx_plain);
-	mtx_init(&lc->rec_lock, mtx_plain);
-	list_init(&lc->custom_hdrs);
-	lc->bc    = bc;
-	lc->acct  = ctx->acct;
-	lc->state = BARESDK_CALL_CALLING;
 	/* The SDP offer was created inside ua_connect(), before this wrapper
 	 * existed — the BEVENT_CALL_LOCAL_SDP that fired then could not be
 	 * matched by bsdk_sdp_handle_event().  Record it here so the
 	 * SDP_NEGOTIATION event fires when the remote answer arrives. */
 	lc->local_sdp_set = true;
-	/* NaN, not -127: the header documents NaN for "unavailable" and -127 for
-	 * "silent", and tap_compute_dbov() genuinely returns -127 for all-zero
-	 * PCM.  Seeding -127 collapsed the two, so a microphone delivering
-	 * digital silence and a level that was never measured at all read back
-	 * identically — which is precisely the distinction you need when audio
-	 * is missing and you are trying to work out whether the capture path is
-	 * dead or merely quiet. */
-	uint32_t _sil_bits; float _sil = NAN; memcpy(&_sil_bits, &_sil, 4);
-	re_atomic_rlx_set(&lc->rx_level_bits, _sil_bits);
-	re_atomic_rlx_set(&lc->tx_level_bits, _sil_bits);
-
-	struct le *le;
-	LIST_FOREACH(&ctx->acct->custom_hdrs, le) {
-		struct bsdk_custom_hdr *acct_hdr = le->data;
-		struct bsdk_custom_hdr *ch = mem_alloc(sizeof(*ch),
-		                                       custom_hdr_destructor);
-		if (!ch) continue;
-		ch->name  = bsdk_strdup(acct_hdr->name);
-		ch->value = bsdk_strdup(acct_hdr->value);
-		if (!ch->name || !ch->value) {
-			mem_deref(ch);
-			continue;
-		}
-		list_append(&lc->custom_hdrs, &ch->le, ch);
-	}
 
 	bsdk_call_setup_watch_start(lc);
-
-	bsdk_call_register(lc);
 	*ctx->out = lc;
 }
 
@@ -454,6 +488,82 @@ int baresdk_call_reject(baresdk_call_handle_t call,
 	if (err)
 		mem_deref(ctx);
 	return err;
+}
+
+
+/* ── baresdk_call_get_info ───────────────────────────────────────────────── */
+
+/* baresip's transport enum → ours.  Defaults to UDP for SIP_TRANSP_NONE, which
+ * is what an un-negotiated dialog reports. */
+static baresdk_transport_t transp_from_baresip(enum sip_transp tp)
+{
+	switch (tp) {
+	case SIP_TRANSP_TCP: return BARESDK_TRANSPORT_TCP;
+	case SIP_TRANSP_TLS: return BARESDK_TRANSPORT_TLS;
+	case SIP_TRANSP_WS:  return BARESDK_TRANSPORT_WS;
+	case SIP_TRANSP_WSS: return BARESDK_TRANSPORT_WSS;
+	default:             return BARESDK_TRANSPORT_UDP;
+	}
+}
+
+typedef struct {
+	struct baresdk_call *lc;
+	baresdk_call_info_t *out;
+} call_info_ctx_t;
+
+static void call_info_fn(void *arg)
+{
+	call_info_ctx_t *ctx = arg;
+	struct baresdk_call *lc = ctx->lc;
+	baresdk_call_info_t *o  = ctx->out;
+	const char *sv;
+
+	/* Read from the wrapper first: these survive the baresip call being
+	 * torn down, so an app that asks after CALL_ENDED still gets an answer
+	 * rather than a struct of zeroes. */
+	o->state = lc->state;
+
+	if (lc->stats_call_start)
+		o->duration_ms = tmr_jiffies() - lc->stats_call_start;
+
+	if (!lc->bc)
+		return;
+
+	sv = call_peeruri(lc->bc);
+	if (sv) str_ncpy(o->peer_uri, sv, sizeof(o->peer_uri));
+
+	sv = call_peername(lc->bc);
+	if (sv) str_ncpy(o->peer_display_name, sv, sizeof(o->peer_display_name));
+
+	sv = call_localuri(lc->bc);
+	if (sv) str_ncpy(o->local_uri, sv, sizeof(o->local_uri));
+
+	sv = call_contacturi(lc->bc);
+	if (sv) str_ncpy(o->contact_uri, sv, sizeof(o->contact_uri));
+
+	sv = call_id(lc->bc);
+	if (sv) str_ncpy(o->call_id, sv, sizeof(o->call_id));
+
+	sv = call_diverteruri(lc->bc);
+	if (sv) str_ncpy(o->diverter_uri, sv, sizeof(o->diverter_uri));
+
+	o->is_outgoing       = call_is_outgoing(lc->bc);
+	o->is_remote_hold    = call_is_onhold(lc->bc);
+	o->sip_status        = call_scode(lc->bc);
+	o->setup_duration_ms = call_setup_duration(lc->bc) * 1000u;
+	o->line_number       = call_linenum(lc->bc);
+	o->transport         = transp_from_baresip(call_transp(lc->bc));
+}
+
+int baresdk_call_get_info(baresdk_call_handle_t call, baresdk_call_info_t *out)
+{
+	if (!call || !out)
+		return BARESDK_ERR_INVAL;
+
+	memset(out, 0, sizeof(*out));
+
+	call_info_ctx_t ctx = { .lc = call, .out = out };
+	return bsdk_dispatch_sync(call_info_fn, &ctx);
 }
 
 /* ── baresdk_call_hold ───────────────────────────────────────────────────── */

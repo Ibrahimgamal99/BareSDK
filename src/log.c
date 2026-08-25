@@ -15,11 +15,10 @@
  */
 static void queue_log_event(const char *msg, size_t len)
 {
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
 
-	memset(qev, 0, sizeof(*qev));
 	if (len > 0 && len < sizeof(qev->buf))
 		memcpy(qev->buf, msg, len);
 	else
@@ -27,6 +26,10 @@ static void queue_log_event(const char *msg, size_t len)
 	qev->ev.type = BARESDK_EV_LOG;
 	qev->ev.u.log.message = qev->buf;
 
+	/* Deliberately not bsdk_event_post_qev(): that warns on a full queue,
+	 * and a warning from inside the log handler re-enters this function.
+	 * The bookkeeping below must therefore stay in sync with it by hand —
+	 * ev_queue_len++ on the enqueue is not optional (see event.c). */
 	mtx_lock(&g_bsdk.ev_lock);
 	if (g_bsdk.ev_queue_len >= g_bsdk.ev_queue_max) {
 		mtx_unlock(&g_bsdk.ev_lock);

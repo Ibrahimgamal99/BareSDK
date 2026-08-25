@@ -214,9 +214,8 @@ void bsdk_post_quality_alert(struct baresdk_call *lc,
                              baresdk_quality_issue_t issue,
                              float value, float threshold, bool recovering)
 {
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev) return;
-	memset(qev, 0, sizeof(*qev));
 	qev->ev.type = BARESDK_EV_QUALITY_ALERT;
 	baresdk_ev_quality_alert_t *a = &qev->ev.u.quality_alert;
 	a->call       = lc;
@@ -242,10 +241,9 @@ static void collect_call_stats(struct baresdk_call *lc)
 	if (!strm)
 		return;
 
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type = BARESDK_EV_MEDIA_STATS;
 	baresdk_ev_media_stats_t *s = &qev->ev.u.stats;
@@ -322,10 +320,9 @@ void bsdk_stats_collect_final(struct baresdk_call *lc)
 	if (!strm)
 		return;
 
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type = BARESDK_EV_MEDIA_STATS;
 	baresdk_ev_media_stats_t *s = &qev->ev.u.stats;

@@ -78,6 +78,56 @@ class CallDtmfEvent extends BareSDKEvent {
   CallDtmfEvent(this.call, this.digit);
 }
 
+/// Static and slow-moving facts about a call, as opposed to the per-tick
+/// media numbers in [Call.stats].
+class CallInfo {
+  final String peerUri;
+  final String peerDisplayName;
+  final String localUri;
+  final String contactUri;
+  final String callId;
+
+  /// Diversion / History-Info URI when the call was forwarded to us; empty
+  /// otherwise. This is not Referred-By: a call that reached us by transfer
+  /// carries no diverter.
+  final String diverterUri;
+  final bool isOutgoing;
+
+  /// True when the PEER has put us on hold. Local hold — the hold this app
+  /// asked for — is [Call.isHeld]; the two are independent.
+  final bool isRemoteHold;
+  final int sipStatus;
+  final Duration duration;
+  final Duration setupDuration;
+  final int lineNumber;
+  final Transport transport;
+  final CallState state;
+
+  static String _str(Array<Char> a, int max) {
+    final b = StringBuffer();
+    for (var i = 0; i < max && a[i] != 0; i++) {
+      b.writeCharCode(a[i]);
+    }
+    return b.toString();
+  }
+
+  CallInfo._(baresdk_call_info_t r)
+      : peerUri = _str(r.peer_uri, 256),
+        peerDisplayName = _str(r.peer_display_name, 128),
+        localUri = _str(r.local_uri, 256),
+        contactUri = _str(r.contact_uri, 256),
+        callId = _str(r.call_id, 128),
+        diverterUri = _str(r.diverter_uri, 256),
+        isOutgoing = r.is_outgoing,
+        isRemoteHold = r.is_remote_hold,
+        sipStatus = r.sip_status,
+        duration = Duration(milliseconds: r.duration_ms),
+        setupDuration = Duration(milliseconds: r.setup_duration_ms),
+        lineNumber = r.line_number,
+        transport = Transport.fromRaw(r.transport),
+        state = CallState.fromRaw(r.state);
+}
+
 class AudioDevice {
   final String name;
   final String description;
@@ -266,13 +316,25 @@ class QualityAlertEvent extends BareSDKEvent {
 }
 
 /// Incoming REFER — the peer asks us to transfer this call.
+///
+/// Answer with [Call.transferAccept] or [Call.transferReject] — exactly one.
+/// The SDK has already sent the provisional replies and the transferor is now
+/// waiting for the final NOTIFY that only one of those two produces; ignoring
+/// the event leaves it waiting out its subscription.
 class TransferRequestEvent extends BareSDKEvent {
   final Call call;
   final String referToUri;
 
   /// True = attended transfer (REFER carries Replaces).
   final bool hasReplaces;
-  TransferRequestEvent(this.call, this.referToUri, this.hasReplaces);
+
+  /// True when the SDK already followed the transfer itself. Always false
+  /// today — placing a call is the app's decision — but check it before
+  /// calling [Call.transferAccept] so a future auto-follow policy cannot make
+  /// you place a second call on top of the SDK's.
+  final bool autoFollowed;
+  TransferRequestEvent(this.call, this.referToUri, this.hasReplaces,
+      {this.autoFollowed = false});
 }
 
 /// An outgoing REFER was refused — the transfer did not happen.
@@ -447,6 +509,58 @@ class Call {
     final p = uri.toNativeUtf8().cast<Char>();
     try {
       internal.nativeBindings.baresdk_call_transfer(_handle, p);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Follow an incoming REFER (see [TransferRequestEvent]); returns the new
+  /// call placed to the transfer target, or null if it could not be placed.
+  ///
+  /// Do not implement a transfer by hanging up and dialling: that breaks the
+  /// REFER subscription and the transferor never learns it worked. This keeps
+  /// the two calls linked so the SDK reports the outcome for you.
+  ///
+  /// This call stays up; end it once the new one connects.
+  Call? transferAccept() {
+    final out = calloc<Pointer<baresdk_call>>();
+    try {
+      final rc = internal.nativeBindings
+          .baresdk_call_transfer_accept(_handle, out);
+      if (rc != 0 || out.value == nullptr) return null;
+      return BareSDK.instance?._trackCall(out.value, account);
+    } finally {
+      calloc.free(out);
+    }
+  }
+
+  /// Refuse an incoming REFER, leaving this call up. Returns false if the
+  /// refusal could not be sent (no transfer was pending).
+  ///
+  /// [scode] is the SIP status the transferor is told, 400-699; 603 Decline is
+  /// the usual "the user said no", 486 for busy.
+  bool transferReject({int scode = 603, String reason = 'Declined'}) {
+    final p = reason.toNativeUtf8().cast<Char>();
+    try {
+      return internal.nativeBindings
+          .baresdk_call_transfer_reject(_handle, scode, p) == 0;
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// Metadata about this call: peer, URIs, direction, duration. Null if it
+  /// could not be read.
+  ///
+  /// Complements [stats], which is the per-tick media numbers. Safe to call at
+  /// any point in the call's life, including after it has ended.
+  CallInfo? info() {
+    final p = calloc<baresdk_call_info_t>();
+    try {
+      if (internal.nativeBindings.baresdk_call_get_info(_handle, p) != 0) {
+        return null;
+      }
+      return CallInfo._(p.ref);
     } finally {
       calloc.free(p);
     }
@@ -1412,7 +1526,8 @@ class BareSDK {
         target = _accounts[t.account.address];
         final call = _trackCall(t.call, target);
         decoded = TransferRequestEvent(
-            call, _str(t.refer_to_uri) ?? '', t.has_replaces);
+            call, _str(t.refer_to_uri) ?? '', t.has_replaces,
+            autoFollowed: t.auto_followed);
         break;
 
       case baresdk_event_type_t.BARESDK_EV_TRANSFER_FAILED:

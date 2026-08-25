@@ -50,10 +50,9 @@ void bsdk_sdp_handle_event(enum bevent_ev ev, struct bevent *event)
 	default:                           crypto = "NONE";       break;
 	}
 
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type       = BARESDK_EV_SDP_NEGOTIATION;
 	qev->ev.u.sdp.call = lc;

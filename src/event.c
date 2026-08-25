@@ -16,6 +16,35 @@
 #include <math.h>
 #include "baresdk_internal.h"
 
+/* ── Queued-event allocation ─────────────────────────────────────────────── */
+
+/* A queued event may own a reference to the call wrapper it describes
+ * (deref_after_deliver — see the field comment in baresdk_internal.h).  That
+ * reference has to be released on *every* path the event can die on: normal
+ * delivery, baresdk_event_release() in owned mode, and the queue-full drop
+ * inside bsdk_event_post_qev().
+ *
+ * It used to be released by hand at each of those, which meant the drop path —
+ * the one nobody exercises — silently leaked the wrapper, and with it the
+ * ~16 KB of SDP/mixing buffers it carries and any WAV recording still open (the
+ * destructor below is what closes rec_file).  Hanging it off the allocation
+ * instead makes the release automatic and exactly-once, so a future call site
+ * cannot forget it. */
+static void qev_destructor(void *arg)
+{
+	struct baresdk_queued_event *qev = arg;
+
+	mem_deref(qev->deref_after_deliver);
+}
+
+/* Allocate a zeroed queued event.  Every producer goes through here: log.c,
+ * trace.c, sdp.c, stats.c, message.c, presence.c, transfer.c, netmon.c and
+ * this file. */
+struct baresdk_queued_event *bsdk_qev_alloc(void)
+{
+	return mem_zalloc(sizeof(struct baresdk_queued_event), qev_destructor);
+}
+
 /* ── Owned-event cloning (cfg.deliver_owned_events) ──────────────────────── */
 
 /* Rebase a string pointer from the old event's inline buf into the clone's.
@@ -46,7 +75,7 @@ static const char *rb(const char *p,
 static struct baresdk_queued_event *
 qev_clone(struct baresdk_queued_event *old)
 {
-	struct baresdk_queued_event *n = mem_alloc(sizeof(*n), NULL);
+	struct baresdk_queued_event *n = bsdk_qev_alloc();
 	if (!n)
 		return NULL;
 
@@ -131,8 +160,7 @@ void baresdk_event_release(const baresdk_event_t *ev)
 		((char *)(uintptr_t)ev -
 		 offsetof(struct baresdk_queued_event, ev));
 
-	if (qev->deref_after_deliver)
-		mem_deref(qev->deref_after_deliver);
+	/* qev_destructor releases deref_after_deliver. */
 	mem_deref(qev);
 }
 
@@ -185,12 +213,11 @@ static int event_thread_fn(void *arg)
 					cb(&qev->ev, cb_ud);
 				}
 			}
-			/* Deref the call wrapper only after the app callback has
-			 * returned so the handle remains valid during delivery.
-			 * (In owned mode qev_clone took over this reference and
-			 * deref_after_deliver is already NULL.) */
-			if (qev->deref_after_deliver)
-				mem_deref(qev->deref_after_deliver);
+			/* Frees the call wrapper too (qev_destructor), only now
+			 * that the app callback has returned, so the handle
+			 * stays valid for the whole delivery.  In owned mode
+			 * qev_clone already took that reference over and this
+			 * qev's deref_after_deliver is NULL. */
 			mem_deref(qev);
 
 			mtx_lock(&g_bsdk.ev_lock);
@@ -229,12 +256,11 @@ bool bsdk_event_post_qev(struct baresdk_queued_event *qev)
 /* Post a copy of ev to the event queue. Safe to call from re_main. */
 void bsdk_event_post(const baresdk_event_t *ev)
 {
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev) {
 		warning("baresdk/event: dropped event type %d (OOM)\n", ev->type);
 		return;
 	}
-	memset(qev, 0, sizeof(*qev));
 	memcpy(&qev->ev, ev, sizeof(*ev));
 	bsdk_event_post_qev(qev);  /* warns and frees qev on failure */
 }
@@ -325,9 +351,8 @@ static void bevent_handler(enum bevent_ev bev,
 			 * failure, and the consumer reads this on another thread. */
 			if (acct->reg_error_str[0]) {
 				struct baresdk_queued_event *qev =
-				        mem_alloc(sizeof(*qev), NULL);
+				        bsdk_qev_alloc();
 				if (qev) {
-					memset(qev, 0, sizeof(*qev));
 					str_ncpy(qev->buf, acct->reg_error_str,
 					         sizeof(qev->buf));
 					memcpy(&qev->ev, &ev, sizeof(ev));
@@ -394,9 +419,8 @@ static void bevent_handler(enum bevent_ev bev,
 		        : BARESDK_REG_FAILED;
 
 		/* Enqueue via a queued_event so the string lives long enough */
-		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+		struct baresdk_queued_event *qev = bsdk_qev_alloc();
 		if (qev) {
-			memset(qev, 0, sizeof(*qev));
 			if (reason)
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
 			memcpy(&qev->ev, &ev, sizeof(ev));
@@ -431,29 +455,20 @@ static void bevent_handler(enum bevent_ev bev,
 		break;
 
 	case BEVENT_CALL_INCOMING: {
-		/* Allocate wrapper and event together; only register if both succeed. */
-		struct baresdk_call *new_lc = mem_alloc(sizeof(*new_lc),
-		                                         bsdk_call_destructor);
+		/* An incoming call inherits no account headers: those exist to be
+		 * put on requests we originate, and this dialog's requests were
+		 * originated by the peer. */
+		struct baresdk_call *new_lc =
+			bsdk_call_wrap_new(bc, acct, BARESDK_CALL_RINGING, false);
 		if (!new_lc) { post = false; break; }
-		memset(new_lc, 0, sizeof(*new_lc));
-		new_lc->bc    = bc;
-		new_lc->acct  = acct;
-		new_lc->state = BARESDK_CALL_RINGING;
-		mtx_init(&new_lc->tap_lock, mtx_plain);
-		mtx_init(&new_lc->rec_lock, mtx_plain);
-		list_init(&new_lc->custom_hdrs);
-		/* NaN = never measured; -127 = measured silence. See call.c. */
-		uint32_t _sil_bits; float _sil = NAN; memcpy(&_sil_bits, &_sil, 4);
-		re_atomic_rlx_set(&new_lc->rx_level_bits, _sil_bits);
-		re_atomic_rlx_set(&new_lc->tx_level_bits, _sil_bits);
 
-		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+		struct baresdk_queued_event *qev = bsdk_qev_alloc();
 		if (!qev) {
+			bsdk_call_unregister(new_lc);
 			mem_deref(new_lc);
 			post = false;
 			break;
 		}
-		memset(qev, 0, sizeof(*qev));
 		qev->ev.type = BARESDK_EV_INCOMING_CALL;
 		qev->ev.u.incoming.account = acct;
 		qev->ev.u.incoming.call    = new_lc;
@@ -462,8 +477,6 @@ static void bevent_handler(enum bevent_ev bev,
 			str_ncpy(qev->buf, peer, sizeof(qev->buf));
 			qev->ev.u.incoming.from_uri = qev->buf;
 		}
-		/* Register only after event is ready; unregister+deref on failure. */
-		bsdk_call_register(new_lc);
 		if (!bsdk_event_post_qev(qev)) {
 			bsdk_call_unregister(new_lc);
 			mem_deref(new_lc);
@@ -569,9 +582,8 @@ static void bevent_handler(enum bevent_ev bev,
 			bsdk_call_unregister(lc);
 		}
 
-		struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+		struct baresdk_queued_event *qev = bsdk_qev_alloc();
 		if (qev) {
-			memset(qev, 0, sizeof(*qev));
 			memcpy(&qev->ev, &ev, sizeof(ev));
 			if (peer_hangup) {
 				/* Don't pass libre's ECONNRESET text on as the
@@ -675,9 +687,8 @@ static void bevent_handler(enum bevent_ev bev,
 		ev.u.transfer_failed.reason  = NULL;
 
 		if (reason) {
-			struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+			struct baresdk_queued_event *qev = bsdk_qev_alloc();
 			if (qev) {
-				memset(qev, 0, sizeof(*qev));
 				memcpy(&qev->ev, &ev, sizeof(ev));
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
 				qev->ev.u.transfer_failed.reason = qev->buf;
@@ -743,6 +754,8 @@ int bsdk_event_init(void)
 	if (rc != thrd_success)
 		return ENOMEM;
 
+	g_bsdk.ev_thread_started = true;
+
 	return bevent_register(bevent_handler, NULL);
 }
 
@@ -751,13 +764,22 @@ void bsdk_event_close(void)
 	/* Unregister the baresip hook first so no new events arrive */
 	bevent_unregister(bevent_handler);
 
-	/* Signal the event thread to drain and exit */
-	mtx_lock(&g_bsdk.ev_lock);
-	g_bsdk.ev_shutdown = true;
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+	/* Signal the event thread to drain and exit.
+	 *
+	 * Guarded because this also runs from baresdk_init()'s failure path,
+	 * which unwinds every subsystem whether or not it got as far as being
+	 * started.  Joining a thrd_t that was never assigned is undefined and in
+	 * practice segfaults, so an SDK that failed to initialise crashed the
+	 * host application instead of returning the error. */
+	if (g_bsdk.ev_thread_started) {
+		mtx_lock(&g_bsdk.ev_lock);
+		g_bsdk.ev_shutdown = true;
+		cnd_signal(&g_bsdk.ev_cond);
+		mtx_unlock(&g_bsdk.ev_lock);
 
-	thrd_join(g_bsdk.ev_thread, NULL);
+		thrd_join(g_bsdk.ev_thread, NULL);
+		g_bsdk.ev_thread_started = false;
+	}
 
 	/* Free any remaining queued events */
 	struct le *le, *le_tmp;
@@ -766,4 +788,10 @@ void bsdk_event_close(void)
 		list_unlink(&qev->le);
 		mem_deref(qev);
 	}
+
+	/* Keep the counter with the list.  baresdk_init() re-zeroes it, so this
+	 * is belt-and-braces today, but a stale non-zero length here would make
+	 * a re-initialised SDK think its empty queue was already full and drop
+	 * every event forever. */
+	g_bsdk.ev_queue_len = 0;
 }

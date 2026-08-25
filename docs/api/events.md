@@ -308,7 +308,18 @@ Non-fatal warning from the registrar (e.g. `Warning:` header).
 ## BARESDK_EV_TRANSFER_REQUEST
 **`ev->u.transfer_req`** — `baresdk_ev_transfer_req_t`
 
-Incoming REFER request.
+Incoming REFER request — the peer is asking you to transfer this call.
+
+**This event requires an answer.** A REFER creates an implicit subscription
+(RFC 3515), and the transferor waits for a final `message/sipfrag` NOTIFY saying
+what became of it. The SDK sends the `202 Accepted` and `100 Trying`, then hands
+the decision to you. Call exactly one of `baresdk_call_transfer_accept()` or
+`baresdk_call_transfer_reject()` on `call`; ignoring the event leaves the far end
+waiting out its 60-second subscription.
+
+Do not follow a transfer by hanging up and dialling `refer_to_uri` — the new call
+is then unrelated to the REFER and the subscription is never answered. See
+[Calls → Incoming transfer request](calls.md#incoming-transfer-request).
 
 | Field | Type | Description |
 |---|---|---|
@@ -316,6 +327,7 @@ Incoming REFER request.
 | `call` | handle | Call that received the REFER |
 | `refer_to_uri` | `const char *` | Transfer target URI |
 | `has_replaces` | `bool` | true = attended transfer |
+| `auto_followed` | `bool` | true when the SDK already followed the transfer itself. Always false today — placing a call is the app's decision — but check it before accepting so future auto-follow policy cannot make you place a second call |
 
 ---
 

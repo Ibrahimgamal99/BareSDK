@@ -165,10 +165,9 @@ static void netmon_emit(baresdk_net_event_t what,
                          struct baresdk_account *acct,
                          int err, uint32_t attempt)
 {
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type                   = BARESDK_EV_NETWORK;
 	qev->ev.u.network.event        = what;
@@ -569,7 +568,7 @@ static void send_migration(struct baresdk_call *lc)
 		if (lc->net_mig_state != BSDK_MIG_DEFERRED) {
 			lc->net_mig_state = BSDK_MIG_DEFERRED;
 			netmon_emit(BARESDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
-			            (uint32_t)lc->net_mig_tries + 1u);
+			            lc->net_mig_tries + 1u);
 		}
 		return;
 	}
@@ -614,7 +613,7 @@ static void send_migration(struct baresdk_call *lc)
 		if (err != ENOENT && !lc->net_ice_stale_sent) {
 			lc->net_ice_stale_sent = true;
 			netmon_emit(BARESDK_NET_CALL_ICE_STALE, lc, lc->acct,
-			            err, (uint32_t)lc->net_mig_tries);
+			            err, lc->net_mig_tries);
 		}
 	}
 
@@ -656,7 +655,7 @@ static void wait_for_addr(struct baresdk_call *lc)
 
 	lc->net_mig_state = BSDK_MIG_WAIT_ADDR;
 	netmon_emit(BARESDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
-	            (uint32_t)lc->net_mig_tries + 1u);
+	            lc->net_mig_tries + 1u);
 }
 
 static void start_migration(struct baresdk_call *lc)
@@ -736,6 +735,37 @@ static void start_migration(struct baresdk_call *lc)
 
 	sa_cpy(&lc->net_mig_laddr, &laddr);
 	send_migration(lc);
+}
+
+/* Fail every call this handover still owed a migration to.
+ *
+ * Called when the transport reset has run out of attempts.  Those calls were
+ * never re-INVITEd — apply_handover() bails before migrate_calls() — so their
+ * SDP still advertises an address the device has left and their audio is gone.
+ * Without this they sit in that state silently: the generation is never bumped,
+ * so verify_handler() does not see them, and no timer is armed to pick them up.
+ * The app is told, and can redial or show the user something truthful. */
+static void fail_pending_migrations(int err)
+{
+	struct baresdk_call *snap[BSDK_NET_MAX_SNAP];
+	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
+
+	for (size_t i = 0; i < n; i++) {
+		struct baresdk_call *lc = snap[i];
+
+		/* Only calls that were live when this round started and have not
+		 * already reached a terminal migration state. */
+		if (!lc->bc || lc->net_mig_state == BSDK_MIG_DONE ||
+		    lc->net_mig_state == BSDK_MIG_FAILED)
+			continue;
+
+		/* A call the handover never got as far as stamping still needs the
+		 * clock, or the event reports a zero-length outage. */
+		if (!lc->net_mig_start)
+			lc->net_mig_start = g_nm.handover_start;
+
+		fail_migration(lc, err);
+	}
 }
 
 static void migrate_calls(void)
@@ -877,6 +907,19 @@ static void reregister_accounts(void)
 	for (size_t i = 0; i < n; i++) {
 		struct baresdk_account *a = snap[i];
 
+		/* Credentials the registrar rejected are still wrong on the new
+		 * network, so this account is not part of the recovery.
+		 * mark_accounts_reconnecting() already declined to move it out of
+		 * FAILED for the same reason ("a terminal FAILED is not turned back
+		 * into hope by a new link"); re-REGISTERing it here anyway would
+		 * contradict that, and would leave it reporting FAILED to the app
+		 * while carrying reconnecting = true internally.  Every other
+		 * failure — transport, timeout, 5xx — is exactly what a new network
+		 * might fix, so those do get the fresh attempt below. */
+		if (a->reg_state == BARESDK_REG_FAILED &&
+		    a->reg_error == BARESDK_ERR_AUTH)
+			continue;
+
 		/* A new network deserves a fresh attempt: an account sitting in a
 		 * five-minute backoff from the old network must not wait it out. */
 		tmr_cancel(&a->retry_tmr);
@@ -984,6 +1027,25 @@ static void apply_handover(void)
 			 * would sit in a recovery nothing is driving until the next
 			 * network change — however long that is. */
 			handover_accounts_to_retry();
+
+			/* Calls have no such policy to fall back on: nothing else
+			 * re-INVITEs them and reset_pending alone wakes nothing when
+			 * the app drives handover from the OS callback
+			 * (net_monitor_interval_s == 0, the documented mobile
+			 * setting).  Report them rather than leaving the app holding
+			 * a call it believes is up.
+			 *
+			 * Before handover_start is cleared below, because that is what
+			 * the reported outage is measured from. */
+			fail_pending_migrations(err);
+
+			/* Let the next round announce itself.  Leaving `announced`
+			 * set suppresses its CHANGE_DETECTED, and a stale
+			 * handover_start makes every later elapsed_ms cumulative —
+			 * so a handover that eventually succeeds reports an outage
+			 * measured from the failed round before it. */
+			g_nm.announced      = false;
+			g_nm.handover_start = 0;
 		}
 		return;
 	}

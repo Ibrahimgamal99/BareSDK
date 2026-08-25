@@ -70,6 +70,10 @@ struct bsdk_ctx {
 	/* Event dispatch thread (separate from re_main to prevent consumer
 	 * deadlocks when they call back into baresdk from inside an event) */
 	thrd_t             ev_thread;
+	/* thrd_t carries no "not a thread" value, and joining a zeroed one
+	 * segfaults — which is what baresdk_init()'s failure path used to do
+	 * whenever it unwound before the event thread had been created. */
+	bool               ev_thread_started;
 	mtx_t              ev_lock;
 	cnd_t              ev_cond;
 	struct list        ev_queue;    /* struct baresdk_queued_event */
@@ -217,6 +221,14 @@ struct baresdk_call {
 	size_t                     rec_tx_count;
 	/* Per-dialog custom headers (linked list of bsdk_custom_hdr) */
 	struct list                custom_hdrs;
+	/* ── Incoming REFER (transfer.c; re_main thread only) ───────────── */
+	/* Refer-To of a transfer request the app has been told about and has
+	 * not answered yet.  Held here because the decision is asynchronous:
+	 * BARESDK_EV_TRANSFER_REQUEST is delivered on the event thread and
+	 * baresdk_call_transfer_accept() may arrive many seconds later, long
+	 * after the bevent that carried the URI has gone. */
+	char                       xfer_refer_to[256];
+	bool                       xfer_pending;
 	/* Session stats history — maintained by stats.c */
 	float                      stats_mos_min;    /* worst mos_lq this call */
 	float                      stats_mos_sum;    /* running sum for average */
@@ -234,7 +246,10 @@ struct baresdk_call {
 	RE_ATOMIC uint32_t         tx_level_bits;
 	/* ── Network handover state (netmon.c; re_main thread only) ─────── */
 	uint8_t                    net_mig_state;  /* enum bsdk_mig_state */
-	uint8_t                    net_mig_tries;  /* attempts this handover */
+	/* uint32_t, not uint8_t: cfg.net_max_attempts is a public uint32_t, and
+	 * a narrower counter can never reach a value above 255 — the >= test
+	 * would never fire and verify_handler() would re-offer for ever. */
+	uint32_t                   net_mig_tries;  /* attempts this handover */
 	uint32_t                   net_mig_gen;    /* handover generation */
 	uint32_t                   net_rx_at_mig;  /* rx packets when re-INVITE sent */
 	uint64_t                   net_mig_start;  /* tmr_jiffies() when migration began */
@@ -296,6 +311,11 @@ int  bsdk_event_init(void);
 void bsdk_event_close(void);
 void bsdk_event_post(const baresdk_event_t *ev);
 /* Takes ownership of qev; frees it if queue is full. Returns true on success. */
+/* Allocate a zeroed queued event with the destructor that releases
+ * deref_after_deliver.  Always use this rather than mem_alloc/mem_zalloc
+ * directly, or the call-wrapper reference leaks on the drop path. */
+struct baresdk_queued_event *bsdk_qev_alloc(void);
+
 bool bsdk_event_post_qev(struct baresdk_queued_event *qev);
 
 /* ── log.c ─────────────────────────────────────────────────────────────── */
@@ -389,6 +409,13 @@ void bsdk_record_write_frame(struct baresdk_call *lc, baresdk_media_dir_t dir,
                               const int16_t *pcm, size_t samples,
                               uint32_t srate, uint8_t ch);
 struct baresdk_call *bsdk_call_find(const struct call *bc);
+/* Allocate, initialise and register a call wrapper.  Used by the outgoing,
+ * incoming and transfer-accept paths — see the doc comment in call.c. */
+struct baresdk_call *bsdk_call_wrap_new(struct call *bc,
+                                        struct baresdk_account *acct,
+                                        baresdk_call_state_t state,
+                                        bool inherit_hdrs);
+
 void bsdk_call_register(struct baresdk_call *lc);
 void bsdk_call_unregister(struct baresdk_call *lc);
 void bsdk_call_foreach(void (*fn)(struct baresdk_call *, void *), void *arg);

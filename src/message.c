@@ -26,10 +26,9 @@ static void message_recv_handler(struct ua *ua, const struct pl *peer,
 
 	struct baresdk_account *acct = bsdk_account_find_by_ua(ua);
 
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type = BARESDK_EV_MESSAGE;
 	baresdk_ev_message_t *m = &qev->ev.u.msg;
@@ -63,10 +62,7 @@ static void message_recv_handler(struct ua *ua, const struct pl *peer,
 		m->body = qev->buf + off;
 	}
 
-	mtx_lock(&g_bsdk.ev_lock);
-	list_append(&g_bsdk.ev_queue, &qev->le, qev);
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+	bsdk_event_post_qev(qev);   /* warns and frees qev when the queue is full */
 }
 
 /* ── Send ────────────────────────────────────────────────────────────────── */

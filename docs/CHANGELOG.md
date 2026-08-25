@@ -6,7 +6,143 @@ All notable changes to baresdk are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **One incoming SIP MESSAGE, presence NOTIFY, MWI NOTIFY or REFER used to
+  silence the SDK permanently.** This is the most serious bug the SDK has
+  shipped, and any app with a BLF or presence subscription hit it within seconds
+  of start-up.
+
+  The event queue is a bounded list plus a length counter. Producers increment
+  it, the single consumer decrements it once per event drained, and every
+  producer refuses to enqueue once the length reaches `BARESDK_EV_QUEUE_MAX`.
+  Four producers — incoming SIP MESSAGE, MWI NOTIFY, presence/BLF NOTIFY and the
+  incoming REFER — appended to the list by hand and never incremented the
+  counter. Each such event therefore left the counter one below the queue's real
+  depth, and the first one drained from an otherwise-empty queue took it from 0
+  to `SIZE_MAX` (it is a `size_t`). From that instant `len >= max` was
+  permanently true and **every subsequent event was dropped for the life of the
+  process** — call state, registration, DTMF, network handover, logs. The app
+  saw a stack that had simply stopped talking, with no error anywhere.
+
+  All four now go through `bsdk_event_post_qev()`, which has always done the
+  accounting correctly. `log.c` and `trace.c` keep their own copies on purpose —
+  a dropped log must not `warning()` its way back into the log handler — and now
+  carry a comment saying so, plus the reason the increment is not optional.
+
+  Covered by a new gate test, `test/event_queue_accounting_test.c`, which drives
+  a real SIP MESSAGE into the stack over UDP and asserts that ordinary events
+  still flow afterwards. It needs no SIP server.
+
+- **A queued event that was dropped leaked the call it described.** The
+  queue-full path in `bsdk_event_post_qev()` freed the event with a bare
+  `mem_deref()`, but a `CALL_CLOSED` event owns a reference to the call wrapper
+  (~16 KB of SDP and mixing buffers), and the wrapper's destructor is what closes
+  an open WAV recording. Both other release paths released it by hand; the drop
+  path — the one nobody exercises — did not. The reference is now released by a
+  destructor attached at allocation, so all three paths get it right and a new
+  call site cannot forget. All 17 allocation sites go through `bsdk_qev_alloc()`.
+
+- **`cfg.local_ip` and `cfg.local_port` were documented, accepted, and silently
+  ignored.** Neither was ever passed to the stack, so the SDK always bound an
+  OS-assigned port on every interface. An app that pinned a port for a firewall
+  rule or a port-forward got no error and no effect. Both now populate baresip's
+  local SIP address; a port with no address binds that port on each local
+  address, and an IPv6 literal is bracketed.
+
+- **Any failure inside `baresdk_init()` crashed the host application.** The
+  unwind path called `bsdk_event_close()` unconditionally, which joined an event
+  thread that had not been created — `thrd_t` has no "not a thread" value, and
+  joining an unassigned one segfaults. Init failures now return their error code
+  as documented.
+
+- **A network handover that ran out of attempts stranded every live call.**
+  After `net_max_attempts` failed transport resets, the accounts were handed to
+  the registration retry policy but the calls were not: the handover generation
+  was never bumped, so nothing re-INVITEd them and no timer was armed to try
+  again. With `net_monitor_interval_s = 0` — the setting mobile apps are told to
+  use — nothing woke the SDK up again either. The calls stayed up with dead audio
+  and the app was never told. They now get `BARESDK_NET_CALL_MIGRATION_FAILED`
+  (and are hung up when `net_hangup_on_migration_failure` is set). The round
+  state is also cleared, so the next handover announces itself instead of
+  reporting an `elapsed_ms` accumulated from the failed one.
+
+- **`net_max_attempts` above 255 made a migration retry for ever.** The per-call
+  counter was a `uint8_t` while the public config field is a `uint32_t`, so the
+  "give up" test could never fire. The counter is now `uint32_t`, and the field
+  documents that the useful range is small because each attempt costs a
+  `net_verify_ms` wait.
+
+- **A stale ICE-restart flag disabled ICE restart for the rest of a call.** When
+  the gathering deadline fired, `restarting` was left set. If the ICE module then
+  never reported — which is the exact failure the deadline exists for — every
+  later `bsdk_ice_restart()` returned `EALREADY`, so a second network handover
+  silently skipped the restart and re-offered the candidates of a network the
+  device had already left.
+
+- **A network change re-REGISTERed accounts whose credentials the registrar had
+  rejected.** `mark_accounts_reconnecting()` deliberately refuses to move a
+  terminal `FAILED` account back into recovery; the handover's re-REGISTER
+  ignored that and retried anyway, leaving the account reporting `FAILED` to the
+  app while carrying `reconnecting = true` internally. Accounts that failed on
+  `BARESDK_ERR_AUTH` are now left alone. Every other failure — transport,
+  timeout, 5xx — is still retried, because a new network is exactly what might
+  fix those.
+
+- **Python wheels published from CI had a corrupt `baresdk_config_t` layout.**
+  The release workflow generated the cffi header with its own copy of the
+  `gcc -E` pipeline, which was missing `-DBARESDK_NO_PACKED_ENUM=1` while still
+  stripping `__attribute__`. cffi therefore saw `baresdk_aec_mode_t` as 4 bytes
+  where the compiled library has 1, so every field after `cfg.aec_mode` was at
+  the wrong offset — `sizeof` 760 against the library's 752 — and the
+  `version`/`struct_size` guard could not catch it, because `baresdk_config_init()`
+  fills both from the C side. Locally built wheels were correct; released ones
+  were not. Both callers now share `bindings/python/gen_header.sh`, so they
+  cannot drift again.
+
 ### Added
+
+- **`baresdk_call_transfer_accept()` / `baresdk_call_transfer_reject()` — an
+  incoming REFER can finally be answered.** The SDK raised
+  `BARESDK_EV_TRANSFER_REQUEST` and then had nothing to offer: no way to follow
+  the transfer, no way to refuse it, and — because RFC 3515 makes a REFER an
+  implicit subscription — no way to send the final `message/sipfrag` NOTIFY the
+  transferor is waiting on. The subscription stayed parked at `100 Trying` until
+  it expired. The docs suggested hanging up and dialling the Refer-To URI, which
+  looks reasonable and is exactly the thing that loses the NOTIFY: the new call
+  is then unrelated to the REFER.
+
+  `baresdk_call_transfer_accept()` places the call *linked* to the original, so
+  the stack reports the outcome by itself — `200 OK` once the new call is
+  established, or the failure status if it never is.
+  `baresdk_call_transfer_reject(call, scode, reason)` sends the terminating
+  NOTIFY and leaves the call up, so the user stays on the line. Answer every
+  `BARESDK_EV_TRANSFER_REQUEST` with exactly one of them.
+
+  `baresdk_ev_transfer_req_t` gains a trailing `auto_followed` flag, always
+  false today, so an app written now cannot be made to place a duplicate call if
+  auto-follow policy is ever added. Appending it keeps the struct ABI intact.
+
+  Exposed as `Call.transfer_accept()` / `transfer_reject()` in Python,
+  `transferAccept()` / `transferReject()` in Dart, and
+  `Call::transfer_accept()` / `transfer_reject()` in C++.
+
+- **`baresdk_call_get_info()` — the call metadata every comparable SDK exposes.**
+  Peer URI and display name, local and contact URIs, Call-ID, diverter,
+  direction, remote-hold state, last SIP status, duration, setup duration, line
+  number, transport and state. Until now the peer URI was only visible on the
+  incoming-call event, so anything that needed it later had to cache it.
+
+  It fills a caller-owned `baresdk_call_info_t` of fixed char arrays, matching
+  `baresdk_audio_device_t`: nothing in it can dangle when the call ends, and
+  every binding can copy it without a lifetime rule. Safe to call at any point,
+  including after the call has ended.
+
+  Two fields are deliberately absent rather than faked: there is no
+  `remote_user_agent`, because the stack exposes no getter for it, and the
+  forwarding field is named `diverter_uri` because it carries Diversion /
+  History-Info, not Referred-By. `is_remote_hold` is likewise named for what it
+  is — the peer holding *us*; local hold remains `baresdk_call_is_held()`.
 
 - **`BARESDK_REG_RECONNECTING` — a registration the SDK is recovering is no
   longer reported as a failure.** Every transient loss used to arrive as

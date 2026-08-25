@@ -789,12 +789,25 @@ int main(int argc, char* argv[])
                     break;
             }
 
-            case BARESDK_EV_TRANSFER_REQUEST:
+            case BARESDK_EV_TRANSFER_REQUEST: {
                 std::cout << "=== Transfer request: REFER to "
                 << (ev.u.transfer_req.refer_to_uri ? ev.u.transfer_req.refer_to_uri : "?")
-                << (ev.u.transfer_req.has_replaces ? "  [attended]" : "  [blind]") << "\n"
-                << "    (to follow: hang up current call and dial the refer_to_uri)\n";
+                << (ev.u.transfer_req.has_replaces ? "  [attended]" : "  [blind]") << "\n";
+                /* Answer it — the far end is waiting for the NOTIFY that says
+                 * what happened, and only accept/reject sends one.  Accepting
+                 * keeps the new call linked to this one so the SDK reports the
+                 * outcome; hanging up and dialling would not. */
+                baresdk_call_handle_t moved = nullptr;
+                if (baresdk_call_transfer_accept(ev.u.transfer_req.call, &moved)
+                    == BARESDK_OK) {
+                    std::cout << "    following the transfer\n";
+                }
+                else {
+                    baresdk_call_transfer_reject(ev.u.transfer_req.call,
+                                                 603, "Declined");
+                }
                 break;
+            }
 
             case BARESDK_EV_MEDIA_STATS:
                 print_stats(ev.u.stats);

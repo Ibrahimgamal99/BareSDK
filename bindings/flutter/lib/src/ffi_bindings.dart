@@ -209,6 +209,9 @@ class BareSDKBindings {
       .asFunction<void Function(baresdk_account_handle_t)>();
 
   /// Begin registration. Fires BARESDK_EV_REG_STATE events on state changes.
+  /// REGISTERING → REGISTERED on success; a failure the SDK will retry reports
+  /// BARESDK_REG_RECONNECTING, and only a failure it has given up on reports
+  /// BARESDK_REG_FAILED.
   int baresdk_account_register(
     baresdk_account_handle_t acct,
   ) {
@@ -269,7 +272,10 @@ class BareSDKBindings {
           int Function(baresdk_account_handle_t, int, int, double, int)>();
 
   /// Cancel a pending retry timer and reset the attempt counter.
-  /// The account stays in FAILED state; call baresdk_account_register() to restart.
+  /// The app has taken over, so the recovery stops being the SDK's: an account
+  /// that was RECONNECTING reports FAILED once the retry is cancelled — leaving
+  /// it on "Reconnecting…" would promise an attempt that is never coming.
+  /// Call baresdk_account_register() to restart.
   int baresdk_account_cancel_retry(
     baresdk_account_handle_t acct,
   ) {
@@ -480,6 +486,8 @@ class BareSDKBindings {
       int Function(baresdk_account_handle_t, ffi.Pointer<ffi.Char>, int)>();
 
   /// Current registration state, as last reported by BARESDK_EV_REG_STATE.
+  /// Useful on a cold start or after re-attaching, where no event has been seen
+  /// yet.  Can return BARESDK_REG_RECONNECTING — see the enum.
   int baresdk_account_get_reg_state(
     baresdk_account_handle_t acct,
   ) {
@@ -680,6 +688,76 @@ class BareSDKBindings {
   /// Attended transfer: send REFER w/ Replaces on call_a, bridging it to call_b.
   /// call_a is the call to transfer away; call_b is the already-established
   /// consultation call whose dialog info is embedded in Replaces.
+  /// /
+  /// /**
+  /// Follow an incoming REFER (see BARESDK_EV_TRANSFER_REQUEST).
+  ///
+  /// Places the call to the Refer-To target and links it to `call`, so the SDK
+  /// reports the outcome to the transferor automatically: `NOTIFY 200 OK` when
+  /// the new call is established, or the failure status if it is not.
+  ///
+  /// Do NOT implement this by hanging up and dialling. That breaks the REFER
+  /// subscription the transferor is waiting on, and it never learns the transfer
+  /// worked.
+  ///
+  /// The original call is left up; end it when the new one connects, or keep both
+  /// and let the user choose. On success `*out` receives the new call handle.
+  ///
+  /// @return BARESDK_OK, BARESDK_ERR_INVAL for a NULL handle,
+  /// BARESDK_ERR_STATE when no transfer is pending on this call, or a
+  /// positive errno if the call could not be placed (the transferor is
+  /// sent the failure NOTIFY in that case).
+  int baresdk_call_transfer_accept(
+    baresdk_call_handle_t call,
+    ffi.Pointer<baresdk_call_handle_t> out,
+  ) {
+    return _baresdk_call_transfer_accept(
+      call,
+      out,
+    );
+  }
+
+  late final _baresdk_call_transfer_acceptPtr = _lookup<
+          ffi.NativeFunction<
+              ffi.Int Function(
+                  baresdk_call_handle_t, ffi.Pointer<baresdk_call_handle_t>)>>(
+      'baresdk_call_transfer_accept');
+  late final _baresdk_call_transfer_accept =
+      _baresdk_call_transfer_acceptPtr.asFunction<
+          int Function(
+              baresdk_call_handle_t, ffi.Pointer<baresdk_call_handle_t>)>();
+
+  /// Refuse an incoming REFER (see BARESDK_EV_TRANSFER_REQUEST).
+  ///
+  /// Sends the terminating NOTIFY so the transferor stops waiting, and leaves
+  /// this call established — the user is still on the line.
+  ///
+  /// @param scode   SIP status to report, 400-699. 603 Decline is the usual
+  /// answer for "the user said no"; 486 for "busy".
+  /// @param reason  Reason phrase, or NULL for "Declined".
+  ///
+  /// @return BARESDK_OK, BARESDK_ERR_INVAL for a NULL handle or an out-of-range
+  /// status, or BARESDK_ERR_STATE when no transfer is pending.
+  int baresdk_call_transfer_reject(
+    baresdk_call_handle_t call,
+    int scode,
+    ffi.Pointer<ffi.Char> reason,
+  ) {
+    return _baresdk_call_transfer_reject(
+      call,
+      scode,
+      reason,
+    );
+  }
+
+  late final _baresdk_call_transfer_rejectPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(baresdk_call_handle_t, ffi.Uint16,
+              ffi.Pointer<ffi.Char>)>>('baresdk_call_transfer_reject');
+  late final _baresdk_call_transfer_reject =
+      _baresdk_call_transfer_rejectPtr.asFunction<
+          int Function(baresdk_call_handle_t, int, ffi.Pointer<ffi.Char>)>();
+
   int baresdk_call_attended_transfer(
     baresdk_call_handle_t call_a,
     baresdk_call_handle_t call_b,
@@ -1415,6 +1493,29 @@ class BareSDKBindings {
   late final _baresdk_call_record_stop = _baresdk_call_record_stopPtr
       .asFunction<int Function(baresdk_call_handle_t)>();
 
+  /// Fill `out` with the current facts about a call.
+  ///
+  /// Safe to call from any thread and at any point in the call's life, including
+  /// after it has ended, for as long as the handle is valid.
+  ///
+  /// @return BARESDK_OK, or BARESDK_ERR_INVAL for a NULL argument.
+  int baresdk_call_get_info(
+    baresdk_call_handle_t call,
+    ffi.Pointer<baresdk_call_info_t> out,
+  ) {
+    return _baresdk_call_get_info(
+      call,
+      out,
+    );
+  }
+
+  late final _baresdk_call_get_infoPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Int Function(baresdk_call_handle_t,
+              ffi.Pointer<baresdk_call_info_t>)>>('baresdk_call_get_info');
+  late final _baresdk_call_get_info = _baresdk_call_get_infoPtr.asFunction<
+      int Function(baresdk_call_handle_t, ffi.Pointer<baresdk_call_info_t>)>();
+
   /// Synchronously retrieve current stats for a call.
   /// Also delivered automatically via BARESDK_EV_MEDIA_STATS if
   /// cfg.stats_interval_ms > 0.
@@ -1721,8 +1822,40 @@ abstract class baresdk_reg_state_t {
   static const int BARESDK_REG_UNREGISTERED = 0;
   static const int BARESDK_REG_REGISTERING = 1;
   static const int BARESDK_REG_REGISTERED = 2;
+
+  /// Terminal: the registration is down and the SDK has stopped trying.
+  /// Either nothing it can retry will help (BARESDK_ERR_AUTH — wrong
+  /// credentials), the retry budget (`reg_retry_max_attempts`) ran out, or
+  /// the app cancelled the retry itself.  Recovering needs the app:
+  /// baresdk_account_retry_now(), or new credentials.
   static const int BARESDK_REG_FAILED = 3;
   static const int BARESDK_REG_UNREGISTERING = 4;
+
+  /// Transient: the registration is not usable right now, and the SDK is
+  /// getting it back on its own.  Nothing for the app to do but say so —
+  /// "Reconnecting…", not "Registration failed".
+  ///
+  /// Appended after UNREGISTERING deliberately: the values above it are
+  /// ABI, so this one had to take 5 rather than sit next to FAILED.
+  ///
+  /// It is reported for every recovery the SDK drives itself:
+  ///
+  /// - a REGISTER that failed on transport, timeout or 5xx, with a retry
+  /// armed — `retry_attempt` and `retry_delay_ms` say which attempt is
+  /// next and how long until it goes out,
+  /// - a keepalive probe that went unanswered (cfg.keepalive_interval):
+  /// the binding is registered on paper but the path to the proxy is
+  /// gone,
+  /// - a network handover or a link that dropped entirely — Wi-Fi ↔
+  /// cellular, VPN up/down, dock/undock — from the moment the change is
+  /// detected until the REGISTER lands on the new path.  The matching
+  /// BARESDK_EV_NETWORK events carry the detail.
+  ///
+  /// The state does not flicker back to REGISTERING for each retry: an
+  /// account stays RECONNECTING for the whole recovery, and leaves it only
+  /// for REGISTERED (recovered) or FAILED (given up).  REGISTERING keeps
+  /// its narrower meaning — a registration the app asked for, going out
+  /// for the first time.
   static const int BARESDK_REG_RECONNECTING = 5;
 }
 
@@ -1902,7 +2035,19 @@ typedef baresdk_call_handle_t = ffi.Pointer<baresdk_call>;
 /// ── Opaque handles ─────────────────────────────────────────────────────────
 typedef baresdk_account_handle_t = ffi.Pointer<baresdk_account>;
 
-/// ── Event payload structs ──────────────────────────────────────────────────
+/// ── Event payload structs ────────────────────────────────────────────────── */
+/// /**
+/// Registration state change.
+///
+/// `retry_attempt` / `retry_delay_ms` are non-zero on the RECONNECTING event
+/// that announces an armed retry, and render a status line directly:
+/// "reconnecting — attempt %u in %.1f s"
+/// They are 0 on every other event, including the RECONNECTING that a handover
+/// or a dead keepalive raises before any backoff is involved.
+///
+/// Two events can describe one lost registration: the failure itself, then the
+/// retry that was armed for it.  Both carry the same state, so an app that only
+/// renders `state` shows "Reconnecting…" once and needs no de-duplication.
 final class baresdk_ev_reg_state_t extends ffi.Struct {
   external baresdk_account_handle_t account;
 
@@ -2180,7 +2325,14 @@ final class baresdk_ev_registrar_warning_t extends ffi.Struct {
   external ffi.Pointer<ffi.Char> message;
 }
 
-/// Incoming REFER request — blind transfer or attended (has_replaces=true).
+/// Incoming REFER request — blind transfer, or attended when has_replaces.
+///
+/// The SDK has already answered `202 Accepted` and sent `NOTIFY 100 Trying`;
+/// per RFC 3515 the transferor is now waiting for a final `message/sipfrag`
+/// NOTIFY saying what became of the reference.  Nothing sends it until the app
+/// calls baresdk_call_transfer_accept() or baresdk_call_transfer_reject() —
+/// exactly one of the two, on the call this event names.  Ignoring the event
+/// leaves the transferor waiting out the 60 s subscription.
 final class baresdk_ev_transfer_req_t extends ffi.Struct {
   external baresdk_account_handle_t account;
 
@@ -2193,6 +2345,16 @@ final class baresdk_ev_transfer_req_t extends ffi.Struct {
   /// true = attended transfer
   @ffi.Bool()
   external bool has_replaces;
+
+  /// Whether the SDK already followed this transfer by itself.
+  ///
+  /// Always false today — the decision is the app's, because following a
+  /// transfer means placing a call and no SDK should do that unasked.
+  /// Present so an app written now keeps working if a future policy knob
+  /// (auto-follow for a trusted PBX, say) makes it true, rather than
+  /// placing a second call on top of the SDK's.
+  @ffi.Bool()
+  external bool auto_followed;
 }
 
 /// An outgoing REFER was refused (blind or attended).
@@ -2665,6 +2827,11 @@ final class baresdk_config_t extends ffi.Struct {
   external int net_verify_ms;
 
   /// Maximum handover / re-INVITE attempts before giving up. Default 6.
+  ///
+  /// Each attempt costs up to net_verify_ms, so this is a time budget as
+  /// much as a count: the default 6 x 4000 ms bounds a migration at ~24 s.
+  /// Values above a few dozen are not useful — a path that has not come
+  /// back by then needs a new call, not more re-INVITEs.
   @ffi.Uint32()
   external int net_max_attempts;
 
@@ -2821,8 +2988,10 @@ final class baresdk_config_t extends ffi.Struct {
   @ffi.Bool()
   external bool dns_srv_failover;
 
-  /// How to treat an ICE call on handover.  Default BEST_EFFORT.
-  /// See baresdk_ice_handover_t.
+  /// How to treat an ICE call that could not be re-gathered on handover.
+  /// Default BEST_EFFORT.  See baresdk_ice_handover_t — an ICE call is
+  /// normally migrated with a full ICE restart, and this does not apply to
+  /// those.
   @ffi.Int32()
   external int net_ice_handover;
 
@@ -2830,15 +2999,32 @@ final class baresdk_config_t extends ffi.Struct {
   /// Default 2000; 0 disables the deadline (wait indefinitely).
   ///
   /// With a media-NAT configured, the INVITE is not sent when the call is
-  /// placed — it is sent when the ICE stack reports it has finished
-  /// gathering. Nothing in that stack bounds how long that takes, and one
-  /// path never reports at all, so without this an outgoing call could sit
-  /// in calling forever with no SIP message on the wire and no event.
+  /// placed — it is sent later, when the ICE stack reports that it has
+  /// finished gathering candidates.  Nothing in that stack bounds how long
+  /// that takes, and one path never reports at all, so an outgoing call
+  /// could sit in BARESDK_CALL_CALLING forever with no SIP message ever
+  /// reaching the wire and no event to say so.
   ///
-  /// When it expires the offer is released with whatever candidates exist,
-  /// as browser SIP stacks and pjsua both do. Gathering is not cancelled: a
-  /// later completion re-offers the fuller set in a re-INVITE, and a later
-  /// failure is dropped rather than ending the call.
+  /// This is the bound.  When it expires the offer is released with
+  /// whatever candidates were gathered by then, exactly as a browser-based
+  /// SIP client does (JsSIP/SIP.js/dart-sip-ua all cap the same wait, at
+  /// 0.5–5 s) and as pjsua's PJSUA_ICE_TRANSPORT_INIT_TIMEOUT does.  A
+  /// degraded candidate set makes for a degraded call; a call that is
+  /// never offered is no call at all.
+  ///
+  /// Gathering is not cancelled — if it completes afterwards the fuller
+  /// set is offered again in a re-INVITE.  A *failure* arriving after the
+  /// deadline is dropped rather than ending the call, since by then the
+  /// offer is already on the wire.
+  ///
+  /// The same bound applies to the re-gather of an ICE restart on network
+  /// handover, where it decides how long a migrating call stays without
+  /// audio before an offer goes out.  There, 0 does *not* mean "wait
+  /// forever" — the call is already live and silent, so a 3 s default
+  /// applies instead.
+  ///
+  /// Set 0 only if a slow TURN allocation must never be pre-empted on dial
+  /// and an unbounded dial is acceptable.
   @ffi.Uint32()
   external int ice_gathering_timeout_ms;
 }
@@ -3036,6 +3222,76 @@ typedef Dartbaresdk_media_tap_cb_tFunction = void Function(
     int channels,
     int timestamp_us,
     ffi.Pointer<ffi.Void> userdata);
+
+/// Static and slow-moving facts about a call, as opposed to the per-tick media
+/// numbers in baresdk_call_get_stats().
+///
+/// Strings are fixed arrays rather than pointers so the whole struct is a value
+/// the caller owns: nothing here can dangle when the call ends, and every
+/// binding can copy it without a lifetime rule. Unavailable fields read as an
+/// empty string or 0.
+final class baresdk_call_info_t extends ffi.Struct {
+  /// far end AoR
+  @ffi.Array.multi([256])
+  external ffi.Array<ffi.Char> peer_uri;
+
+  /// From display-name; may be empty
+  @ffi.Array.multi([128])
+  external ffi.Array<ffi.Char> peer_display_name;
+
+  /// our AoR on this dialog
+  @ffi.Array.multi([256])
+  external ffi.Array<ffi.Char> local_uri;
+
+  /// far end Contact
+  @ffi.Array.multi([256])
+  external ffi.Array<ffi.Char> contact_uri;
+
+  /// SIP Call-ID
+  @ffi.Array.multi([128])
+  external ffi.Array<ffi.Char> call_id;
+
+  /// Diversion / History-Info URI when the call was forwarded to us.
+  /// Empty otherwise. This is NOT Referred-By: a call that reached us by
+  /// transfer carries no diverter.
+  @ffi.Array.multi([256])
+  external ffi.Array<ffi.Char> diverter_uri;
+
+  /// we placed it
+  @ffi.Bool()
+  external bool is_outgoing;
+
+  /// True when the PEER has put us on hold. Local hold — the hold this
+  /// app asked for — is baresdk_call_is_held(); the two are independent
+  /// and can both be true.
+  @ffi.Bool()
+  external bool is_remote_hold;
+
+  /// last SIP status; 0 while up
+  @ffi.Uint16()
+  external int sip_status;
+
+  /// since ESTABLISHED; 0 before that
+  @ffi.Uint64()
+  external int duration_ms;
+
+  /// INVITE → answer. Whole seconds scaled to ms: the stack measures
+  /// this to second granularity, so it steps in 1000s.
+  @ffi.Uint32()
+  external int setup_duration_ms;
+
+  /// 1-based; stable for the call
+  @ffi.Uint32()
+  external int line_number;
+
+  /// transport this dialog signals over
+  @ffi.Int32()
+  external int transport;
+
+  /// same value as the last CALL_STATE
+  @ffi.Int32()
+  external int state;
+}
 
 const int BARESDK_VERSION_MAJOR = 1;
 

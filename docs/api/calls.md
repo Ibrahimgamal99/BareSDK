@@ -68,18 +68,86 @@ baresdk_call_attended_transfer(call_a, call_b);
 
 ### Incoming transfer request
 
-When the remote side sends a REFER to your UA, the SDK fires `BARESDK_EV_TRANSFER_REQUEST`:
+When the remote side sends a REFER to your UA, the SDK fires
+`BARESDK_EV_TRANSFER_REQUEST` and waits for your decision.
+
+A REFER creates an implicit subscription (RFC 3515 §2.4.4): the transferor is
+owed a final `message/sipfrag` NOTIFY telling it whether the reference
+succeeded, and until that arrives it has no idea whether to hang up or recover.
+The SDK answers the `202 Accepted` and the `100 Trying` for you, then stops —
+whether to follow a transfer is policy, not transport. **Answer every
+`BARESDK_EV_TRANSFER_REQUEST` with exactly one of `baresdk_call_transfer_accept()`
+or `baresdk_call_transfer_reject()`.** Ignoring it leaves the far end waiting
+out the 60-second subscription.
 
 ```c
 case BARESDK_EV_TRANSFER_REQUEST: {
-    const char *uri = ev->u.transfer_req.refer_to_uri;
-    bool attended   = ev->u.transfer_req.has_replaces;
-    printf("Transfer requested to %s (%s)\n", uri,
-           attended ? "attended" : "blind");
-    // To follow: hang up current call and dial uri with the same account
+    baresdk_call_handle_t call = ev->u.transfer_req.call;
+    const char *uri  = ev->u.transfer_req.refer_to_uri;
+    bool attended    = ev->u.transfer_req.has_replaces;
+
+    if (user_accepted(uri)) {
+        baresdk_call_handle_t moved = NULL;
+        if (baresdk_call_transfer_accept(call, &moved) == BARESDK_OK) {
+            /* `moved` is the new call to the target. The original stays up —
+             * hang it up when the new one is established, or keep both and
+             * let the user pick. */
+        }
+    }
+    else {
+        baresdk_call_transfer_reject(call, 603, "Declined");
+    }
     break;
 }
 ```
+
+> **Do not implement this by hanging up and dialling the URI.** That is the
+> obvious-looking approach and it is wrong: the new call is then unrelated to
+> the REFER, so the subscription is never answered and the transferor never
+> learns the transfer worked. `baresdk_call_transfer_accept()` keeps the two
+> linked, which is what lets the SDK report the outcome for you — `200 OK` when
+> the new call is established, or the failure status if it is not.
+
+Both are also available in the bindings:
+
+```python
+@sdk.on("transfer_request")
+def _(ev):
+    new_call = ev.call.transfer_accept()   # or ev.call.transfer_reject(603)
+```
+
+```dart
+final moved = ev.call.transferAccept();    // or ev.call.transferReject()
+```
+
+## Call information
+
+`baresdk_call_get_info()` returns the call's identity and timing — as opposed to
+`baresdk_call_get_stats()`, which is the per-tick media numbers. It is safe to
+call at any point in the call's life, including after it has ended.
+
+```c
+baresdk_call_info_t info;
+if (baresdk_call_get_info(call, &info) == BARESDK_OK) {
+    printf("%s %s (%s) up %llu ms\n",
+           info.is_outgoing ? "to" : "from",
+           info.peer_uri, info.peer_display_name,
+           (unsigned long long)info.duration_ms);
+}
+```
+
+| Field | Notes |
+|---|---|
+| `peer_uri`, `peer_display_name` | far end AoR and From display-name |
+| `local_uri`, `contact_uri` | our AoR, far end Contact |
+| `call_id` | SIP Call-ID |
+| `diverter_uri` | Diversion / History-Info when the call was forwarded to us. Not Referred-By — a transferred call carries no diverter |
+| `is_outgoing` | we placed it |
+| `is_remote_hold` | the **peer** put us on hold. Local hold is `baresdk_call_is_held()`; the two are independent |
+| `sip_status` | last SIP status; 0 while the call is up |
+| `duration_ms` | since ESTABLISHED; 0 before that |
+| `setup_duration_ms` | INVITE → answer, in whole-second steps |
+| `line_number`, `transport`, `state` | |
 
 ## Enumerate active calls
 

@@ -148,10 +148,23 @@ class RegistrarWarningEvent:
 
 @dataclass
 class TransferRequestEvent:
+    """The peer asked us to transfer this call somewhere else (SIP REFER).
+
+    Answer it with ``ev.call.transfer_accept()`` or
+    ``ev.call.transfer_reject()`` — exactly one. The SDK has already sent the
+    provisional replies, and the transferor is now waiting for the final NOTIFY
+    that only one of those two produces; ignoring the event leaves it waiting
+    out its subscription.
+    """
     type: str = field(init=False, default="transfer_request")
     call: object
     refer_to_uri: str
     has_replaces: bool
+    #: True when the SDK already followed the transfer itself. Always False
+    #: today — placing the call is the app's decision — but check it before
+    #: calling transfer_accept() so future auto-follow policy cannot make you
+    #: place a second call on top of the SDK's.
+    auto_followed: bool = False
 
 
 @dataclass

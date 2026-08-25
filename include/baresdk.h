@@ -511,12 +511,31 @@ typedef struct {
 
 /* ── Transfer, MWI, MESSAGE, Presence payload structs ─────────────────────── */
 
-/** Incoming REFER request — blind transfer or attended (has_replaces=true). */
+/**
+ * Incoming REFER request — blind transfer, or attended when has_replaces.
+ *
+ * The SDK has already answered `202 Accepted` and sent `NOTIFY 100 Trying`;
+ * per RFC 3515 the transferor is now waiting for a final `message/sipfrag`
+ * NOTIFY saying what became of the reference.  Nothing sends it until the app
+ * calls baresdk_call_transfer_accept() or baresdk_call_transfer_reject() —
+ * exactly one of the two, on the call this event names.  Ignoring the event
+ * leaves the transferor waiting out the 60 s subscription.
+ */
 typedef struct {
 	baresdk_account_handle_t account;
 	baresdk_call_handle_t    call;          /* call receiving the REFER */
 	const char              *refer_to_uri;  /* Refer-To header value */
 	bool                     has_replaces;  /* true = attended transfer */
+	/**
+	 * Whether the SDK already followed this transfer by itself.
+	 *
+	 * Always false today — the decision is the app's, because following a
+	 * transfer means placing a call and no SDK should do that unasked.
+	 * Present so an app written now keeps working if a future policy knob
+	 * (auto-follow for a trusted PBX, say) makes it true, rather than
+	 * placing a second call on top of the SDK's.
+	 */
+	bool                     auto_followed;
 } baresdk_ev_transfer_req_t;
 
 /**
@@ -878,7 +897,12 @@ typedef struct {
 	 *  media check (the re-INVITE is then assumed to have worked). */
 	uint32_t  net_verify_ms;
 
-	/** Maximum handover / re-INVITE attempts before giving up. Default 6. */
+	/** Maximum handover / re-INVITE attempts before giving up. Default 6.
+	 *
+	 *  Each attempt costs up to net_verify_ms, so this is a time budget as
+	 *  much as a count: the default 6 x 4000 ms bounds a migration at ~24 s.
+	 *  Values above a few dozen are not useful — a path that has not come
+	 *  back by then needs a new call, not more re-INVITEs. */
 	uint32_t  net_max_attempts;
 
 	/* ── Event delivery ownership ─────────────────────────────────
@@ -1490,6 +1514,45 @@ BARESDK_EXPORT int baresdk_call_add_header(baresdk_call_handle_t call,
  * call_a is the call to transfer away; call_b is the already-established
  * consultation call whose dialog info is embedded in Replaces.
  */
+/**
+ * Follow an incoming REFER (see BARESDK_EV_TRANSFER_REQUEST).
+ *
+ * Places the call to the Refer-To target and links it to `call`, so the SDK
+ * reports the outcome to the transferor automatically: `NOTIFY 200 OK` when
+ * the new call is established, or the failure status if it is not.
+ *
+ * Do NOT implement this by hanging up and dialling. That breaks the REFER
+ * subscription the transferor is waiting on, and it never learns the transfer
+ * worked.
+ *
+ * The original call is left up; end it when the new one connects, or keep both
+ * and let the user choose. On success `*out` receives the new call handle.
+ *
+ * @return BARESDK_OK, BARESDK_ERR_INVAL for a NULL handle,
+ *         BARESDK_ERR_STATE when no transfer is pending on this call, or a
+ *         positive errno if the call could not be placed (the transferor is
+ *         sent the failure NOTIFY in that case).
+ */
+BARESDK_EXPORT int baresdk_call_transfer_accept(baresdk_call_handle_t  call,
+                                                 baresdk_call_handle_t *out);
+
+/**
+ * Refuse an incoming REFER (see BARESDK_EV_TRANSFER_REQUEST).
+ *
+ * Sends the terminating NOTIFY so the transferor stops waiting, and leaves
+ * this call established — the user is still on the line.
+ *
+ * @param scode   SIP status to report, 400-699. 603 Decline is the usual
+ *                answer for "the user said no"; 486 for "busy".
+ * @param reason  Reason phrase, or NULL for "Declined".
+ *
+ * @return BARESDK_OK, BARESDK_ERR_INVAL for a NULL handle or an out-of-range
+ *         status, or BARESDK_ERR_STATE when no transfer is pending.
+ */
+BARESDK_EXPORT int baresdk_call_transfer_reject(baresdk_call_handle_t call,
+                                                 uint16_t scode,
+                                                 const char *reason);
+
 BARESDK_EXPORT int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
                                     baresdk_call_handle_t call_b);
 
@@ -1808,6 +1871,53 @@ BARESDK_EXPORT int baresdk_call_record_start(baresdk_call_handle_t call,
 
 /** Stop recording and finalize WAV headers. Idempotent. */
 BARESDK_EXPORT int baresdk_call_record_stop(baresdk_call_handle_t call);
+
+/* ── Call info ────────────────────────────────────────────────────────────── */
+
+/**
+ * Static and slow-moving facts about a call, as opposed to the per-tick media
+ * numbers in baresdk_call_get_stats().
+ *
+ * Strings are fixed arrays rather than pointers so the whole struct is a value
+ * the caller owns: nothing here can dangle when the call ends, and every
+ * binding can copy it without a lifetime rule. Unavailable fields read as an
+ * empty string or 0.
+ */
+typedef struct {
+	char     peer_uri[256];          /* far end AoR                        */
+	char     peer_display_name[128]; /* From display-name; may be empty    */
+	char     local_uri[256];         /* our AoR on this dialog             */
+	char     contact_uri[256];       /* far end Contact                    */
+	char     call_id[128];           /* SIP Call-ID                        */
+	/** Diversion / History-Info URI when the call was forwarded to us.
+	 *  Empty otherwise. This is NOT Referred-By: a call that reached us by
+	 *  transfer carries no diverter. */
+	char     diverter_uri[256];
+	bool     is_outgoing;            /* we placed it                       */
+	/** True when the PEER has put us on hold. Local hold — the hold this
+	 *  app asked for — is baresdk_call_is_held(); the two are independent
+	 *  and can both be true. */
+	bool     is_remote_hold;
+	uint16_t sip_status;             /* last SIP status; 0 while up        */
+	uint64_t duration_ms;            /* since ESTABLISHED; 0 before that   */
+	/** INVITE → answer. Whole seconds scaled to ms: the stack measures
+	 *  this to second granularity, so it steps in 1000s. */
+	uint32_t setup_duration_ms;
+	uint32_t line_number;            /* 1-based; stable for the call       */
+	baresdk_transport_t  transport;  /* transport this dialog signals over */
+	baresdk_call_state_t state;      /* same value as the last CALL_STATE  */
+} baresdk_call_info_t;
+
+/**
+ * Fill `out` with the current facts about a call.
+ *
+ * Safe to call from any thread and at any point in the call's life, including
+ * after it has ended, for as long as the handle is valid.
+ *
+ * @return BARESDK_OK, or BARESDK_ERR_INVAL for a NULL argument.
+ */
+BARESDK_EXPORT int baresdk_call_get_info(baresdk_call_handle_t  call,
+                                          baresdk_call_info_t   *out);
 
 /* ── Stats ────────────────────────────────────────────────────────────────── */
 

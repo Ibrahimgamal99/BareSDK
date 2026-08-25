@@ -49,10 +49,9 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 	if (peer)
 		re_snprintf(remote, sizeof(remote), "%H", sa_print_addr, peer);
 
-	struct baresdk_queued_event *qev = mem_alloc(sizeof(*qev), NULL);
+	struct baresdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
-	memset(qev, 0, sizeof(*qev));
 
 	qev->ev.type = BARESDK_EV_SIP_TRACE;
 	qev->ev.u.sip_trace.timestamp_us = tmr_jiffies() * 1000ULL;
@@ -78,6 +77,11 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 
 	qev->ev.u.sip_trace.dir = tx ? BARESDK_MEDIA_DIR_TX : BARESDK_MEDIA_DIR_RX;
 
+	/* Hand-rolled rather than bsdk_event_post_qev() so a dropped trace is
+	 * silent: tracing is debug output, and warning once per message on a
+	 * backed-up queue would bury the events the app actually needs.  The
+	 * ev_queue_len++ below is what keeps that safe — omitting it underflows
+	 * the counter and wedges the whole queue (see event.c). */
 	mtx_lock(&g_bsdk.ev_lock);
 	if (g_bsdk.ev_queue_len >= g_bsdk.ev_queue_max) {
 		mtx_unlock(&g_bsdk.ev_lock);
