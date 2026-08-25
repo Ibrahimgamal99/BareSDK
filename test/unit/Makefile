@@ -31,12 +31,14 @@ test_codec_str: test_codec_str.c
 test_transport_str: test_transport_str.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
-# --wrap is what renames the wrapper on Linux; keep it so the test exercises
-# the same symbol the shipped library links.
+# No --wrap: ws_path.c owns the public websock_connect/sip_dialog_route names
+# outright (libre's definitions are renamed to __real_* by
+# cmake/patch-re-sources.cmake), so this test links the exact symbols the
+# shipped library does; the test provides the __real_* stand-ins.
 test_ws_pin: test_ws_pin.c ../../src/ws_path.c
 	$(CC) $(CFLAGS) -Wno-unused-parameter \
 	  -I$(SYSROOT)/include -I$(SYSROOT)/include/re -I../../include \
-	  -o $@ $^ -L$(SYSROOT)/lib -Wl,--wrap=sip_transp_send -Wl,--wrap=sip_dialog_route \
+	  -o $@ $^ -L$(SYSROOT)/lib \
 	  -lbaresip -lre -lssl -lcrypto -lpthread -lz \
 	  $(LDFLAGS)
 

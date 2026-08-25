@@ -57,8 +57,9 @@
   Record-Route, so libre routed to a Contact naming an internal hostname that
   resolves nowhere, and the lookup failed asynchronously after the request had
   already been accepted. In-dialog requests now follow the WebSocket flow the
-  registration established (RFC 7118 §B.2). Android only — it needs GNU ld's
-  `--wrap`, so iOS still carries the bug.
+  registration established (RFC 7118 §B.2). Applies on every platform: the fix
+  moved from a GNU-ld `--wrap` interposition (Linux/Android only) into the
+  patched libre sources, so iOS carries it too.
 
 - A media-encryption mismatch was reported as "no common audio or video codecs",
   which points at the codec list when the codecs are fine and the media profile
@@ -66,8 +67,9 @@
 
 - Hanging up an answered incoming call sent no BYE — the app reported the call
   ended while the caller was still connected, and their eventual hangup came
-  back as `481 Call Does Not Exist`. Native fix; Android only (it needs GNU
-  ld's `--wrap`, so iOS is unaffected by the fix and still carries the bug).
+  back as `481 Call Does Not Exist`. Fixed in libre's session layer itself
+  (the ACK now retires every reply record it matches), so it applies on every
+  platform — the earlier `--wrap`-based fix reached Linux/Android only.
 
 - Incoming calls had no audio when ICE was on. ICE nominated a peer-reflexive
   candidate, which is never signalled, so media left from an address the server

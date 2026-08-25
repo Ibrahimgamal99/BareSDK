@@ -133,11 +133,8 @@ registration is already connected to, so the existing connection is reused. With
 baresdk: ws in-dialog target 127.0.0.1:8088 is loopback; reusing the registration flow to <server>
 ```
 
-Nothing to configure. Two caveats:
+Nothing to configure. One caveat:
 
-- It rides the same `--wrap` link mechanism as the WebSocket path workaround, so
-  it applies on **Linux and Android only** — Windows and Apple's linkers have no
-  `--wrap`.
 - It is switched off while two accounts name different WS servers, for the same
   reason URI pinning is: a rewrite cannot tell which account a request belongs
   to, and guessing wrong would route one account's signalling to the other's

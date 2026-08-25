@@ -8,6 +8,34 @@ All notable changes to baresdk are documented here.
 
 ### Fixed
 
+- **The BYE and in-dialog WS routing fixes now hold on every platform — and
+  the iOS build actually builds.** Both fixes used to ride GNU ld's `--wrap`,
+  which only the Linux/Android links passed, so iOS (and Windows/macOS static
+  consumers) silently shipped without them; worse, the Apple escape hatch the
+  code referenced (`RE_WEBSOCK_CONNECT_OVERRIDE` in re's websock.c) never
+  existed in the pinned libre, so `scripts/build-ios.sh` could not even link.
+  The interpositions moved into the sources: `cmake/patch-re-sources.cmake`
+  patches the fetched libre at build time — the ACK reply-drain is fixed in
+  `sipsess/reply.c` itself, and `websock_connect()` / `sip_dialog_route()` are
+  renamed to `__real_*` behind compile-time switches so baresdk's `ws_path.c`
+  owns the public names everywhere. No link step passes `--wrap` any more, and
+  `dist/` archives are self-contained (consumers no longer need the flags).
+  `src/sipsess_fix.c` is gone; the `sip_transp_send` interposition is gone too
+  — routing over the registration flow already makes libre's connection lookup
+  match the one WebSocket, so the address rewrite had nothing left to do.
+  baresip's demo executables are disabled on every platform
+  (`cmake/patch-baresip-sources.cmake`) since they link libre without
+  `ws_path.c` — the SDK only ever consumed the library.
+
+- **iOS builds had no TLS, WSS or DTLS-SRTP.** `scripts/build-ios.sh` selected
+  mbedTLS, but libre implements TLS/DTLS only over OpenSSL — an mbedTLS build
+  stubs `tls_alloc`/`dtls_listen` and ships without the secure stack (the
+  Android script has warned about exactly this all along). The OpenSSL
+  cross-build (Phase 0.5) now covers iOS: one OpenSSL per slice
+  (`ios64-xcrun`, `iossimulator-{arm64,x86_64}-xcrun`), the simulator built as
+  two thin slices and lipo-merged, and the script fails the artifact if
+  `SSL_CTX_new` is missing from the framework.
+
 - **One incoming SIP MESSAGE, presence NOTIFY, MWI NOTIFY or REFER used to
   silence the SDK permanently.** This is the most serious bug the SDK has
   shipped, and any app with a BLF or presence subscription hit it within seconds
@@ -269,9 +297,9 @@ All notable changes to baresdk are documented here.
   outgoing hangups always worked.
 
   `src/sipsess_fix.c` drains every reply the ACK matches. Interposed with
-  `--wrap` (GNU ld) rather than patched into libre, so it is **active on Linux
-  and Android only**; elsewhere the translation unit compiles away and the bug
-  remains.
+  `--wrap` (GNU ld) rather than patched into libre, so it was **active on Linux
+  and Android only** at the time; the fix has since moved into the patched
+  libre sources and applies on every platform (see Unreleased).
 
 - **Incoming calls had no audio: media was sent from an address the peer was
   never told about.** ICE learns server-reflexive candidates from STUN before
@@ -402,9 +430,10 @@ All notable changes to baresdk are documented here.
   public IPs per destination, **TURN is the only reliable answer** — see
   [NAT traversal](guides/nat_traversal.md#carrier-grade-nat-when-stun-is-not-enough).
 
-- The BYE and in-dialog routing fixes rely on GNU ld's `--wrap` and are
-  therefore **active on Linux and Android only**. On iOS, macOS and Windows the
-  translation units compile away and both bugs remain.
+- The BYE and in-dialog routing fixes relied on GNU ld's `--wrap` and were
+  therefore **active on Linux and Android only** at the time. Since resolved:
+  both fixes moved into the patched libre sources and apply on every platform
+  (see Unreleased).
 
 - `file(GLOB)` in CMakeLists.txt lacked `CONFIGURE_DEPENDS`, so a newly added
   source file was silently left out of every incremental build until the next
@@ -591,7 +620,7 @@ All notable changes to baresdk are documented here.
 
 - **Every remote hangup was reported as a call failure** — libre signals a peer-initiated termination by passing `ECONNRESET` to the session close handler: its BYE handler answers 200 OK and then calls `sipsess_terminate(sess, ECONNRESET, NULL)` (`re/src/sipsess/listen.c`), and the peer-CANCEL path does the same. baresip's close handler tests `err` before `msg`, so a perfectly normal hangup arrived as `"Connection reset by peer [104]"` and was classified `BARESDK_CALL_FAILED` with `BARESDK_ERR_TRANSPORT`. Apps that branch on `ENDED` left the call on screen, and every hangup looked like a network fault. A call that was ESTABLISHED and closes with a transport error is now reported as `BARESDK_CALL_ENDED` with the reason `"Remote hangup"`; SIP failures (486, 603, 4xx/5xx/6xx) and pre-answer errors are untouched. Verified on device against a live PBX: remote BYE → `ended`, 486 → `failed`, 603 → `failed`, local hangup → `ended`.
 
-- **WebSocket calls opened a second connection for every dialog** — RFC 7118 gives a WS client one connection and routes everything over it, but libre routes by address: for an in-dialog request it resolves the dialog's Route/Contact and looks the connection up by peer address, so a target that is not the registration peer gets a whole new WebSocket. Behind a reverse proxy that target is the server's own loopback address (Asterisk advertises `127.0.0.1:8088` in Record-Route), so every call opened a second socket that existed only for the life of the dialog. A loopback WS destination is now rewritten to the address the registration is already connected to, so libre finds and reuses the existing connection. Linux/Android only — the fix rides the same `--wrap` mechanism as the WebSocket path workaround, which Windows and Apple's linkers do not have.
+- **WebSocket calls opened a second connection for every dialog** — RFC 7118 gives a WS client one connection and routes everything over it, but libre routes by address: for an in-dialog request it resolves the dialog's Route/Contact and looks the connection up by peer address, so a target that is not the registration peer gets a whole new WebSocket. Behind a reverse proxy that target is the server's own loopback address (Asterisk advertises `127.0.0.1:8088` in Record-Route), so every call opened a second socket that existed only for the life of the dialog. A loopback WS destination was rewritten to the address the registration is already connected to, so libre finds and reuses the existing connection. (Since superseded: in-dialog requests are routed over the registration flow itself — RFC 7118 §B.2 — which makes the connection lookup match without any address rewrite, on every platform.)
 
 - **Android app-owned audio captured near-silence on every stereo call** — the reference engine asked `AudioRecord` for the channel count the codec negotiated, and Opus routinely negotiates 48 kHz **stereo**. Phones have no stereo voice-communication capture path: `CHANNEL_IN_STEREO` yields an `AudioRecord` that initialises, reads without error and returns audio roughly 36x too quiet — a call that looks perfectly healthy by frame count and that the far end cannot hear. Capture is now always mono and up-mixed to the negotiated layout before `push()`. Found on a Galaxy A54 (Android 16) against a live Asterisk echo test; peak capture level went from 0.0017 to 0.062 of full scale on the same call.
 

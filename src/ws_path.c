@@ -9,16 +9,15 @@
  * WebSocket headers (ws_origin / ws_extra_headers from baresdk_config_t),
  * and override the keepalive interval (ws_keepalive_ms).
  *
- * Linux: the shared-library link adds -Wl,--wrap=websock_connect, which
- *   rewrites callers to __wrap_websock_connect (defined here) and exposes the
- *   original as __real_websock_connect.
- *
- * Windows/MSVC and Apple (ld64) have no --wrap.  There the re build is
- *   passed -DRE_WEBSOCK_CONNECT_OVERRIDE=1, which makes libre's websock.c
- *   define __real_websock_connect instead of websock_connect.  Call sites
- *   (transp.c) still reference websock_connect; the linker resolves them to
- *   our wrapper below, which takes the public name on those platforms.
- *   No special linker flag required at any link step.
+ * Interposition mechanism (every platform, no linker flags): the libre build
+ * is patched by cmake/patch-re-sources.cmake and compiled with
+ * -DRE_WEBSOCK_CONNECT_OVERRIDE=1 -DRE_SIP_DIALOG_ROUTE_OVERRIDE=1, which
+ * renames libre's definitions of websock_connect() and sip_dialog_route() to
+ * __real_*.  This file owns the public names, so every call site — libre's
+ * own included — resolves here at link time.  This replaced the GNU-ld
+ * --wrap flags the .so links used to pass: Apple's linker has no --wrap, so
+ * the WS routing fixes never reached iOS, and dist/ static archives demanded
+ * that every consumer repeat the flags or fail to link.
  */
 
 #include <stdlib.h>
@@ -282,16 +281,9 @@ static bool ws_uri_is_dead(const char *uri)
 	return sa_is_loopback(&sa) || sa_is_any(&sa);
 }
 
-/* Windows and Apple have no --wrap: re's websock.c is compiled with
- * RE_WEBSOCK_CONNECT_OVERRIDE (renaming the real function to
- * __real_websock_connect), so our wrapper takes the public name.
- * Linux keeps the linker wrap and our wrapper is __wrap_websock_connect. */
-#if defined(_WIN32) || defined(__APPLE__)
-#  define BSDK_WS_WRAP_NAME websock_connect
-#else
-#  define BSDK_WS_WRAP_NAME __wrap_websock_connect
-#endif
-
+/* libre's websock.c is compiled with RE_WEBSOCK_CONNECT_OVERRIDE on every
+ * platform (cmake/patch-re-sources.cmake), renaming its definition to
+ * __real_websock_connect — this wrapper owns the public name everywhere. */
 int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
                             struct http_cli *cli, const char *uri,
                             unsigned kaint,
@@ -299,7 +291,7 @@ int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
                             websock_close_h *closeh, void *arg,
                             const char *fmt, ...);
 
-int BSDK_WS_WRAP_NAME(struct websock_conn **connp, struct websock *sock,
+int websock_connect(struct websock_conn **connp, struct websock *sock,
                        struct http_cli *cli, const char *uri,
                        unsigned kaint,
                        websock_estab_h *estabh, websock_recv_h *recvh,
@@ -420,47 +412,6 @@ int BSDK_WS_WRAP_NAME(struct websock_conn **connp, struct websock *sock,
 	                              estabh, recvh, closeh, arg, fmt);
 }
 
-/* ── In-dialog WebSocket connection reuse ───────────────────────────────────
- *
- * RFC 7118 says a WebSocket client has exactly one connection and every
- * request travels over it.  libre routes by address instead: for an in-dialog
- * request it resolves the dialog's Route/Contact and looks the connection up by
- * peer address (ws_conn_find), so a target that is not the registration peer
- * gets a brand-new WebSocket.
- *
- * Behind a reverse proxy that target is the server's own loopback address —
- * Asterisk advertises "127.0.0.1:8088" in Record-Route.  The wrapper above
- * rewrites the *URI* so the connection still lands on the right host, and
- * signalling therefore works, but it is a *second* connection, and the dialog
- * is bound to it.  When the call ends the server closes that socket, and libre
- * reports the close to baresip as ECONNRESET before the BYE it just answered
- * reaches the session layer — so a perfectly normal remote hangup surfaced as
- * BARESDK_CALL_FAILED with "Connection reset by peer [104]" instead of
- * BARESDK_CALL_ENDED.
- *
- * Fix it where libre makes the decision: rewrite a loopback destination back to
- * the address the registration is already connected to, so ws_conn_find()
- * matches and the existing connection is reused.  One connection, one lifetime,
- * and the BYE is the thing that closes the session.
- *
- * The peer address is learned rather than resolved: the first WS send of the
- * REGISTER goes to the real server, so remember that and use it.  No DNS here —
- * this runs on the re thread in the send path.
- *
- * Only rewritten while pinning is active (see ws_recompute()): with two
- * accounts on different servers there is no single right answer, and the same
- * reasoning that disables URI pinning applies here.
- */
-
-/* Last known-good WS/WSS peer — the address the registration is connected to.
- * Written and read on the re thread only. */
-static struct sa s_ws_peer;
-
-/* The transport that peer is actually reached on.  Learned alongside the
- * address, because rewriting one without the other does not work — see the
- * transport note in __wrap_sip_transp_send(). */
-static enum sip_transp s_ws_peer_tp = SIP_TRANSP_NONE;
-
 /* ── In-dialog routing for WebSocket dialogs (RFC 7118 §B.2) ────────────────
  *
  * An incoming call arrives with no Record-Route and a Contact naming the PBX's
@@ -563,9 +514,15 @@ static bool ws_route_is_websocket(const struct uri *route)
 /**
  * Decide the route a request should actually take.
  *
- * Split out from the wrapper so it can be tested directly: __real_* is a name
- * the linker owns under --wrap, so a test cannot stand in for it, and handing
+ * Split out from the accessor below so it can be tested directly — handing
  * libre's real accessor a synthetic dialog is not safe.
+ *
+ * Routing over the flow also keeps the *connection* right: the rebuilt route
+ * carries the registration's own host, port and transport, so libre's
+ * ws_conn_find() matches the socket the REGISTER opened instead of dialling a
+ * second WebSocket to whatever address the peer's Contact named.  (A separate
+ * sip_transp_send() interposition used to repair that by address; the route
+ * substitution makes it unnecessary.)
  */
 const struct uri *bsdk_ws_route_override(const struct uri *route);
 
@@ -595,94 +552,14 @@ const struct uri *bsdk_ws_route_override(const struct uri *route)
 	return &s_route_uri;
 }
 
+/* libre's dialog.c is compiled with RE_SIP_DIALOG_ROUTE_OVERRIDE
+ * (cmake/patch-re-sources.cmake), renaming its accessor to
+ * __real_sip_dialog_route — this file owns the public name, so every
+ * in-dialog request (BYE, re-INVITE, ACK, INFO, PRACK, UPDATE) fetches its
+ * route through the override above. */
 const struct uri *__real_sip_dialog_route(const struct sip_dialog *dlg);
-const struct uri *__wrap_sip_dialog_route(const struct sip_dialog *dlg);
 
-const struct uri *__wrap_sip_dialog_route(const struct sip_dialog *dlg)
+const struct uri *sip_dialog_route(const struct sip_dialog *dlg)
 {
 	return bsdk_ws_route_override(__real_sip_dialog_route(dlg));
-}
-
-/* Both are private to libre (src/sip/sip.h), so mirror them here — the same
- * approach baresdk_internal.h already takes for baresip internals. */
-struct sip_connqent;
-typedef void(sip_transp_h)(int err, void *arg);
-
-int __real_sip_transp_send(struct sip_connqent **qentp, struct sip *sip,
-                           void *sock, enum sip_transp tp,
-                           const struct sa *dst, char *host, struct mbuf *mb,
-                           sip_conn_h *connh, sip_transp_h *transph,
-                           void *arg);
-
-int __wrap_sip_transp_send(struct sip_connqent **qentp, struct sip *sip,
-                           void *sock, enum sip_transp tp,
-                           const struct sa *dst, char *host, struct mbuf *mb,
-                           sip_conn_h *connh, sip_transp_h *transph,
-                           void *arg);
-
-int __wrap_sip_transp_send(struct sip_connqent **qentp, struct sip *sip,
-                           void *sock, enum sip_transp tp,
-                           const struct sa *dst, char *host, struct mbuf *mb,
-                           sip_conn_h *connh, sip_transp_h *transph,
-                           void *arg)
-{
-	struct sa fixed;
-
-	if ((tp == SIP_TRANSP_WS || tp == SIP_TRANSP_WSS) && dst) {
-
-		if (!sa_is_loopback(dst)) {
-			/* The registration's own destination: remember it. */
-			s_ws_peer    = *dst;
-			s_ws_peer_tp = tp;
-		}
-		else if (g_bsdk_ws_server[0] && sa_isset(&s_ws_peer, SA_ALL)) {
-			fixed = s_ws_peer;
-			debug("baresdk: ws in-dialog target %J is loopback;"
-			      " reusing the registration flow to %J\n",
-			      dst, &fixed);
-			dst = &fixed;
-
-			/* Fix the transport too, or the address rewrite is
-			 * pointless.
-			 *
-			 * A UAS dialog's route set is just the peer's
-			 * Record-Route — unlike a UAC's, which starts with our
-			 * own outbound proxy.  Asterisk behind a reverse proxy
-			 * Record-Routes the leg *it* sees, which is plain WS on
-			 * 127.0.0.1:8088, so every in-dialog request we send on
-			 * an incoming call is built for SIP_TRANSP_WS while the
-			 * only connection we hold is WSS.  libre looks a
-			 * connection up by (transport, address), finds nothing,
-			 * and tries to open a fresh ws:// to a TLS port.
-			 *
-			 * The request is accepted and then simply never arrives:
-			 * sipsess_bye() returns 0, so hanging up an answered
-			 * incoming call reported success while the caller stayed
-			 * connected, and the ICE re-offer went the same way,
-			 * leaving media dead.  RFC 7118 §B.2 is explicit that a
-			 * WebSocket client reaches its peers through its one
-			 * WebSocket Server, so following the registration flow
-			 * is also the correct reading. */
-			if (s_ws_peer_tp != SIP_TRANSP_NONE &&
-			    s_ws_peer_tp != tp) {
-				debug("baresdk: ws in-dialog transport %s does "
-				      "not match the registration flow (%s); "
-				      "using the flow\n",
-				      sip_transp_name(tp),
-				      sip_transp_name(s_ws_peer_tp));
-				tp = s_ws_peer_tp;
-			}
-		}
-		else if (g_bsdk_ws_server[0]) {
-			/* Pinning is on but no peer learned yet — the URI
-			 * rewrite in the wrapper above still gets the request
-			 * delivered, just on its own connection. */
-			warning("baresdk: ws in-dialog target %J is loopback and"
-			        " no registration peer is known yet; a second"
-			        " WebSocket will be opened\n", dst);
-		}
-	}
-
-	return __real_sip_transp_send(qentp, sip, sock, tp, dst, host, mb,
-	                              connh, transph, arg);
 }

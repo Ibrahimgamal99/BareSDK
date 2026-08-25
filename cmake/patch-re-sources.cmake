@@ -1,0 +1,182 @@
+# patch-re-sources.cmake
+# Apply baresdk's libre patches at build time.
+# Usage: cmake -DSOURCE_DIR=path/to/re -P patch-re-sources.cmake
+#
+# third_party/re is fetched by scripts/fetch-third-party.sh at a pinned
+# revision and is gitignored — not a submodule — so an in-place patch cannot
+# leak into upstream history (the hazard fix-msvc-re.cmake retired over).
+# Each patch is idempotent behind a "baresdk-patched" marker and fails loudly
+# when a libre bump moves the text it splices at, in the spirit of the
+# configure-time prototype guard in CMakeLists.txt.
+#
+# Why patches instead of GNU ld's --wrap (which used to carry two of these
+# fixes on Linux/Android): Apple's linker has no --wrap, so iOS builds
+# silently shipped without them.  The rename patches below are the
+# compile-time equivalent — libre's definition moves to __real_*, baresdk's
+# src/ws_path.c owns the public name, and every call site resolves to it at
+# link time on every platform.  No linker flags, and dist/ archives no longer
+# require consumers to pass any.
+
+if(NOT DEFINED SOURCE_DIR)
+  message(FATAL_ERROR "SOURCE_DIR must be defined")
+endif()
+
+# Splice NEW in place of OLD in FILE, or verify it already happened.
+# OLD must match byte-for-byte (tabs included); NEW must contain the
+# "baresdk-patched" marker that makes the operation idempotent.
+function(baresdk_patch FILE OLD NEW WHAT)
+  if(NOT EXISTS "${FILE}")
+    message(FATAL_ERROR "patch-re-sources: ${FILE} does not exist (${WHAT})")
+  endif()
+  file(READ "${FILE}" _content)
+
+  string(FIND "${_content}" "baresdk-patched" _marker)
+  if(NOT _marker EQUAL -1)
+    message(STATUS "patch-re-sources: ${FILE} already patched (${WHAT})")
+    return()
+  endif()
+
+  string(FIND "${_content}" "${OLD}" _anchor)
+  if(_anchor EQUAL -1)
+    message(FATAL_ERROR
+      "patch-re-sources: anchor not found in ${FILE} for: ${WHAT}\n"
+      "The pinned libre revision has moved the code this patch splices at. "
+      "Re-derive the patch against the new revision before building — "
+      "shipping without it silently reintroduces the bug it fixes.")
+  endif()
+
+  string(REPLACE "${OLD}" "${NEW}" _content "${_content}")
+  file(WRITE "${FILE}" "${_content}")
+  message(STATUS "patch-re-sources: patched ${FILE} (${WHAT})")
+endfunction()
+
+# ---------------------------------------------------------------------------
+# 1. sipsess/reply.c — hanging up an answered incoming call must send the BYE
+#
+# A UAS that rang before answering holds two reply records with the same
+# INVITE CSeq (the 1xx's and the 2xx's), and cmp_handler matches on the CSeq
+# alone.  list_apply() stops at the first hit, so the ACK freed exactly one;
+# the survivor made the session destructor's termwait() defer the BYE to the
+# record's 64*T1 (32 s) retransmit timeout.  Hanging up an answered incoming
+# call reported success with nothing on the wire, and the caller's eventual
+# BYE was answered 481.  Drain every record the ACK matches — that is the
+# intended semantic anyway: these records exist to retransmit the response
+# until the ACK arrives.  A plain bug fix, upstreamable as-is.
+# ---------------------------------------------------------------------------
+baresdk_patch("${SOURCE_DIR}/src/sipsess/reply.c"
+[=[
+int sipsess_reply_ack(struct sipsess *sess, const struct sip_msg *msg)
+{
+	struct sipsess_reply *reply;
+
+	reply = list_ledata(list_apply(&sess->replyl, false, cmp_handler,
+				       (void *)msg));
+	if (!reply)
+		return ENOENT;
+
+	mem_deref(reply);
+
+	return 0;
+}
+]=]
+[=[
+int sipsess_reply_ack(struct sipsess *sess, const struct sip_msg *msg)
+{
+	/* baresdk-patched: drain every reply record this ACK matches.
+	 *
+	 * A UAS that sent a 1xx and the 2xx holds two records with the same
+	 * INVITE CSeq, and cmp_handler matches on the CSeq alone; freeing
+	 * only the first left the other alive for the life of the call, and
+	 * the session destructor's termwait() then deferred the BYE to that
+	 * record's 64*T1 (32 s) timeout — an answered incoming call's hangup
+	 * reported success with nothing on the wire.  The records exist to
+	 * retransmit the response until the ACK arrives, so the ACK is what
+	 * retires them — all of them.  The bound is paranoia: a runaway loop
+	 * here would hang the re thread and all of SIP with it. */
+	struct sipsess_reply *reply;
+	unsigned n = 0;
+
+	while (NULL != (reply = list_ledata(
+				list_apply(&sess->replyl, false, cmp_handler,
+					   (void *)msg)))) {
+		mem_deref(reply);
+		if (++n >= 16)
+			break;
+	}
+
+	return n ? 0 : ENOENT;
+}
+]=]
+"BYE after answered incoming call: ACK drains all matching reply records")
+
+# ---------------------------------------------------------------------------
+# 2. sip/dialog.c — route accessor rename behind RE_SIP_DIALOG_ROUTE_OVERRIDE
+#
+# Every in-dialog request (BYE, re-INVITE, ACK, INFO, PRACK, UPDATE) fetches
+# its destination through sip_dialog_route().  When the PBX sends no
+# Record-Route, libre falls back to the peer's Contact — behind a reverse
+# proxy that names the server's own internal address, so the request dies in
+# DNS after being reported sent (RFC 7118 B.2 says a WebSocket client's
+# requests belong on the flow the registration established).  baresdk decides
+# the route in bsdk_ws_route_override() (src/ws_path.c); this rename lets it
+# own the public accessor.
+# ---------------------------------------------------------------------------
+baresdk_patch("${SOURCE_DIR}/src/sip/dialog.c"
+[=[
+const struct uri *sip_dialog_route(const struct sip_dialog *dlg)
+{
+	return dlg ? &dlg->route : NULL;
+}
+]=]
+[=[
+#ifdef RE_SIP_DIALOG_ROUTE_OVERRIDE
+/* baresdk-patched: the SDK owns the public accessor so in-dialog WebSocket
+ * requests can be routed over the registration flow (RFC 7118 B.2); see
+ * baresdk's src/ws_path.c.  Same compile-time rename websock.c carries for
+ * RE_WEBSOCK_CONNECT_OVERRIDE — call sites keep the public name and resolve
+ * to the SDK's definition at link time; no linker tricks involved. */
+const struct uri *__real_sip_dialog_route(const struct sip_dialog *dlg)
+#else
+const struct uri *sip_dialog_route(const struct sip_dialog *dlg)
+#endif
+{
+	return dlg ? &dlg->route : NULL;
+}
+]=]
+"in-dialog route accessor rename (RFC 7118 B.2 routing hook)")
+
+# ---------------------------------------------------------------------------
+# 3. websock/websock.c — connect rename behind RE_WEBSOCK_CONNECT_OVERRIDE
+#
+# The hook ws_path.c and the MSVC/Apple builds have referenced all along
+# (fix-msvc-re.cmake documents it) but which never actually existed in the
+# pinned libre — Apple builds could not even link.  baresdk's wrapper pins
+# the connect URI to the configured server and injects Origin/extra headers
+# and the keepalive override.
+# ---------------------------------------------------------------------------
+baresdk_patch("${SOURCE_DIR}/src/websock/websock.c"
+[=[
+int websock_connect(struct websock_conn **connp, struct websock *sock,
+		    struct http_cli *cli, const char *uri, unsigned kaint,
+		    websock_estab_h *estabh, websock_recv_h *recvh,
+		    websock_close_h *closeh, void *arg, const char *fmt, ...)
+]=]
+[=[
+#ifdef RE_WEBSOCK_CONNECT_OVERRIDE
+/* baresdk-patched: the SDK owns the public name so it can pin the connect
+ * URI to the configured server and inject the Origin/extra headers; see
+ * baresdk's src/ws_path.c. */
+int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
+		    struct http_cli *cli, const char *uri, unsigned kaint,
+		    websock_estab_h *estabh, websock_recv_h *recvh,
+		    websock_close_h *closeh, void *arg, const char *fmt, ...)
+#else
+int websock_connect(struct websock_conn **connp, struct websock *sock,
+		    struct http_cli *cli, const char *uri, unsigned kaint,
+		    websock_estab_h *estabh, websock_recv_h *recvh,
+		    websock_close_h *closeh, void *arg, const char *fmt, ...)
+#endif
+]=]
+"websock_connect rename (WS URI pinning hook)")
+
+message(STATUS "patch-re-sources: libre patching complete")

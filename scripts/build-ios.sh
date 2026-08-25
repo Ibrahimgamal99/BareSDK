@@ -3,7 +3,8 @@
 #
 # Output:
 #   dist/ios/baresdk.xcframework    device (arm64) + simulator (arm64, x86_64)
-#   dist/ios/<slice>/baresdk.a      static archives (for non-Flutter consumers)
+#   dist/ios/device/baresdk.a       static archive (for non-Flutter consumers)
+#   dist/ios/simulator/baresdk.a    fat static archive (arm64 + x86_64)
 #   dist/ios/include/               public headers
 # Also refreshes the Flutter plugin's vendored copy in
 # bindings/flutter/ios/Frameworks/ — no second command to run.
@@ -13,6 +14,13 @@
 # dead-stripped from Release app binaries; a dylib's exported symbols are
 # always visible to DynamicLibrary.process(). CocoaPods embeds vendored
 # dynamic frameworks automatically.
+#
+# TLS is OpenSSL, cross-built from source per slice (Phase 0.5 in
+# CMakeLists.txt): libre implements TLS/DTLS only over OpenSSL, so an mbedTLS
+# build silently ships without SIP/TLS, SIP/WSS and DTLS-SRTP — the secure
+# stack this SDK exists to provide. OpenSSL's perl build does one architecture
+# per Configure run, which is why the simulator is built as two thin slices
+# and lipo-merged rather than one fat cmake build.
 #
 # Env knobs:
 #   IOS_DEPLOYMENT_TARGET  minimum iOS (default 13.0)
@@ -24,31 +32,35 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 MIN_IOS="${IOS_DEPLOYMENT_TARGET:-13.0}"
 DIST="${ROOT}/dist/ios"
+# -lz: re's cmake defines USE_ZLIB whenever find_package(ZLIB) succeeds, which
+# it does against the Apple SDK (libz.tbd), and re_crc32() then calls zlib's
+# crc32() for the STUN FINGERPRINT attribute — same story as the Android link.
 FRAMEWORKS_FOR_LINK=(-framework AVFoundation -framework AudioToolbox
-                     -framework CoreAudio -framework CoreFoundation)
+                     -framework CoreAudio -framework CoreFoundation
+                     -lz)
 
 if ! command -v xcodebuild >/dev/null; then
   echo "ERROR: xcodebuild not found — this script requires macOS + Xcode." >&2
   exit 1
 fi
 
-# Fetch third-party sources (idempotent; mbedtls incl. its framework submodule).
-BARESDK_TLS=mbedtls "${SCRIPT_DIR}/fetch-third-party.sh"
+# Fetch third-party sources (idempotent), OpenSSL included — see TLS note above.
+BARESDK_TLS=openssl BARESDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
 
 # ---------------------------------------------------------------------------
-# Helper: configure + build the static archive for one slice
+# Helper: configure + build the static archive for one single-arch slice
 # ---------------------------------------------------------------------------
 build_slice() {
-  local NAME="$1"; local SYSROOT="$2"; local ARCHS="$3"
+  local NAME="$1"; local SYSROOT="$2"; local ARCH="$3"
   local BUILD_DIR="${ROOT}/build/ios-${NAME}"
 
   rm -rf "${BUILD_DIR}"
   cmake -S "${ROOT}" -B "${BUILD_DIR}" -GXcode \
     -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_OSX_SYSROOT="${SYSROOT}" \
-    -DCMAKE_OSX_ARCHITECTURES="${ARCHS}" \
+    -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="${MIN_IOS}" \
-    -DBARESDK_TLS=mbedtls \
+    -DBARESDK_TLS=openssl \
     -DBARESDK_MODULES_PROFILE=mobile
 
   cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" --target baresdk \
@@ -126,26 +138,38 @@ link_dylib iphoneos arm64 "" \
 make_framework "${DIST}/device/baresdk.dylib" "${DIST}/device/baresdk.framework"
 
 # ---------------------------------------------------------------------------
-# Simulator slice: arm64 + x86_64 (fat) / iphonesimulator
-# Device-arm64 and simulator-arm64 are distinct slices by their Mach-O
-# LC_BUILD_VERSION platform tag — lipo alone cannot merge them; the
+# Simulator slices: arm64 and x86_64 built thin (one OpenSSL arch per
+# Configure run), dylibs lipo-merged. Device-arm64 and simulator-arm64 remain
+# distinct slices by their Mach-O LC_BUILD_VERSION platform tag — the
 # xcframework keeps them apart.
 # ---------------------------------------------------------------------------
-echo "=== iOS simulator (arm64 + x86_64, iphonesimulator) ==="
-build_slice "simulator" "iphonesimulator" "arm64;x86_64"
+echo "=== iOS simulator (arm64, iphonesimulator) ==="
+build_slice "sim-arm64" "iphonesimulator" "arm64"
 link_dylib iphonesimulator arm64 "-simulator" \
-  "${DIST}/simulator/baresdk.a" "${DIST}/simulator/baresdk-arm64.dylib"
+  "${DIST}/sim-arm64/baresdk.a" "${DIST}/sim-arm64/baresdk.dylib"
+
+echo "=== iOS simulator (x86_64, iphonesimulator) ==="
+build_slice "sim-x86_64" "iphonesimulator" "x86_64"
 link_dylib iphonesimulator x86_64 "-simulator" \
-  "${DIST}/simulator/baresdk.a" "${DIST}/simulator/baresdk-x86_64.dylib"
+  "${DIST}/sim-x86_64/baresdk.a" "${DIST}/sim-x86_64/baresdk.dylib"
+
+mkdir -p "${DIST}/simulator"
 lipo -create \
-  "${DIST}/simulator/baresdk-arm64.dylib" \
-  "${DIST}/simulator/baresdk-x86_64.dylib" \
+  "${DIST}/sim-arm64/baresdk.dylib" \
+  "${DIST}/sim-x86_64/baresdk.dylib" \
   -output "${DIST}/simulator/baresdk.dylib"
+# Fat static archive for non-Flutter consumers, same layout as before.
+lipo -create \
+  "${DIST}/sim-arm64/baresdk.a" \
+  "${DIST}/sim-x86_64/baresdk.a" \
+  -output "${DIST}/simulator/baresdk.a"
 make_framework "${DIST}/simulator/baresdk.dylib" \
   "${DIST}/simulator/baresdk.framework"
 
 # ---------------------------------------------------------------------------
-# Verify before packaging: exported API + WSS wrapper present
+# Verify before packaging: exported API, the SIP-fix renames, and a real TLS
+# stack (an OpenSSL-less build stubs tls_alloc and ships without WSS/DTLS-SRTP
+# — exactly the regression this script's TLS choice exists to prevent).
 # ---------------------------------------------------------------------------
 for SLICE in device simulator; do
   BIN="${DIST}/${SLICE}/baresdk.framework/baresdk"
@@ -154,10 +178,19 @@ for SLICE in device simulator; do
     echo "ERROR: ${SLICE}: only ${EXPORTS} baresdk_* symbols exported" >&2
     exit 1
   fi
-  # Apple builds use the compile-time websock override — the wrapper owns the
-  # public name and the real function is __real_websock_connect.
+  # The SIP fixes ride the patched libre sources (cmake/patch-re-sources.cmake):
+  # libre's definitions are renamed to __real_* and ws_path.c owns the public
+  # names. A missing rename means the patch step did not run.
   if ! xcrun nm -U "${BIN}" | grep -q '___real_websock_connect'; then
-    echo "ERROR: ${SLICE}: websock override missing (RE_WEBSOCK_CONNECT_OVERRIDE not applied?)" >&2
+    echo "ERROR: ${SLICE}: websock rename missing (patch-re-sources.cmake not applied?)" >&2
+    exit 1
+  fi
+  if ! xcrun nm -U "${BIN}" | grep -q '___real_sip_dialog_route'; then
+    echo "ERROR: ${SLICE}: sip_dialog_route rename missing (patch-re-sources.cmake not applied?)" >&2
+    exit 1
+  fi
+  if ! xcrun nm -U "${BIN}" | grep -q ' _SSL_CTX_new'; then
+    echo "ERROR: ${SLICE}: OpenSSL missing from the binary — this build has no TLS/WSS/DTLS-SRTP" >&2
     exit 1
   fi
 done

@@ -152,9 +152,12 @@ add_custom_target(gen_hpp ALL
 
 set(BARESDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
 set(BARESDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
-# Desktop targets link the platform's own libssl/libcrypto. Android has no
-# system OpenSSL, so cross-compiled targets build it from third_party/openssl.
-if(ANDROID_ABI AND BARESDK_TLS STREQUAL "openssl")
+# Desktop targets link the platform's own libssl/libcrypto. Android and iOS
+# have no system OpenSSL, so cross-compiled targets build it from
+# third_party/openssl.  (libre implements TLS/DTLS only over OpenSSL — an
+# mbedTLS build silently stubs out SIP/TLS, SIP/WSS and DTLS-SRTP; see the
+# Phase 0.5 note below.)
+if((ANDROID_ABI OR CMAKE_SYSTEM_NAME STREQUAL "iOS") AND BARESDK_TLS STREQUAL "openssl")
   set(_build_openssl_default ON)
 else()
   set(_build_openssl_default OFF)
@@ -323,7 +326,7 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# Phase 0.5 (Android): cross-build OpenSSL
+# Phase 0.5 (Android, iOS): cross-build OpenSSL
 #
 # libre implements TLS *only* over OpenSSL — src/tls/ has an openssl/ backend
 # and nothing else; USE_MBEDTLS there only swaps the hmac/md5/sha primitives.
@@ -331,8 +334,8 @@ endif()
 # dtls_listen and aes_alloc are all no-ops. That silently costs the whole
 # secure stack: baresip's SIP/TLS and SIP/WSS transports are behind
 # #ifdef USE_TLS (which re-config.cmake defines only for OpenSSL), and its
-# dtls_srtp module returns early on `NOT USE_OPENSSL`. Android has no system
-# OpenSSL, so build one here.
+# dtls_srtp module returns early on `NOT USE_OPENSSL`. Neither Android nor iOS
+# has a system OpenSSL, so build one here.
 # ---------------------------------------------------------------------------
 set(OPENSSL_ARGS "")
 set(OPENSSL_EXTRA_LIBS "")
@@ -349,33 +352,71 @@ if(BARESDK_BUILD_OPENSSL)
 
   find_package(Perl REQUIRED)   # OpenSSL's Configure is a perl script
 
-  # OpenSSL names its Android targets by architecture, not by Android ABI.
-  if(ANDROID_ABI STREQUAL "arm64-v8a")
-    set(_OSSL_TARGET "android-arm64")
-  elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
-    set(_OSSL_TARGET "android-arm")
-  elseif(ANDROID_ABI STREQUAL "x86_64")
-    set(_OSSL_TARGET "android-x86_64")
-  elseif(ANDROID_ABI STREQUAL "x86")
-    set(_OSSL_TARGET "android-x86")
-  else()
-    message(FATAL_ERROR "No OpenSSL target mapping for ANDROID_ABI=${ANDROID_ABI}")
-  endif()
+  if(ANDROID_ABI)
+    # OpenSSL names its Android targets by architecture, not by Android ABI.
+    if(ANDROID_ABI STREQUAL "arm64-v8a")
+      set(_OSSL_TARGET "android-arm64")
+    elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+      set(_OSSL_TARGET "android-arm")
+    elseif(ANDROID_ABI STREQUAL "x86_64")
+      set(_OSSL_TARGET "android-x86_64")
+    elseif(ANDROID_ABI STREQUAL "x86")
+      set(_OSSL_TARGET "android-x86")
+    else()
+      message(FATAL_ERROR "No OpenSSL target mapping for ANDROID_ABI=${ANDROID_ABI}")
+    endif()
 
-  # Configure needs the NDK root plus its clang wrappers on PATH. Derive both
-  # from the compiler CMake already resolved rather than trusting an env var:
-  # <ndk>/toolchains/llvm/prebuilt/<host>/bin/clang.
-  get_filename_component(_OSSL_LLVM_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
-  if(DEFINED ANDROID_NDK)
-    set(_OSSL_NDK "${ANDROID_NDK}")
-  else()
-    get_filename_component(_OSSL_NDK "${_OSSL_LLVM_BIN}/../../../.." ABSOLUTE)
-  endif()
+    # Configure needs the NDK root plus its clang wrappers on PATH. Derive both
+    # from the compiler CMake already resolved rather than trusting an env var:
+    # <ndk>/toolchains/llvm/prebuilt/<host>/bin/clang.
+    get_filename_component(_OSSL_LLVM_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
+    if(DEFINED ANDROID_NDK)
+      set(_OSSL_NDK "${ANDROID_NDK}")
+    else()
+      get_filename_component(_OSSL_NDK "${_OSSL_LLVM_BIN}/../../../.." ABSOLUTE)
+    endif()
 
-  if(DEFINED ANDROID_PLATFORM_LEVEL)
-    set(_OSSL_API "${ANDROID_PLATFORM_LEVEL}")
+    if(DEFINED ANDROID_PLATFORM_LEVEL)
+      set(_OSSL_API "${ANDROID_PLATFORM_LEVEL}")
+    else()
+      set(_OSSL_API "${CMAKE_SYSTEM_VERSION}")
+    endif()
+
+    set(_OSSL_ENV "ANDROID_NDK_ROOT=${_OSSL_NDK}"
+                  "PATH=${_OSSL_LLVM_BIN}:$ENV{PATH}")
+    set(_OSSL_TARGET_ARGS ${_OSSL_TARGET} "-D__ANDROID_API__=${_OSSL_API}")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # OpenSSL's perl build compiles exactly one architecture per Configure
+    # run, so an iOS build needs a single-arch CMAKE_OSX_ARCHITECTURES —
+    # scripts/build-ios.sh builds device-arm64 / sim-arm64 / sim-x86_64 as
+    # separate slices and lipo-merges the results.
+    list(LENGTH CMAKE_OSX_ARCHITECTURES _OSSL_NARCH)
+    if(_OSSL_NARCH GREATER 1)
+      message(FATAL_ERROR
+        "BARESDK_BUILD_OPENSSL on iOS needs a single-arch build, got "
+        "CMAKE_OSX_ARCHITECTURES='${CMAKE_OSX_ARCHITECTURES}'. Build one "
+        "slice per architecture and lipo them (see scripts/build-ios.sh).")
+    endif()
+    # The *-xcrun targets locate the SDK via xcrun themselves; only the arch
+    # and the minimum OS need pinning here so OpenSSL matches the rest of the
+    # slice (iossimulator-{arm64,x86_64}-xcrun exist since OpenSSL 3.2).
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+      if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+        set(_OSSL_TARGET "iossimulator-x86_64-xcrun")
+      else()
+        set(_OSSL_TARGET "iossimulator-arm64-xcrun")
+      endif()
+      set(_OSSL_MINVER "-mios-simulator-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    else()
+      set(_OSSL_TARGET "ios64-xcrun")
+      set(_OSSL_MINVER "-mios-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    endif()
+    set(_OSSL_ENV)   # xcrun is on PATH already; no extra environment needed
+    set(_OSSL_TARGET_ARGS ${_OSSL_TARGET} "${_OSSL_MINVER}")
   else()
-    set(_OSSL_API "${CMAKE_SYSTEM_VERSION}")
+    message(FATAL_ERROR
+      "BARESDK_BUILD_OPENSSL=ON has no cross-target mapping for "
+      "'${CMAKE_SYSTEM_NAME}'. Desktop builds use the system OpenSSL instead.")
   endif()
 
   set(_SSL_A    "${SYSROOT}/lib/libssl.a")
@@ -409,11 +450,9 @@ if(BARESDK_BUILD_OPENSSL)
     BINARY_DIR "${CMAKE_BINARY_DIR}/openssl-build"
     CONFIGURE_COMMAND
       ${CMAKE_COMMAND} -E env
-        "ANDROID_NDK_ROOT=${_OSSL_NDK}"
-        "PATH=${_OSSL_LLVM_BIN}:$ENV{PATH}"
+        ${_OSSL_ENV}
         "${PERL_EXECUTABLE}" "${BARESDK_OPENSSL_SOURCE_DIR}/Configure"
-        ${_OSSL_TARGET}
-        "-D__ANDROID_API__=${_OSSL_API}"
+        ${_OSSL_TARGET_ARGS}
         no-shared no-tests no-apps no-docs
         ${_OSSL_TRIM}
         "--prefix=${SYSROOT}"
@@ -421,13 +460,11 @@ if(BARESDK_BUILD_OPENSSL)
         "--libdir=lib"
     BUILD_COMMAND
       ${CMAKE_COMMAND} -E env
-        "ANDROID_NDK_ROOT=${_OSSL_NDK}"
-        "PATH=${_OSSL_LLVM_BIN}:$ENV{PATH}"
+        ${_OSSL_ENV}
         make -j${_OSSL_JOBS} build_libs
     INSTALL_COMMAND
       ${CMAKE_COMMAND} -E env
-        "ANDROID_NDK_ROOT=${_OSSL_NDK}"
-        "PATH=${_OSSL_LLVM_BIN}:$ENV{PATH}"
+        ${_OSSL_ENV}
         make install_dev
     BUILD_BYPRODUCTS "${_SSL_A}" "${_CRYPTO_A}"
   )
@@ -573,15 +610,15 @@ if(BARESDK_TLS STREQUAL "mbedtls" AND NOT MSVC)
   # never MBEDTLS_INCLUDE_DIR — so hand the header path to the compiler.
   string(APPEND _RE_CFLAGS " -isystem${SYSROOT}/include")
 endif()
-if(MSVC OR APPLE)
-  # websock.c exposes __real_websock_connect instead of websock_connect so
-  # ws_path.c can provide websock_connect as the wrapper without a duplicate
-  # symbol.  On Linux --wrap=websock_connect handles this at link time; MSVC
-  # and Apple's ld64 have no --wrap, so the compile-time rename is used
-  # (RE_WEBSOCK_CONNECT_OVERRIDE hook in re's websock.c; ws_path.c names its
-  # wrapper `websock_connect` on those platforms).
-  string(APPEND _RE_CFLAGS " -DRE_WEBSOCK_CONNECT_OVERRIDE=1")
-endif()
+# The SDK owns websock_connect() and sip_dialog_route() on every platform:
+# cmake/patch-re-sources.cmake renames libre's definitions to __real_* behind
+# these compile-time switches, and src/ws_path.c provides the public names, so
+# every call site resolves to the SDK at link time.  This replaced the GNU-ld
+# --wrap flags the shared-library links used to pass — Apple's linker has no
+# --wrap, so the WS routing and BYE fixes never reached iOS (which could not
+# even link: the rename hook this flag enables did not exist in the pinned re).
+string(APPEND _RE_CFLAGS
+       " -DRE_WEBSOCK_CONNECT_OVERRIDE=1 -DRE_SIP_DIALOG_ROUTE_OVERRIDE=1")
 if(NOT _RE_CFLAGS STREQUAL "")
   list(APPEND RE_PLATFORM_ARGS "-DCMAKE_C_FLAGS=${_RE_CFLAGS}")
 endif()
@@ -605,6 +642,20 @@ ExternalProject_Add(re_project
     ${_NOTRACK_ARG}
     ${CROSS_ARGS}
   BUILD_BYPRODUCTS "${_RE_A}"
+)
+
+# Apply baresdk's libre patches (BYE reply-drain, the route/websock rename
+# hooks) before anything is compiled.  third_party/re is fetched by
+# scripts/fetch-third-party.sh at a pinned revision and gitignored — not a
+# submodule — so the patch cannot leak into upstream history.  The script is
+# idempotent and fails loudly when a re bump moves the code it splices at.
+ExternalProject_Add_Step(re_project patch_sources
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_DIR=${BARESDK_RE_SOURCE_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-re-sources.cmake
+  DEPENDEES update
+  DEPENDERS configure
+  COMMENT "Patching libre sources (baresdk SIP fixes)"
 )
 
 # Patch libre headers for MSVC compatibility on Windows
@@ -660,6 +711,19 @@ ExternalProject_Add(baresip_project
   # which the BUILD_COMMAND above has already produced.
   INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --component Development
   BUILD_BYPRODUCTS "${_BARE_A}"
+)
+
+# baresip's executables (baresip_exe, test/, webrtc/) link libre without
+# ws_path.c, which owns the public websock_connect/sip_dialog_route names on
+# every platform now — disable them everywhere (the SDK only consumes the
+# static library).
+ExternalProject_Add_Step(baresip_project disable_executables
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_DIR=${BARESDK_BARESIP_SOURCE_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-baresip-sources.cmake
+  DEPENDEES update
+  DEPENDERS configure
+  COMMENT "Patching baresip sources (executables disabled)"
 )
 
 if(WIN32)
@@ -804,22 +868,13 @@ if(BARESDK_SHARED)
       set(_ONDEMAND_LIBS "")
     endif()
     # opus is already merged into baresdk.a via OPUS_EXTRA_LIBS — no -lopus needed
+    # No --wrap flags: the SIP fixes formerly interposed here live in the
+    # patched libre sources (cmake/patch-re-sources.cmake) and in ws_path.c's
+    # ownership of the public websock_connect/sip_dialog_route names, so they
+    # hold on every platform and dist/ archives are self-contained.
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
       COMMAND "${CMAKE_C_COMPILER}" -shared
-              -Wl,--wrap=websock_connect
-              # Reuses the one WebSocket for in-dialog requests; see the
-              # in-dialog reuse note in src/ws_path.c.
-              -Wl,--wrap=sip_transp_send
-              # In-dialog requests follow the WebSocket flow, not the peer's
-              # unroutable Contact (RFC 7118 B.2). See src/ws_path.c.
-              -Wl,--wrap=sip_dialog_route
-              # Clears every reply the ACK matches, so hanging up an answered
-              # incoming call actually sends the BYE; see src/sipsess_fix.c.
-              -Wl,--wrap=sipsess_reply_ack
-              # Reports a BYE that could not be sent; libre discards the
-              # error. See src/sipsess_fix.c.
-              -Wl,--wrap=sipsess_bye
               ${_SHARED_LINK_EXTRA}
               -Wl,--whole-archive ${_WHOLE_LIBS} -Wl,--no-whole-archive
               ${_ONDEMAND_LIBS}

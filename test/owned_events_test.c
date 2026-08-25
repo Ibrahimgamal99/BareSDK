@@ -12,7 +12,6 @@
  * Build (from repo root, after scripts/build-linux.sh):
  *   gcc -fsanitize=address -g -O1 -std=gnu11 \
  *       -Iinclude test/owned_events_test.c \
- *       -Wl,--wrap=websock_connect \
  *       -Wl,--whole-archive dist/linux/x86_64/baresdk.a -Wl,--no-whole-archive \
  *       -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl -lstdc++ -lpulse \
  *       -o test/owned_events_test && ./test/owned_events_test

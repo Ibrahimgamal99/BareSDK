@@ -85,14 +85,18 @@ for ABI in ${ABIS}; do
   if [ "${EXPORTS}" -lt 40 ]; then
     echo "ERROR: only ${EXPORTS} baresdk_* symbols exported" >&2; exit 1
   fi
-  if ! grep -q '__wrap_websock_connect' <<<"${DEFINED}"; then
-    echo "ERROR: websock_connect wrapper missing (--wrap not applied?)" >&2; exit 1
+  # The SIP fixes ride the patched libre sources (cmake/patch-re-sources.cmake):
+  # libre's definitions are renamed to __real_* and ws_path.c owns the public
+  # names. A missing __real_* means the patch step did not run and the shipped
+  # library would carry the unrouted-BYE bug again.
+  if ! grep -q '__real_websock_connect' <<<"${DEFINED}"; then
+    echo "ERROR: websock rename missing (patch-re-sources.cmake not applied?)" >&2; exit 1
   fi
-  if ! grep -q '__wrap_sip_transp_send' <<<"${DEFINED}"; then
-    echo "ERROR: sip_transp_send wrapper missing (--wrap not applied?)" >&2; exit 1
+  if ! grep -q '__real_sip_dialog_route' <<<"${DEFINED}"; then
+    echo "ERROR: sip_dialog_route rename missing (patch-re-sources.cmake not applied?)" >&2; exit 1
   fi
   UNDEF=$("${LLVM_BIN}/llvm-nm" -D --undefined-only "${SO}" \
-          | grep -E ' (mbedtls_|opus_|SSL_|EVP_|X509_|__real_websock_connect|__real_sip_transp_send|AAudio)' || true)
+          | grep -E ' (mbedtls_|opus_|SSL_|EVP_|X509_|__real_websock_connect|__real_sip_dialog_route|AAudio)' || true)
   if [ -n "${UNDEF}" ]; then
     echo "ERROR: unresolved symbols in ${SO}:" >&2
     echo "${UNDEF}" >&2; exit 1

@@ -28,37 +28,9 @@ if(EXISTS "${BARESIP_H}")
   message(STATUS "Patched ${BARESIP_H} for MSVC (net_ifaddr_h double-pointer fix)")
 endif()
 
-# Skip building baresip's executables (selftest, baresip_exe, webrtc demo).
-# Our build renames websock_connect() in libre's websock.c (see
-# fix-msvc-re.cmake) so the only consumer that provides the symbol is our
-# SDK's ws_path.c.  These executables link libre directly without ws_path
-# and would fail with LNK2019.  We only need libbaresip.lib for the SDK.
-set(BARESIP_CMAKE "${SOURCE_DIR}/CMakeLists.txt")
-if(EXISTS "${BARESIP_CMAKE}")
-  file(READ "${BARESIP_CMAKE}" CONTENT)
-  string(FIND "${CONTENT}" "# baresdk-msvc-disabled" _ALREADY)
-  if(_ALREADY EQUAL -1)
-    string(REPLACE
-      "add_subdirectory(webrtc)"
-      "# add_subdirectory(webrtc)  # baresdk-msvc-disabled"
-      CONTENT "${CONTENT}")
-    string(REPLACE
-      "add_subdirectory(test)"
-      "# add_subdirectory(test)  # baresdk-msvc-disabled"
-      CONTENT "${CONTENT}")
-    string(REPLACE
-      "add_executable(baresip_exe src/main.c)"
-      "add_executable(baresip_exe EXCLUDE_FROM_ALL src/main.c)  # baresdk-msvc-disabled"
-      CONTENT "${CONTENT}")
-    string(REPLACE
-      "install(TARGETS baresip_exe baresip"
-      "install(TARGETS baresip  # baresdk-msvc-disabled baresip_exe"
-      CONTENT "${CONTENT}")
-    file(WRITE "${BARESIP_CMAKE}" "${CONTENT}")
-    message(STATUS "Patched ${BARESIP_CMAKE} (executables disabled for MSVC)")
-  else()
-    message(STATUS "${BARESIP_CMAKE} already patched (executables disabled)")
-  endif()
-endif()
+# NOTE: disabling baresip's executables (baresip_exe, test/, webrtc/) used to
+# live here, MSVC-only. It moved to cmake/patch-baresip-sources.cmake and runs
+# on every platform now that the websock_connect/sip_dialog_route renames are
+# unconditional (see cmake/patch-re-sources.cmake).
 
 message(STATUS "MSVC baresip source patching complete")

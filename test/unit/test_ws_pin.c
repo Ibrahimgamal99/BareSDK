@@ -2,9 +2,10 @@
  * @file test_ws_pin.c  Unit tests for WebSocket connection pinning (ws_path.c)
  *
  * Links the real ws_path.c (compiled into this binary) against libre, stubs
- * __real_websock_connect to capture the URI the wrapper decided on, and drives
- * the registry the way account.c does — one set() per account create, one
- * unset() per destroy.
+ * __real_websock_connect (libre's renamed definition — see
+ * cmake/patch-re-sources.cmake) to capture the URI the wrapper decided on,
+ * and drives the registry the way account.c does — one set() per account
+ * create, one unset() per destroy.
  *
  * What is worth pinning down here, because getting it wrong is silent and only
  * shows up as calls that die ~32 s in:
@@ -65,19 +66,27 @@ int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
 	return 0;
 }
 
-int __wrap_websock_connect(struct websock_conn **connp, struct websock *sock,
-                           struct http_cli *cli, const char *uri,
-                           unsigned kaint,
-                           websock_estab_h *estabh, websock_recv_h *recvh,
-                           websock_close_h *closeh, void *arg,
-                           const char *fmt, ...);
+/* ws_path.c's sip_dialog_route glue references libre's renamed accessor; the
+ * route tests below exercise bsdk_ws_route_override() directly, so the glue
+ * is never called here.  Weak: if the link pulls libre's dialog.o (which
+ * defines the real one under the rename) the real definition wins, and if it
+ * does not, this stub satisfies the reference. */
+struct sip_dialog;
+__attribute__((weak))
+const struct uri *__real_sip_dialog_route(const struct sip_dialog *dlg)
+{
+	(void)dlg;
+	return NULL;
+}
 
-/* The URI the wrapper would actually connect to, for a libre-style call. */
+/* The URI the wrapper would actually connect to, for a libre-style call.
+ * websock_connect() resolves to ws_path.c's definition — the public name it
+ * owns in the shipped library too (libre's is renamed to __real_*). */
 static const char *connect_to(const char *uri)
 {
 	g_used[0] = '\0';
-	__wrap_websock_connect(NULL, NULL, NULL, uri, 0, NULL, NULL, NULL,
-	                       NULL, "Sec-WebSocket-Protocol: sip\r\n");
+	websock_connect(NULL, NULL, NULL, uri, 0, NULL, NULL, NULL,
+	                NULL, "Sec-WebSocket-Protocol: sip\r\n");
 	return g_used;
 }
 
@@ -228,10 +237,9 @@ static void test_no_servers_passthrough(void)
  * the caller stayed on a call the app had already reported as ended.
  */
 
-/* The decision under test.  Exercised directly rather than through
- * __wrap_sip_dialog_route(): --wrap makes __real_sip_dialog_route the linker's
- * alias for libre's own accessor, so a test cannot stand in for it, and handing
- * the real one a synthetic dialog is not safe. */
+/* The decision under test.  Exercised directly rather than through the
+ * sip_dialog_route() glue: handing libre's real accessor a synthetic dialog
+ * is not safe. */
 const struct uri *bsdk_ws_route_override(const struct uri *route);
 
 static struct uri g_dlg_route;

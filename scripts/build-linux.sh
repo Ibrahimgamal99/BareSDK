@@ -30,12 +30,9 @@ SO="${DIST_DIR}/baresdk.so"
 echo ""
 echo "=== Linking ${SO} ==="
 # glibc_symver.c is already compiled into baresdk.a via the SRC_MODE build.
+# No --wrap flags: the SIP fixes live in the patched libre sources
+# (cmake/patch-re-sources.cmake), so the archive is self-contained.
 gcc -shared \
-  -Wl,--wrap=websock_connect \
-  -Wl,--wrap=sip_transp_send \
-  -Wl,--wrap=sip_dialog_route \
-  -Wl,--wrap=sipsess_reply_ack \
-  -Wl,--wrap=sipsess_bye \
   -Wl,--whole-archive "${DIST_DIR}/baresdk.a" -Wl,--no-whole-archive \
   -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl -lstdc++ \
   -lpulse \
