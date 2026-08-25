@@ -31,8 +31,24 @@ You will receive `BARESDK_EV_MEDIA_STATS` events at that interval during every a
 | RX packet loss | `loss_pct_rx` | % | < 1% | < 5% | ≥ 5% |
 | RX jitter | `jitter_ms` | ms | < 10 | < 30 | ≥ 30 |
 | Round-trip time | `rtt_ms` | ms | < 150 | < 300 | ≥ 300 |
-| MOS listening quality | `mos_lq` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
-| MOS conversational quality | `mos_cq` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
+| MOS listening quality (TX path) | `mos_lq` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
+| MOS conversational quality (TX path) | `mos_cq` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
+| MOS listening quality (RX path) | `mos_lq_rx` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
+| MOS conversational quality (RX path) | `mos_cq_rx` | 1.0–4.5 | ≥ 4.0 | ≥ 3.6 | < 3.6 |
+| Worst / average LQ this call | `mos_lq_min`, `mos_lq_avg` | 1.0–4.5 | — | — | — |
+
+**Rates vs counters.** `loss_pct` and `loss_pct_rx` are rates over the **last
+poll window** (`stats_interval_ms`), not lifetime averages — a lifetime rate can
+never recover from one early burst. The `packets_lost` / `packets_lost_rx`
+counters beside them stay cumulative for the call, per RFC 3550.
+`mos_lq_avg` is the session average, taken in the R-factor domain and converted
+once, because MOS is non-linear in R.
+
+**Zero is not always a measurement.** `rtt_ms` comes only from the peer's
+receiver report (RFC 3550 LSR/DLSR), so it reads `0.0` until the first RR
+carrying both arrives — and for the whole call against a peer that sends no
+RTCP. `0.0` there means "not measured yet". The only fields that use `NaN` for
+"unavailable" are `audio_level_dbov` and `mic_level_dbov`.
 
 **Bandwidth**
 
@@ -86,10 +102,26 @@ Set `cfg.mos_method` to choose the scoring algorithm:
 
 | Method | Enum | Formula | Best for |
 |---|---|---|---|
-| E-Model (ITU-T G.107) | `BARESDK_MOS_EMODEL` | Full impairment model: loss + jitter + one-way delay | Accurate VoIP quality assessment |
-| Simplified | `BARESDK_MOS_SIMPLIFIED` | Telchemy/CISCO: 4.5 − 0.09·loss − 0.0009·jitter − 0.0005·RTT | Quick dashboard metric |
+| E-Model (ITU-T G.107 narrowband, G.107.1 wideband) | `BARESDK_MOS_EMODEL` | `Ie-eff = Ie + (95−Ie)·Ppl/(Ppl+Bpl)`; `R-LQ = Ro − Ie-eff`; `R-CQ = R-LQ − Id` | Accurate VoIP quality assessment |
+| Simplified | `BARESDK_MOS_SIMPLIFIED` | `LQ = 4.5 − 0.09·loss − 0.0009·jitter`; `CQ = LQ − 0.0005·RTT` | Quick dashboard metric |
 
-Both produce MOS in the 1.0–4.5 range. `mos_cq` adds an additional penalty for RTT > 300 ms (ITU-T G.114 conversational limit).
+Both produce MOS in the 1.0–4.5 range.
+
+**LQ vs CQ.** LQ is *listening* quality — the received signal alone, with no
+delay term. CQ is *conversational* quality: LQ minus the delay impairment `Id`,
+which the E-model computes from a real one-way delay estimate `Ta` (network
+`RTT/2` plus the jitter buffer depth actually in use):
+
+```
+Id = 0.024·Ta + 0.11·(Ta − 177.3)·[Ta > 177.3]
+```
+
+So `CQ ≤ LQ` always, and the penalty grows from the first millisecond of delay
+rather than switching on at a threshold. Each direction is scored from its own
+loss and its own jitter. The RX scores use **effective** loss — network loss
+plus packets the jitter buffer discarded (late, overflow, flush), which is the
+single largest source of MOS over-estimation when omitted. The TX scores cannot
+do this: the peer's jitter buffer is not observable from here.
 
 ### Synchronous query
 

@@ -101,6 +101,35 @@ baresdk_account_add_header(acct, "X-Tenant-Id", "42");
 baresdk_account_add_header(acct, "X-App-Version", "2.1.0");
 ```
 
+## Messaging — SIP MESSAGE
+
+Send an out-of-dialog instant message. No call is needed, and the account does
+not have to be in a call for either direction.
+
+**C**
+```c
+baresdk_message_send(acct, "bob@pbx.example.com", "on my way", "text/plain");
+```
+
+**C++**
+```cpp
+acct.send_message("bob@pbx.example.com", "on my way");   // content_type defaults to text/plain
+```
+
+**Python**
+```python
+acc.send_message("bob@pbx.example.com", "on my way")
+```
+
+**Dart**
+```dart
+account.sendMessage('bob@pbx.example.com', 'on my way');
+```
+
+Incoming messages arrive as `BARESDK_EV_MESSAGE` (`message` in Python,
+`MessageEvent` in Dart) with `from_uri`, `body` and `content_type` — see
+[Events reference](events.md#baresdk_ev_message).
+
 ## Presence — PUBLISH
 
 Tell the server your status:

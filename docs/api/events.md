@@ -220,8 +220,8 @@ Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchro
 | `call` | handle | |
 | `packets_sent` | `uint32_t` | RTP packets sent |
 | `packets_received` | `uint32_t` | RTP packets received |
-| `packets_lost` | `uint32_t` | TX-side lost (remote reported we dropped) |
-| `packets_lost_rx` | `uint32_t` | RX-side lost (we didn't receive) |
+| `packets_lost` | `uint32_t` | TX-side lost (remote reported we dropped) — cumulative for the call, per RFC 3550 |
+| `packets_lost_rx` | `uint32_t` | RX-side lost (we didn't receive) — cumulative |
 | `bytes_sent` | `uint32_t` | Total RTP bytes sent |
 | `bytes_received` | `uint32_t` | Total RTP bytes received |
 | `tx_errors` | `uint32_t` | RTP transmit errors |
@@ -231,14 +231,14 @@ Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchro
 
 | Field | Type | Description |
 |---|---|---|
-| `loss_pct` | `float` | TX-side packet loss % |
-| `loss_pct_rx` | `float` | RX-side packet loss % |
+| `loss_pct` | `float` | TX-side loss % **over the last poll window**, not lifetime |
+| `loss_pct_rx` | `float` | RX-side loss % over the last poll window |
 
 **Delay and jitter**
 
 | Field | Type | Description |
 |---|---|---|
-| `rtt_ms` | `float` | Round-trip time (ms) — zero until first RTCP SR/RR |
+| `rtt_ms` | `float` | Round-trip time (ms), from the peer's RR (RFC 3550 LSR/DLSR). `0.0` = not measured yet, including for a whole call against a peer that sends no RTCP |
 | `jitter_ms` | `float` | RX interarrival jitter we observe (ms) |
 | `tx_jitter_ms` | `float` | TX jitter remote reports back (ms) |
 
@@ -250,6 +250,15 @@ Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchro
 | `jitter_buffer_load` | `uint32_t` | Packets currently held in buffer |
 | `late_packets` | `uint32_t` | Packets that arrived too late |
 | `discarded_packets` | `uint32_t` | Packets discarded (overflow or flush) |
+| `jitter_buffer_target_ms` | `uint32_t` | Buffer's current jitter estimate (ms) |
+| `jitter_buffer_adaptive` | `bool` | True while the buffer is in adaptive mode |
+
+**Packet loss concealment**
+
+| Field | Type | Description |
+|---|---|---|
+| `plc_frames` | `uint32_t` | Frames lost at the jitter buffer (PLC trigger count) |
+| `plc_ratio` | `float` | `plc_frames` / total RX frames (0.0–1.0) |
 
 **Bandwidth**
 
@@ -264,9 +273,13 @@ Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchro
 
 | Field | Type | Description |
 |---|---|---|
-| `mos_lq` | `float` | MOS Listening Quality (1.0–4.5) |
-| `mos_cq` | `float` | MOS Conversational Quality (1.0–4.5) |
+| `mos_lq` | `float` | TX-path listening quality (1.0–4.5) — no delay term |
+| `mos_cq` | `float` | TX-path conversational quality — `mos_lq` minus the delay impairment, so always ≤ `mos_lq` |
+| `mos_lq_rx` | `float` | RX-path listening quality (far end → you), scored on **effective** loss: network loss plus jitter-buffer discards |
+| `mos_cq_rx` | `float` | RX-path conversational quality |
 | `mos_method` | `baresdk_mos_method_t` | `EMODEL` or `SIMPLIFIED` |
+
+See [Observability → MOS methods](observability.md#mos-methods) for the formulas.
 
 **Codec**
 
@@ -282,7 +295,8 @@ Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchro
 
 | Field | Type | Description |
 |---|---|---|
-| `audio_level_dbov` | `float` | Received level in dBov (0 = max, –127 = silent); `NaN` if unavailable |
+| `audio_level_dbov` | `float` | Speaker (RX) level in dBov (0 = max, –127 = silent); `NaN` if unavailable |
+| `mic_level_dbov` | `float` | Microphone (TX) level in dBov; `NaN` if unavailable |
 
 **Stream identity**
 
@@ -291,6 +305,16 @@ Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchro
 | `ssrc_tx` | `uint32_t` | Our SSRC |
 | `ssrc_rx` | `uint32_t` | Remote SSRC (0 if not yet received) |
 | `remote_addr` | `char[64]` | Remote RTP address `"ip:port"` |
+
+**Session history** — populated from the first stats tick
+
+| Field | Type | Description |
+|---|---|---|
+| `mos_lq_min` | `float` | Worst `mos_lq` tick this call |
+| `mos_lq_avg` | `float` | Session average `mos_lq`, averaged in the R-factor domain and converted once (MOS is non-linear in R) |
+| `stats_tick` | `uint32_t` | Which poll this is (1-based) |
+| `call_duration_ms` | `uint64_t` | Elapsed ms since `CALL_ESTABLISHED` |
+| `is_final` | `bool` | True on the last stats event before teardown — the one to log |
 
 ---
 

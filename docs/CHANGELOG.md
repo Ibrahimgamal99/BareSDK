@@ -8,6 +8,36 @@ All notable changes to baresdk are documented here.
 
 ### Fixed
 
+- **Call quality was scored from lifetime numbers, so one early burst of loss
+  depressed MOS for the rest of the call.** `loss_pct` / `loss_pct_rx` are now
+  rates over the last poll window (`stats_interval_ms`) rather than
+  call-lifetime averages — the same convention as WebRTC `getStats()` and
+  PJSIP, and what the E-model expects as input. The `packets_lost` /
+  `packets_lost_rx` counters beside them stay cumulative per RFC 3550.
+  Alongside that, the E-model implementation was reworked: LQ and CQ are now
+  properly separated (LQ carries no delay term; CQ subtracts the G.107 delay
+  impairment `Id` from a real one-way delay estimate — `RTT/2` plus the jitter
+  buffer depth actually in use — so `CQ <= LQ` always, instead of a penalty
+  that only appeared past 300 ms); the RX-direction scores use *effective*
+  loss, network loss plus packets the jitter buffer discarded (late, overflow,
+  flush), previously the largest source of MOS over-estimation on a jittery
+  call; wideband codecs are scored on the G.107.1 R scale (Ro = 129) rather
+  than the narrowband one, checked against ITU's own reference calculator; and
+  `mos_lq_avg` is averaged in the R-factor domain and converted once, since MOS
+  is non-linear in R. `baresdk_call_get_stats()` now zeroes `out` before
+  anything else, so every field is defined even on an error return, and
+  `rtt_ms` reading `0.0` means "no RR received yet", not "zero delay". Docs
+  updated: [Observability](api/observability.md) and [Events](api/events.md).
+
+- **Documentation: the event-callback contract was documented backwards.**
+  `baresdk_event_cb_t` said "do not call baresdk APIs from inside this
+  callback". The opposite is true and always has been — the event dispatch
+  thread exists precisely so a consumer can re-enter the API without
+  deadlocking `re_main`, and every example in the docs answers a call from
+  inside the handler. The comment in `include/baresdk.h`, the C++ wrapper and
+  the Dart FFI bindings now states the real contract: re-entry is safe, keep
+  the handler fast (< 10 ms) because it runs inline with the event queue.
+
 - **The BYE and in-dialog WS routing fixes now hold on every platform — and
   the iOS build actually builds.** Both fixes used to ride GNU ld's `--wrap`,
   which only the Linux/Android links passed, so iOS (and Windows/macOS static

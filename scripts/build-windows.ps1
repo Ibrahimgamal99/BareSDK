@@ -1,5 +1,5 @@
 # Build baresdk for Windows x64.
-# Output: dist\windows\x64\bare.lib  +  dist\windows\x64\include\
+# Output: dist\windows\x64\baresdk.dll + baresdk.lib (import lib) + bare.lib + dist\windows\x64\include\
 #
 # Prerequisites:
 #   - Visual Studio 2022 (or 2019)

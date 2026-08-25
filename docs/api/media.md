@@ -537,7 +537,7 @@ baresdk_call_record_stop(call);
 case BARESDK_EV_CALL_STATE:
     if (ev->u.call_state.state == BARESDK_CALL_ESTABLISHED)
         baresdk_call_record_start(ev->u.call_state.call, "/tmp/call.wav");
-    if (ev->u.call_state.state == BARESDK_CALL_CLOSED)
+    if (ev->u.call_state.state == BARESDK_CALL_ENDED)
         baresdk_call_record_stop(ev->u.call_state.call);
 ```
 

@@ -60,6 +60,7 @@ server_url = "wss://pbx.example.com:8089/ws"
 |---|---|---|---|
 | `ws_origin` | `const char *` | NULL | `Origin` header. NULL = auto from URL. |
 | `ws_extra_headers` | `const char **` | NULL | NULL-terminated extra header strings. |
+| `ws_keepalive_ms` | `uint32_t` | 0 | WebSocket ping interval. 0 = libre default (15 s); 20000–30000 is the useful range behind proxies that idle-close. |
 
 ### NAT
 
@@ -70,6 +71,7 @@ server_url = "wss://pbx.example.com:8089/ws"
 | `turn_user` | `const char *` | NULL | TURN username |
 | `turn_pass` | `const char *` | NULL | TURN password |
 | `ice_enabled` | `bool` | false | Enable ICE |
+| `rtcp_mux` | `bool` | true | Multiplex RTCP on the RTP port (RFC 5761) |
 | `ice_gathering_timeout_ms` | `uint32_t` | 2000 | Deadline for ICE candidate gathering — on an outgoing call, and on the re-gather of a handover ICE restart. 0 waits indefinitely on dial; the restart falls back to 3 s |
 
 With ICE enabled the INVITE is **not** sent when the call is placed — it is sent
@@ -113,6 +115,7 @@ is what fixes it.
 | `audio_codec_name_count` | `int` | 0 | Number of names in `audio_codec_names`; 0 = use `audio_codecs` |
 | `dscp_sip` | `uint8_t` | 0 | DSCP for SIP (0=OS default, 24=AF31) |
 | `dscp_rtp` | `uint8_t` | 0 | DSCP for RTP (0=OS default, 46=EF) |
+| `enable_video` | `bool` | false | Reserved for future video support; no effect today |
 
 ### Audio processing
 
@@ -234,13 +237,35 @@ the address stays put and the link itself goes bad. Full guide:
 | `adapt_recover_ticks` | `uint32_t` | 5 | Consecutive clean stats ticks required before a step up |
 | `opus_expected_loss_pct` | `uint32_t` | 0 | Opus in-band FEC (LBRR) redundancy, percent. `opus.fec` permits FEC; this is what makes the encoder spend bitrate on it and the decoder look for it — set both. 10–20 suits mobile; 0 = off |
 
-### Logging
+### Logging and event delivery
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `log_level` | `int` | 0 | 0=err, 1=warn, 2=info, 3=debug |
 | `event_cb` | `baresdk_event_cb_t` | required | Your event callback |
 | `event_userdata` | `void *` | NULL | Passed back to `event_cb` |
+| `deliver_owned_events` | `bool` | false | Event ownership mode — see below |
+
+**Event ownership.** With `deliver_owned_events = false` (the default) the event
+passed to `event_cb` is **borrowed**: it is valid only for the duration of the
+callback, and anything you keep must be copied out before you return.
+
+With `deliver_owned_events = true` the callback receives a heap-owned clone and
+you **must** call `baresdk_event_release(ev)` exactly once per delivered event —
+from any thread, at any time after delivery. Use this for bindings that dispatch
+events asynchronously (Dart's `NativeCallable.listener` runs the handler on the
+isolate's event loop, after the C call has already returned). Releasing an event
+that was not delivered in owned mode is undefined behaviour.
+
+`baresdk_set_event_handler(cb, userdata, deliver_owned_events)` re-points event
+delivery at a new consumer — or parks it with `NULL` — under the same contract,
+without tearing the stack down.
+
+### Runtime paths
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `tmp_dir` | `const char *` | NULL | Directory for baresip's temporary files. NULL = `$TMPDIR`, or `/tmp` on Linux. **Android must set this** to the app cache dir (`context.getCacheDir().getAbsolutePath()`): `/tmp` does not exist there and `$TMPDIR` is not reliably set from native code. |
 
 ---
 
@@ -261,6 +286,16 @@ the address stays put and the link itself goes bad. Full guide:
 | `stun_server` | `const char *` | No | Per-account STUN override |
 | `turn_server` | `const char *` | No | Per-account TURN override |
 | `turn_user` / `turn_pass` | `const char *` | No | TURN credentials |
+| `rtcp_mux` | `bool` | No | RTCP-mux override; only read when `rtcp_mux_set` is true |
+| `rtcp_mux_set` | `bool` | No | false = inherit the global `rtcp_mux`; true = use the field above |
+| `outbound` | `const char *` | No | Outbound route override; NULL = auto-derived from server |
 | `outbound_proxy` | `const char *` | No | NULL = auto-derived from server |
 | `verify_tls` | `bool` | No | false = skip TLS cert check |
+| `push_provider` | `baresdk_push_provider_t` | No | `NONE`, `APNS`, `FCM` — see [Accounts → Push notifications](accounts.md#push-notifications) |
+| `push_token` | `const char *` | No | Device token (APNs hex, FCM registration token) |
+| `push_param` | `const char *` | No | `pn-param` value (APNs topic / FCM sender id) |
+| `audio_codecs[8]` | `baresdk_codec_t[]` | No | Per-account preference-ordered codec list |
+| `audio_codec_count` | `int` | No | Number of entries in `audio_codecs` |
+| `audio_codec_names[8][32]` | `char[][]` | No | Codec list by name; wins over `audio_codecs` |
+| `audio_codec_name_count` | `int` | No | Number of entries in `audio_codec_names`; 0 = use `audio_codecs` |
 | `dtmf_mode` | `baresdk_dtmf_mode_t` | No | `RFC4733` (default), `SIP_INFO`, `AUTO` |

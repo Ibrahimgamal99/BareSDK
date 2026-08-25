@@ -18,7 +18,16 @@ case BARESDK_EV_INCOMING_CALL:
     break;
 ```
 
-To reject without answering, call `baresdk_call_hangup(call)` before answering.
+To reject without answering, use `baresdk_call_reject()` with the SIP status
+code you want the caller to see:
+
+```c
+baresdk_call_reject(call, 486, "Busy Here");   // or 603 "Decline"
+baresdk_call_reject(call, 0, NULL);            // 0 = default behaviour
+```
+
+`baresdk_call_hangup()` also terminates an unanswered call, but sends the
+default response rather than a code you choose.
 
 ## Hang up / terminate
 

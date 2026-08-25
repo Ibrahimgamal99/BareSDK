@@ -1,6 +1,9 @@
 # baresdk
 
-A production-ready SIP/WebRTC/NAT SDK built on [baresip](https://github.com/baresip/baresip) and [libre](https://github.com/baresip/re).
+A general-purpose SIP client SDK built on [baresip](https://github.com/baresip/baresip)
+and [libre](https://github.com/baresip/re). It registers against any
+standards-compliant SIP server, ships no UI, and imposes no call flow —
+everything app-specific is configuration you pass in.
 
 ---
 
@@ -8,12 +11,15 @@ A production-ready SIP/WebRTC/NAT SDK built on [baresip](https://github.com/bare
 
 | Capability | Details |
 |---|---|
-| **SIP** | INVITE, BYE, REGISTER, MESSAGE, SUBSCRIBE/NOTIFY, REFER (blind + attended) |
-| **WebRTC media** | DTLS-SRTP, ICE, STUN, TURN |
+| **SIP** | INVITE, BYE, REGISTER, MESSAGE, SUBSCRIBE/NOTIFY, REFER (blind + attended, plus accept/reject of an incoming REFER), PRACK/100rel |
+| **WebRTC media** | DTLS-SRTP, SDES, ICE, STUN, TURN, RTCP-mux |
 | **Transports** | UDP, TCP, TLS, WebSocket, WSS |
-| **Audio** | Opus, G.711 (PCMU/PCMA); AEC, NS, AGC; app-owned audio device |
-| **Observability** | RTCP stats, MOS (E-model + simplified), SIP trace, pcap, SDP diff |
-| **Messaging** | SIP MESSAGE (in/out), MWI, presence (PUBLISH/SUBSCRIBE) |
+| **Audio** | Opus, G.711 (PCMU/PCMA), G.722, G.726; AEC, NS, AGC; PCM tap, WAV recording, device hot-switch, app-owned audio device |
+| **Mobility** | Wi-Fi ↔ 4G/5G handover with media verification, `RECONNECTING` registration state, RFC 8599 push |
+| **Degraded links** | Media-stall alerts, RTP timeout, OPTIONS keepalive, SRV failover, adaptive Opus bitrate |
+| **Observability** | RTCP stats, MOS (E-model + simplified, per direction), quality alerts, SIP trace, pcap, SDP diff |
+| **Messaging** | SIP MESSAGE (in/out), MWI, presence (PUBLISH/SUBSCRIBE, BLF) |
+| **Multi-account** | Any number of accounts per stack; every API is thread-safe |
 
 ---
 

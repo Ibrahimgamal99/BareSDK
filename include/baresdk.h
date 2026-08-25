@@ -642,10 +642,12 @@ typedef struct {
 /* ── Callbacks ────────────────────────────────────────────────────────────── */
 
 /**
- * Event callback — fired from baresdk's internal event thread.
- * Must return within 10 ms. Do not call baresdk APIs synchronously
- * from inside this callback (use a separate thread or post to your
- * own queue and return).
+ * Event callback — fired from baresdk's event dispatch thread, never from
+ * re_main. Calling baresdk APIs from inside the callback is safe: the
+ * dispatch thread exists precisely so a consumer can re-enter without
+ * deadlocking the SIP loop. Keep it fast (< 10 ms) — the callback runs
+ * inline with the event queue, so a slow handler backs the queue up. Hand
+ * heavy work (recording, transcription, UI) to your own thread.
  */
 typedef void (*baresdk_event_cb_t)(const baresdk_event_t *ev, void *userdata);
 
