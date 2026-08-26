@@ -119,6 +119,23 @@ static struct list s_sessl = LIST_INIT;
  * restart always has a bound, configured or not. */
 #define BSDK_ICE_RESTART_DEADLINE_MS 3000
 
+/* How long the candidate re-offer waits for a media-encryption handshake.
+ *
+ * The re-offer is a re-INVITE, and a re-INVITE mid-DTLS is what breaks the
+ * handshake it interrupts: dtls_srtp starts the association exactly once
+ * (media_start() latches `started`), so an offer/answer that perturbs it
+ * leaves `menc_secure` unset for good.  stream_is_ready() then stays false,
+ * audio_update() is never called, and the call sits established with no
+ * audio in either direction — the failure reassert_selected() documents,
+ * reached by a second route.
+ *
+ * So the re-offer waits for the handshake instead of racing it.  The wait is
+ * bounded: a handshake that is never going to finish must not also cost the
+ * peer the candidate it was never told about, so the offer goes out anyway
+ * when the deadline expires. */
+#define BSDK_ICE_REOFFER_SECURE_DEADLINE_MS 4000
+#define BSDK_ICE_REOFFER_POLL_MS             100
+
 /**
  * Our stand-in for the ice module's session object.
  *
@@ -135,6 +152,8 @@ struct bsdk_ice_sess {
 	mnat_estab_h     *estabh;   /* baresip's mnat_handler */
 	void             *arg;      /* its `struct call *` */
 	struct tmr        tmr;      /* gathering deadline */
+	struct tmr        tmr_reoffer;/* re-offer held for the DTLS handshake */
+	uint64_t          reoffer_due;/* jiffies at which to stop holding it */
 	bool              released; /* the offer has been handed to baresip */
 	bool              reoffered;/* a candidate re-offer has been requested */
 	bool              restarting;/* a restart gather is outstanding */
@@ -191,8 +210,9 @@ static void sess_destructor(void *data)
 	struct bsdk_ice_sess *s = data;
 	struct le *le, *tmp;
 
-	/* Timer first: it closes over `s`. */
+	/* Timers first: both close over `s`. */
 	tmr_cancel(&s->tmr);
+	tmr_cancel(&s->tmr_reoffer);
 	list_unlink(&s->le);
 
 	/* The media wrappers belong to baresip's streams, which may outlive us:
@@ -367,6 +387,7 @@ static int ice_sessh(struct mnat_sess **sessp, const struct mnat *mnat,
 		return ENOMEM;
 
 	tmr_init(&s->tmr);
+	tmr_init(&s->tmr_reoffer);
 	list_init(&s->medial);
 	s->estabh = estabh;
 	s->arg    = arg;
@@ -415,6 +436,91 @@ static int ice_sessh(struct mnat_sess **sessp, const struct mnat *mnat,
 	*sessp = (struct mnat_sess *)s;
 	return 0;
 }
+
+/**
+ * Is a media-encryption handshake still in flight on this call?
+ *
+ * Two questions, because `menc_secure` is only ever set by an encryption that
+ * has something to secure: a plain-RTP call leaves it false for the life of
+ * the stream, and waiting on it there would hold every re-offer to the
+ * deadline for nothing.  So the fingerprint attribute decides whether there is
+ * a handshake at all, and stream_is_secure() decides whether it has finished.
+ *
+ * sdp_media_session_rattr() reads the media level first and falls back to the
+ * session level, which is where baresip's dtls_srtp puts our own — and where a
+ * peer that offers one fingerprint for the whole session puts its.
+ */
+static bool sess_awaiting_secure(const struct bsdk_ice_sess *s)
+{
+	struct list *streaml;
+	struct le *le;
+	bool dtls = false;
+
+	if (!s || !s->sdp || !s->arg)
+		return false;
+
+	LIST_FOREACH(&s->medial, le) {
+		const struct bsdk_ice_media *m = le->data;
+
+		if (m->sdpm &&
+		    sdp_media_session_rattr(m->sdpm, s->sdp, "fingerprint")) {
+			dtls = true;
+			break;
+		}
+	}
+
+	if (!dtls)
+		return false;
+
+	streaml = call_streaml(s->arg);
+	if (!streaml)
+		return false;
+
+	LIST_FOREACH(streaml, le) {
+		const struct stream *strm = le->data;
+
+		if (!stream_is_secure(strm))
+			return true;
+	}
+
+	return false;
+}
+
+
+/* Hand the re-offer to baresip.  mnat_wait is false by now, so it turns into
+ * call_modify(), i.e. a re-INVITE.  It is guarded by sipsess_refresh_allowed(),
+ * so a call whose negotiation is still in flight ignores it rather than
+ * sending a malformed request. */
+static void reoffer_release(struct bsdk_ice_sess *s)
+{
+	tmr_cancel(&s->tmr_reoffer);
+	s->estabh(0, 0, NULL, s->arg);
+}
+
+
+static void reoffer_deadline(void *arg)
+{
+	struct bsdk_ice_sess *s = arg;
+
+	if (sess_awaiting_secure(s)) {
+		if (tmr_jiffies() < s->reoffer_due) {
+			tmr_start(&s->tmr_reoffer, BSDK_ICE_REOFFER_POLL_MS,
+			          reoffer_deadline, s);
+			return;
+		}
+
+		/* The handshake is not coming back.  Releasing the offer is the
+		 * lesser evil: it cannot damage an association that never
+		 * established, and it is the peer's only chance to learn the
+		 * address our media actually comes from. */
+		warning("EchoSDK/ice: media encryption still not secure after "
+		        "%u ms — releasing the candidate re-offer anyway\n",
+		        BSDK_ICE_REOFFER_SECURE_DEADLINE_MS);
+	}
+
+	reoffer_release(s);
+}
+
 
 /**
  * ICE finished its connectivity checks for one stream.
@@ -503,11 +609,20 @@ static void ice_connected(const struct sa *raddr1, const struct sa *raddr2,
 	     "(offered %J) — re-offering so the peer accepts our media\n",
 	     laddr, &m->signalled);
 
-	/* mnat_wait is false by now, so baresip turns this into call_modify(),
-	 * i.e. a re-INVITE.  It is guarded by sipsess_refresh_allowed(), so a
-	 * call whose negotiation is still in flight ignores it rather than
-	 * sending a malformed request. */
-	s->estabh(0, 0, NULL, s->arg);
+	/* Never while the media encryption is mid-handshake: the re-INVITE
+	 * would perturb an association dtls_srtp can only start once, and the
+	 * call would come up silent.  See BSDK_ICE_REOFFER_SECURE_DEADLINE_MS. */
+	if (sess_awaiting_secure(s)) {
+		info("EchoSDK/ice: holding the re-offer until the media "
+		     "encryption handshake completes\n");
+		s->reoffer_due = tmr_jiffies() +
+		                 BSDK_ICE_REOFFER_SECURE_DEADLINE_MS;
+		tmr_start(&s->tmr_reoffer, BSDK_ICE_REOFFER_POLL_MS,
+		          reoffer_deadline, s);
+		return;
+	}
+
+	reoffer_release(s);
 }
 
 static int ice_mediah(struct mnat_media **mp, struct mnat_sess *sess,

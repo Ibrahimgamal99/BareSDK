@@ -1,0 +1,98 @@
+/* EchoSDK-patched: drop an association so it can be started again.
+ *
+ * Everything the handshake owns goes: the srtp streams and the udp helper are
+ * keyed to the master secret being abandoned, and component_start() returns
+ * early while `negotiated` or `dtls_sock` is still set.  app_sock stays — the
+ * stream owns it, and the replacement association re-listens on it. */
+static void echosdk_media_reset(struct dtls_srtp *st)
+{
+	size_t i;
+
+	for (i=0; i<2; i++) {
+		struct comp *c = &st->compv[i];
+
+		c->uh_srtp    = mem_deref(c->uh_srtp);
+		c->tls_conn   = mem_deref(c->tls_conn);
+		c->dtls_sock  = mem_deref(c->dtls_sock);
+		c->tx         = mem_deref(c->tx);
+		c->rx         = mem_deref(c->rx);
+		c->negotiated = false;
+	}
+
+	st->started = false;
+}
+
+
+static void echosdk_handshake_deadline(void *arg);
+
+
+static int media_start(struct dtls_srtp *st, struct sdp_media *sdpm,
+		       const struct sa *raddr_rtp,
+		       const struct sa *raddr_rtcp)
+{
+	int err = 0;
+
+	if (st->started)
+		return 0;
+
+	info("dtls_srtp: media=%s -- start DTLS %s\n",
+	     sdp_media_name(sdpm), st->active ? "client" : "server");
+
+	if (!sdp_media_has_media(sdpm))
+		return 0;
+
+	err = component_start(&st->compv[0], raddr_rtp);
+
+	if (!st->mux)
+		err |= component_start(&st->compv[1], raddr_rtcp);
+
+	if (err)
+		return err;
+
+	st->started = true;
+
+	/* EchoSDK-patched: remember where this attempt was aimed, so a restart
+	 * can be aimed at the same place without another offer/answer. */
+	if (raddr_rtp)
+		sa_cpy(&st->raddr_rtp, raddr_rtp);
+	if (raddr_rtcp)
+		sa_cpy(&st->raddr_rtcp, raddr_rtcp);
+
+	/* EchoSDK-patched: nothing else ever revisits a handshake that does not
+	 * complete.  Without this the call stays up, silent, forever. */
+	tmr_start(&st->tmr_hs, ECHOSDK_DTLS_HANDSHAKE_MS,
+		  echosdk_handshake_deadline, st);
+
+	return 0;
+}
+
+
+/* EchoSDK-patched: the handshake did not finish in time — restart it.
+ *
+ * Bounded: a peer that never answers must not be retried every 5 s for the
+ * life of the call.  After the last attempt the call is left as it was, which
+ * is exactly what the module did after the first attempt before this patch. */
+static void echosdk_handshake_deadline(void *arg)
+{
+	struct dtls_srtp *st = arg;
+
+	if (st->compv[0].negotiated)
+		return;
+
+	if (st->hs_restarts >= ECHOSDK_DTLS_MAX_RESTARTS) {
+		warning("dtls_srtp: handshake did not complete after %u"
+			" attempts — giving up (this call has no audio)\n",
+			st->hs_restarts + 1);
+		return;
+	}
+
+	++st->hs_restarts;
+
+	warning("dtls_srtp: handshake still not complete after %u ms —"
+		" restarting the association as %s (attempt %u)\n",
+		ECHOSDK_DTLS_HANDSHAKE_MS,
+		st->active ? "client" : "server", st->hs_restarts + 1);
+
+	echosdk_media_reset(st);
+	(void)media_start(st, st->sdpm, &st->raddr_rtp, &st->raddr_rtcp);
+}

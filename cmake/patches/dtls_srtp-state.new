@@ -1,0 +1,11 @@
+/* EchoSDK-patched: bound on one DTLS handshake, and how many times it may be
+ * restarted before we accept that the peer is not going to answer. */
+#define ECHOSDK_DTLS_HANDSHAKE_MS 5000
+#define ECHOSDK_DTLS_MAX_RESTARTS 2
+
+struct dtls_srtp {
+	struct comp compv[2];
+	struct tmr tmr_hs;      /* EchoSDK-patched: handshake deadline */
+	struct sa raddr_rtp;    /* EchoSDK-patched: kept for a restart */
+	struct sa raddr_rtcp;   /* EchoSDK-patched: kept for a restart */
+	unsigned hs_restarts;   /* EchoSDK-patched: restarts spent */

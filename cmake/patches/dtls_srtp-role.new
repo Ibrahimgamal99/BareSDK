@@ -1,0 +1,26 @@
+	setup = sdp_media_session_rattr(st->sdpm, st->sess->sdp, "setup");
+	if (setup) {
+		enum setup rsetup = setup_decode(setup);
+		bool active = rsetup != SETUP_ACTIVE;  /* EchoSDK-patched */
+
+		/* EchoSDK-patched: a re-negotiation that reverses the DTLS role
+		 * has to restart the association.  media_start() latches
+		 * `started` and never clears it, so without this the new role
+		 * is recorded and then ignored: we go on waiting in the old
+		 * role while the peer waits in the other one, and the handshake
+		 * can never complete. */
+		if (st->started && active != st->active) {
+			info("dtls_srtp: media=%s -- role reversed by"
+			     " re-negotiation (%s -> %s), restarting DTLS\n",
+			     sdp_media_name(st->sdpm),
+			     st->active ? "client" : "server",
+			     active ? "client" : "server");
+			echosdk_media_reset(st);
+		}
+
+		st->active = active;
+
+		err = media_start(st, st->sdpm, raddr_rtp, raddr_rtcp);
+		if (err)
+			return err;
+	}

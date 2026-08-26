@@ -1,6 +1,14 @@
 # patch-baresip-sources.cmake
-# Disable baresip's executables (baresip_exe, test/, webrtc/) on every platform.
+# Apply EchoSDK's baresip patches at build time.  Two jobs:
+#   1. Disable baresip's executables (baresip_exe, test/, webrtc/) everywhere.
+#   2. Make dtls_srtp recover from a handshake that is perturbed or stalls.
 # Usage: cmake -DSOURCE_DIR=path/to/baresip -P patch-baresip-sources.cmake
+#
+# third_party/baresip is fetched by scripts/fetch-third-party.sh at a pinned
+# revision and is gitignored, so an in-place patch cannot leak into upstream
+# history.  Each job is idempotent behind its own marker and fails loudly when
+# a baresip bump moves the text it splices at, rather than silently building
+# without the fix.
 #
 # The SDK owns the public websock_connect() and sip_dialog_route() names:
 # libre's definitions are renamed to __real_* (cmake/patch-re-sources.cmake)
@@ -29,9 +37,12 @@ string(FIND "${CONTENT}" "# EchoSDK-disabled" _ALREADY)
 string(FIND "${CONTENT}" "# EchoSDK-msvc-disabled" _ALREADY_MSVC)
 if(NOT _ALREADY EQUAL -1 OR NOT _ALREADY_MSVC EQUAL -1)
   message(STATUS "patch-baresip-sources: ${BARESIP_CMAKE} already patched (executables disabled)")
-  return()
+  set(_SKIP_EXES TRUE)
 endif()
 
+# A plain return() here would take the dtls_srtp job below down with it on
+# every rebuild — the tree stays patched, so this branch is the common case.
+if(NOT _SKIP_EXES)
 foreach(_anchor
     "add_subdirectory(webrtc)"
     "add_subdirectory(test)"
@@ -74,3 +85,74 @@ string(REPLACE
 
 file(WRITE "${BARESIP_CMAKE}" "${CONTENT}")
 message(STATUS "patch-baresip-sources: executables disabled in ${BARESIP_CMAKE}")
+endif()
+
+# ---------------------------------------------------------------------------
+# Job 2: dtls_srtp — a handshake that is perturbed or stalls must recover
+#
+# media_start() latches `started` and nothing ever clears it, so the module
+# starts a DTLS association exactly once per stream for the life of a call.
+# Two consequences, both reached on-device (2026-08-26, inbound call over WSS
+# behind a NAT presenting more than one egress IP):
+#
+#   - A re-negotiation that reverses the DTLS role is decoded into `st->active`
+#     and then discarded, because media_start() returns early.  Each side ends
+#     up waiting for the other to be the client.
+#   - A handshake that simply never completes — a ClientHello lost while the
+#     remote address moved under it, a peer that restarted its own association
+#     across a re-INVITE — is never retried.
+#
+# Either way `menc_secure` is never set, stream_is_ready() stays false,
+# audio_update() is never called, and the call sits fully established with
+# tx 0 / rx 0 and no audio in either direction while signalling looks perfect.
+#
+# src/ice_shim.c stops the SDK from causing the first case itself (it holds its
+# candidate re-offer until the handshake finishes).  These patches make the
+# module survive the case when something else causes it.
+#
+# The hunks live as verbatim .old/.new file pairs in cmake/patches/ rather than
+# as inline strings: the replacement is ~90 lines of C, and CMake escaping of
+# tabs, semicolons and quotes at that size is its own source of bugs.
+# ---------------------------------------------------------------------------
+
+set(DTLS_SRTP_C "${SOURCE_DIR}/modules/dtls_srtp/dtls_srtp.c")
+if(NOT EXISTS "${DTLS_SRTP_C}")
+  message(FATAL_ERROR "patch-baresip-sources: ${DTLS_SRTP_C} does not exist")
+endif()
+
+file(READ "${DTLS_SRTP_C}" DCONTENT)
+string(FIND "${DCONTENT}" "EchoSDK-patched" _DTLS_DONE)
+
+if(NOT _DTLS_DONE EQUAL -1)
+  message(STATUS "patch-baresip-sources: ${DTLS_SRTP_C} already patched (dtls recovery)")
+else()
+  set(_HUNKS state recovery role estab destr)
+
+  # Verify every anchor before splicing any of them, so a baresip bump can
+  # never leave the file half-patched.
+  foreach(_h ${_HUNKS})
+    set(_of "${CMAKE_CURRENT_LIST_DIR}/patches/dtls_srtp-${_h}.old")
+    set(_nf "${CMAKE_CURRENT_LIST_DIR}/patches/dtls_srtp-${_h}.new")
+    if(NOT EXISTS "${_of}" OR NOT EXISTS "${_nf}")
+      message(FATAL_ERROR "patch-baresip-sources: missing hunk files for '${_h}'")
+    endif()
+    file(READ "${_of}" _old)
+    string(FIND "${DCONTENT}" "${_old}" _pos)
+    if(_pos EQUAL -1)
+      message(FATAL_ERROR
+        "patch-baresip-sources: anchor not found in ${DTLS_SRTP_C} for hunk "
+        "'${_h}'.\nThe pinned baresip revision has moved this code. Re-derive "
+        "cmake/patches/dtls_srtp-${_h}.old against the new revision — building "
+        "without it reintroduces permanently silent calls.")
+    endif()
+  endforeach()
+
+  foreach(_h ${_HUNKS})
+    file(READ "${CMAKE_CURRENT_LIST_DIR}/patches/dtls_srtp-${_h}.old" _old)
+    file(READ "${CMAKE_CURRENT_LIST_DIR}/patches/dtls_srtp-${_h}.new" _new)
+    string(REPLACE "${_old}" "${_new}" DCONTENT "${DCONTENT}")
+  endforeach()
+
+  file(WRITE "${DTLS_SRTP_C}" "${DCONTENT}")
+  message(STATUS "patch-baresip-sources: patched ${DTLS_SRTP_C} (dtls handshake recovery)")
+endif()
