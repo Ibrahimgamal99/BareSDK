@@ -1,8 +1,8 @@
 name: Build mobile libraries
 
+# Manual only: this workflow is not run on push. Start it from the Actions tab
+# (or `gh workflow run build-mobile.yml`) when native sources change.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
