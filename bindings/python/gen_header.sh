@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Regenerate bindings/python/echo_sdk/_echosdk_clean.h from include/echosdk.h.
 #
-# This lives in its own script because two callers need it and they must not
-# drift: bindings/python/build.sh (local development) and the "Generate CFFI
-# header" step of .github/workflows/publish.yml (the wheels users install).
-# They were separate copies once, and the CI copy was missing
-# ECHOSDK_NO_PACKED_ENUM — see below for what that costs.
+# This lives in its own script so that every caller shares one pipeline and
+# they cannot drift. Today the only caller is bindings/python/build.sh; a
+# wheel-publishing CI job used to be the second, and its near-copy was missing
+# ECHOSDK_NO_PACKED_ENUM — see below for what that costs. Keep new callers
+# invoking this script rather than inlining the preprocessor command.
 #
 # Usage: gen_header.sh [<input echosdk.h> [<output _echosdk_clean.h>]]
 set -euo pipefail
@@ -49,7 +49,7 @@ gcc -E \
 
 # No size_t/wchar_t prologue: cffi resolves both itself in cdef(), the awk
 # filter above already drops the system-header typedefs, and the committed
-# header has never carried one.  publish.yml used to prepend them — a second,
-# quieter way the two pipelines had diverged.
+# header has never carried one.  The old CI copy used to prepend them — a
+# second, quieter way the two pipelines had diverged.
 
 echo "==> Wrote ${OUTPUT}"

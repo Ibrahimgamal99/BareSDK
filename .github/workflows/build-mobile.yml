@@ -3,15 +3,6 @@ name: Build mobile libraries
 on:
   push:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'platform/**'
-      - 'cmake/**'
-      - 'CMakeLists.txt'
-      - 'scripts/**'
-      - 'bindings/flutter/**'
-      - '.github/workflows/build-mobile.yml'
   workflow_dispatch:
 
 jobs:
@@ -126,8 +117,8 @@ jobs:
             cmake ninja-build gcc g++ pkg-config libssl-dev libpulse-dev
 
       # AEC off: the webrtc_aec module needs libwebrtc-audio-processing-1, which
-      # has no ubuntu-22.04 package and would mean a from-source build here (see
-      # publish.yml). Nothing under test/ exercises AEC.
+      # has no ubuntu-22.04 package and would mean building it from source here.
+      # Nothing under test/ exercises AEC.
       - name: Build native library
         run: bash scripts/build-linux.sh
         env:
