@@ -200,7 +200,17 @@ make_framework "${DIST}/simulator/echosdk.dylib" \
 # ---------------------------------------------------------------------------
 for SLICE in device simulator; do
   BIN="${DIST}/${SLICE}/EchoSDK.framework/EchoSDK"
-  EXPORTS=$(xcrun nm -gU "${BIN}" | grep -c ' _echosdk_' || true)
+
+  # Capture each symbol table once. `nm ... | grep -q` is a footgun under
+  # `set -o pipefail` (same one scripts/build-android.sh documents): grep exits
+  # at the first match, nm dies of SIGPIPE — "error: write on a pipe with no
+  # reader" — and pipefail then reports the whole pipeline as failed. A symbol
+  # that IS present reads as missing, so the check fails precisely when it
+  # passes. Grep the captured text instead.
+  GLOBALS=$(xcrun nm -gU "${BIN}")
+  DEFINED=$(xcrun nm -U "${BIN}")
+
+  EXPORTS=$(grep -c ' _echosdk_' <<<"${GLOBALS}" || true)
   if [ "${EXPORTS}" -lt 40 ]; then
     echo "ERROR: ${SLICE}: only ${EXPORTS} echosdk_* symbols exported" >&2
     exit 1
@@ -208,15 +218,15 @@ for SLICE in device simulator; do
   # The SIP fixes ride the patched libre sources (cmake/patch-re-sources.cmake):
   # libre's definitions are renamed to __real_* and ws_path.c owns the public
   # names. A missing rename means the patch step did not run.
-  if ! xcrun nm -U "${BIN}" | grep -q '___real_websock_connect'; then
+  if ! grep -q '___real_websock_connect' <<<"${DEFINED}"; then
     echo "ERROR: ${SLICE}: websock rename missing (patch-re-sources.cmake not applied?)" >&2
     exit 1
   fi
-  if ! xcrun nm -U "${BIN}" | grep -q '___real_sip_dialog_route'; then
+  if ! grep -q '___real_sip_dialog_route' <<<"${DEFINED}"; then
     echo "ERROR: ${SLICE}: sip_dialog_route rename missing (patch-re-sources.cmake not applied?)" >&2
     exit 1
   fi
-  if ! xcrun nm -U "${BIN}" | grep -q ' _SSL_CTX_new'; then
+  if ! grep -q ' _SSL_CTX_new' <<<"${DEFINED}"; then
     echo "ERROR: ${SLICE}: OpenSSL missing from the binary — this build has no TLS/WSS/DTLS-SRTP" >&2
     exit 1
   fi
