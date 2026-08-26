@@ -230,6 +230,22 @@ for SLICE in device simulator; do
     echo "ERROR: ${SLICE}: OpenSSL missing from the binary — this build has no TLS/WSS/DTLS-SRTP" >&2
     exit 1
   fi
+  # The external-audio entry points are the ONLY symbols the Flutter plugin
+  # resolves at link time — EchoSDKExternalAudio.m calls them from the VPIO
+  # render callback, while everything else reaches the SDK through dlsym
+  # (lib/src/sdk.dart opens EchoSDK.framework/EchoSDK at runtime). A count of
+  # exported echosdk_* symbols does not cover them, and their absence surfaces
+  # only much later as "Undefined symbol: _echosdk_audio_external_push" when
+  # the example app links. Name them explicitly.
+  for SYM in _echosdk_audio_external_push \
+             _echosdk_audio_external_pull \
+             _echosdk_audio_external_format \
+             _echosdk_audio_external_is_active; do
+    if ! grep -q " ${SYM}$" <<<"${GLOBALS}"; then
+      echo "ERROR: ${SLICE}: ${SYM} not exported — the Flutter plugin cannot link against this framework" >&2
+      exit 1
+    fi
+  done
 done
 
 # ---------------------------------------------------------------------------

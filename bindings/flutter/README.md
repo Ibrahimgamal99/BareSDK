@@ -19,7 +19,7 @@ ships no UI and imposes no call flow.
 
 ```yaml
 dependencies:
-  EchoSDK:
+  echo_sdk:
     git:
       url: https://github.com/NawyRE/echo-sdk.git
       path: bindings/flutter

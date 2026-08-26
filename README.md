@@ -198,7 +198,7 @@ Plain C, manual compile, and Windows linking: [docs/quickstart/c.md](docs/quicks
 
 ```yaml
 dependencies:
-  EchoSDK:
+  echo_sdk:
     git:
       url: https://github.com/NawyRE/echo-sdk.git
       path: bindings/flutter

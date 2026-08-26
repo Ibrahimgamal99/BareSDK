@@ -19,13 +19,13 @@ The `EchoSDK` Flutter package (`bindings/flutter/`) is a hybrid plugin:
 
 ```yaml
 dependencies:
-  EchoSDK:
+  echo_sdk:
     git:
       url: https://github.com/NawyRE/echo-sdk.git
       path: bindings/flutter
       ref: <full-40-char-sha>   # pin for anything you ship
   # or, from a checkout:
-  # EchoSDK:
+  # echo_sdk:
   #   path: path/to/EchoSDK/bindings/flutter
 ```
 
@@ -287,7 +287,7 @@ sdk.appOwnedAudioErrors.listen((e) {
 
 The plugin ships a working capture/playback engine for both platforms, so most
 apps need nothing further —
-[`AppOwnedAudioEngine.kt`](../../bindings/flutter/android/src/main/kotlin/dev/EchoSDK/flutter/AppOwnedAudioEngine.kt)
+[`AppOwnedAudioEngine.kt`](../../bindings/flutter/android/src/main/kotlin/dev/echosdk/flutter/AppOwnedAudioEngine.kt)
 (`AudioRecord`/`AudioTrack` on `VOICE_COMMUNICATION`) and
 [`EchoSDKExternalAudio.m`](../../bindings/flutter/ios/Classes/EchoSDKExternalAudio.m)
 (a `VoiceProcessingIO` AudioUnit).
