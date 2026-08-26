@@ -30,6 +30,7 @@ over dart:ffi.
   # Prebuilt native core. Missing? Run scripts/build-ios.sh on macOS (or
   # download the CI artifact) — see docs/quickstart/flutter.md.
   s.vendored_frameworks = 'Frameworks/EchoSDK.xcframework'
+  s.preserve_paths      = 'Frameworks/EchoSDK.xcframework'
   s.prepare_command = <<-CMD
     if [ ! -d Frameworks/EchoSDK.xcframework ]; then
       echo "error: EchoSDK.xcframework is missing." >&2
@@ -42,9 +43,23 @@ over dart:ffi.
 
   s.frameworks = 'AVFoundation', 'AudioToolbox', 'CoreAudio', 'Network'
 
+  # -framework EchoSDK on BOTH sides, and not just vendored_frameworks.
+  # CocoaPods copies and embeds the xcframework, but this pod builds as a
+  # static library (Flutter's default — no use_frameworks!), so a static lib
+  # never links anything itself and the flag does not reach the app target's
+  # link line on its own. Everything the Dart side touches is resolved with
+  # dlsym at runtime and so never noticed, but EchoSDKExternalAudio.m calls
+  # echosdk_audio_external_push/_pull/_format directly from the VPIO render
+  # callback — those are the only link-time references in the app, and without
+  # this they fail as "Undefined symbol: _echosdk_audio_external_push".
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     # Simulator x86_64 slice exists, so no arch exclusions needed.
     'IPHONEOS_DEPLOYMENT_TARGET' => '13.0',
+    'OTHER_LDFLAGS' => '-framework EchoSDK',
+  }
+
+  s.user_target_xcconfig = {
+    'OTHER_LDFLAGS' => '-framework EchoSDK',
   }
 end
