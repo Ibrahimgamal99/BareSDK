@@ -35,9 +35,16 @@ DIST="${ROOT}/dist/ios"
 # -lz: re's cmake defines USE_ZLIB whenever find_package(ZLIB) succeeds, which
 # it does against the Apple SDK (libz.tbd), and re_crc32() then calls zlib's
 # crc32() for the STUN FINGERPRINT attribute — same story as the Android link.
+# -lresolv: re's check_symbol_exists(res_ninit) succeeds against the iOS SDK,
+# so re/cmake/re-config.cmake defines HAVE_RESOLV and src/dns/res.c calls
+# res_ninit/res_getservers/res_nclose to read the system resolver. Those live
+# in libresolv.tbd, not libSystem — on Apple they are the res_9_* symbols, so
+# without this the link fails with "Undefined symbols: _res_9_ninit". re only
+# records `resolv` in its own RE_LIBS; this dylib is hand-linked, so it has to
+# be repeated here (as on Linux, scripts/build-linux.sh).
 FRAMEWORKS_FOR_LINK=(-framework AVFoundation -framework AudioToolbox
                      -framework CoreAudio -framework CoreFoundation
-                     -lz)
+                     -lz -lresolv)
 
 if ! command -v xcodebuild >/dev/null; then
   echo "ERROR: xcodebuild not found — this script requires macOS + Xcode." >&2
