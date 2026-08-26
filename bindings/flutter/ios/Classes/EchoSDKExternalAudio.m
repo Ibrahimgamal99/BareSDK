@@ -41,11 +41,19 @@ static const NSTimeInterval kPreferredIOBuffer = 0.02;
 
 @end
 
+#pragma mark -
+
+@implementation EchoSDKAudioEngine
+
 #pragma mark - Render callback
 
 /* Realtime thread. No locks of ours, no allocation, no Objective-C messaging
  * beyond the ivar reads below — everything it touches is set up before the
- * unit starts and torn down after it stops. */
+ * unit starts and torn down after it stops.
+ *
+ * Defined inside @implementation on purpose: `self->_unit` and friends are
+ * @protected, so a C function above the @implementation cannot reach them
+ * ("instance variable '_unit' is private"). Moving it out breaks the build. */
 static OSStatus RenderCB(void *inRefCon,
                          AudioUnitRenderActionFlags *ioActionFlags,
                          const AudioTimeStamp *inTimeStamp,
@@ -80,10 +88,6 @@ static OSStatus RenderCB(void *inRefCon,
 
 	return noErr;
 }
-
-#pragma mark -
-
-@implementation EchoSDKAudioEngine
 
 - (instancetype)init
 {
