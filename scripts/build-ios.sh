@@ -48,6 +48,26 @@ fi
 ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 bash "${SCRIPT_DIR}/fetch-third-party.sh"
 
 # ---------------------------------------------------------------------------
+# Single-config generator (Ninja, like every other platform script) — NOT
+# -GXcode. Everything here is an ExternalProject, and ExternalProject_Add
+# inherits the parent generator, so -GXcode builds libre under Xcode too.
+# There, `add_library(re STATIC $<TARGET_OBJECTS:re-objs>)` has no real source
+# file of its own, and Xcode emits no product for a target with an empty
+# Compile Sources phase (CMake issue #17457). The build reports success without
+# ever running libtool for libre.a, and re's install step then dies with
+#   file INSTALL cannot find .../re-build/Release-iphoneos/libre.a
+# CMakeLists.txt assumes single-config sub-builds elsewhere as well — _CORE_A
+# is echosdk-core-build/echosdk_core.a with no $(CONFIGURATION) component — and
+# nothing in this build needs Xcode: the dylibs are hand-linked with clang.
+# ---------------------------------------------------------------------------
+if command -v ninja >/dev/null 2>&1; then
+  GENERATOR="Ninja"
+else
+  GENERATOR="Unix Makefiles"
+fi
+JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
+# ---------------------------------------------------------------------------
 # Helper: configure + build the static archive for one single-arch slice
 # ---------------------------------------------------------------------------
 build_slice() {
@@ -55,7 +75,8 @@ build_slice() {
   local BUILD_DIR="${ROOT}/build/ios-${NAME}"
 
   rm -rf "${BUILD_DIR}"
-  cmake -S "${ROOT}" -B "${BUILD_DIR}" -GXcode \
+  cmake -S "${ROOT}" -B "${BUILD_DIR}" -G "${GENERATOR}" \
+    -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_OSX_SYSROOT="${SYSROOT}" \
     -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
@@ -63,8 +84,7 @@ build_slice() {
     -DECHOSDK_TLS=openssl \
     -DECHOSDK_MODULES_PROFILE=mobile
 
-  cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" --target echosdk \
-    -- CODE_SIGNING_ALLOWED=NO
+  cmake --build "${BUILD_DIR}" --target echosdk -j"${JOBS}"
 
   local LIB
   LIB="$(find "${BUILD_DIR}" -name "echosdk.a" | head -1)"
