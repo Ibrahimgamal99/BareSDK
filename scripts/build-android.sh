@@ -33,7 +33,7 @@ BUILD_ROOT="${ECHOSDK_BUILD_ROOT:-${ROOT}/build}"
 # OpenSSL, not mbedTLS: libre only implements TLS/DTLS over OpenSSL, so an
 # mbedTLS build silently loses SIP/TLS, SIP/WSS, DTLS-SRTP and AES (see the
 # Phase 0.5 comment in CMakeLists.txt).
-ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
+ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 bash "${SCRIPT_DIR}/fetch-third-party.sh"
 
 # Locate NDK
 NDK="${ANDROID_NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_LATEST_HOME:-}}}"

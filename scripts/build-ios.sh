@@ -45,7 +45,7 @@ if ! command -v xcodebuild >/dev/null; then
 fi
 
 # Fetch third-party sources (idempotent), OpenSSL included — see TLS note above.
-ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
+ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 bash "${SCRIPT_DIR}/fetch-third-party.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: configure + build the static archive for one single-arch slice
