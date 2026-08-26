@@ -1,24 +1,24 @@
 /// Desktop smoke test for the Dart binding against the real Linux build.
 ///
 /// Requires `scripts/build-linux.sh` to have produced
-/// `dist/linux/x86_64/baresdk.so`. Skipped automatically when missing.
+/// `dist/linux/x86_64/echosdk.so`. Skipped automatically when missing.
 ///
-/// Run: flutter test test/baresdk_smoke_test.dart
+/// Run: flutter test test/echo_sdk_smoke_test.dart
 @Timeout(Duration(minutes: 2))
 library;
 
 import 'dart:io';
 
-import 'package:baresdk/baresdk.dart';
+import 'package:echo_sdk/echo_sdk.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  final libPath = File('../../dist/linux/x86_64/baresdk.so').absolute.path;
+  final libPath = File('../../dist/linux/x86_64/echosdk.so').absolute.path;
   final haveLib = File(libPath).existsSync() && Platform.isLinux;
 
   test('register failure path delivers owned events safely', () async {
-    final sdk = BareSDK(
-      config: const BareSDKConfig(
+    final sdk = EchoSDK(
+      config: const EchoSDKConfig(
         logLevel: 3,
         traceSip: true,
         netMonitorIntervalSeconds: 0,
@@ -26,10 +26,10 @@ void main() {
       libPath: libPath,
     );
     expect(sdk.version, isNotEmpty);
-    expect(BareSDK.instance, same(sdk));
+    expect(EchoSDK.instance, same(sdk));
 
     // Second construction must be refused (native stack is process-global).
-    expect(() => BareSDK(), throwsStateError);
+    expect(() => EchoSDK(), throwsStateError);
 
     final logs = <LogEvent>[];
     final regs = <RegStateEvent>[];
@@ -77,20 +77,20 @@ void main() {
 
     account.destroy();
     sdk.shutdown();
-    expect(BareSDK.instance, isNull);
+    expect(EchoSDK.instance, isNull);
 
     // Refused once the stack is down — the switch is a dispatch onto the SIP
     // thread, and it is not running. expectLater, not expect: the method is
     // async, so it completes with the error rather than throwing inline.
     await expectLater(sdk.useAppOwnedAudio(true), throwsStateError);
-  }, skip: haveLib ? false : 'dist/linux/x86_64/baresdk.so not built');
+  }, skip: haveLib ? false : 'dist/linux/x86_64/echosdk.so not built');
 
   // One body on purpose: the event callback is bound to the zone that created
   // it, so a second test's events would be dropped.
   test('reattaches to a stack this isolate did not start', () async {
     // Stand-in for the Android headless engine's first push wakeup.
-    final first = BareSDK(
-      config: const BareSDKConfig(
+    final first = EchoSDK(
+      config: const EchoSDKConfig(
         logLevel: 3,
         netMonitorIntervalSeconds: 0,
         // Global (not per-account) codec list — the marshalling this exercises
@@ -111,16 +111,16 @@ void main() {
     // do not. detach() is the graceful form of what a destroyed headless
     // isolate does to this process abruptly.
     first.detach();
-    expect(BareSDK.instance, isNull);
+    expect(EchoSDK.instance, isNull);
 
     // Second push wakeup: same start-up code, new isolate, stack still up.
-    final second = BareSDK(
-      config: const BareSDKConfig(netMonitorIntervalSeconds: 0),
+    final second = EchoSDK(
+      config: const EchoSDKConfig(netMonitorIntervalSeconds: 0),
       libPath: libPath,
     );
     expect(second.reattached, isTrue,
         reason: 'construction on a live stack did not reattach');
-    expect(BareSDK.instance, same(second));
+    expect(EchoSDK.instance, same(second));
 
     // The account the dead isolate created is adopted, not lost or duplicated.
     expect(second.accounts.length, 1);
@@ -133,8 +133,8 @@ void main() {
     expect(second.calls, isEmpty);
 
     // Events now reach the new isolate, and route to the adopted account.
-    final sdkEvents = <BareSDKEvent>[];
-    final acctEvents = <BareSDKEvent>[];
+    final sdkEvents = <EchoSDKEvent>[];
+    final acctEvents = <EchoSDKEvent>[];
     second.events.listen(sdkEvents.add);
     adopted.events.listen(acctEvents.add);
     adopted.unregister();
@@ -149,15 +149,15 @@ void main() {
     // Opting out restores the hard failure: stack up, no Dart instance
     // holding it, and init refused rather than reattached.
     second.detach();
-    expect(() => BareSDK(libPath: libPath, reattachIfRunning: false),
+    expect(() => EchoSDK(libPath: libPath, reattachIfRunning: false),
         throwsStateError);
 
     // Reattach once more — this time to tear the stack down for real.
-    final third = BareSDK(libPath: libPath);
+    final third = EchoSDK(libPath: libPath);
     expect(third.reattached, isTrue);
     expect(third.accounts.length, 1);
     third.accounts.first.destroy();
     third.shutdown();
-    expect(BareSDK.instance, isNull);
-  }, skip: haveLib ? false : 'dist/linux/x86_64/baresdk.so not built');
+    expect(EchoSDK.instance, isNull);
+  }, skip: haveLib ? false : 'dist/linux/x86_64/echosdk.so not built');
 }

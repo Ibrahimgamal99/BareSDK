@@ -3,11 +3,11 @@ from setuptools import setup, Distribution
 from wheel.bdist_wheel import bdist_wheel
 
 if sys.platform == "win32":
-    native_lib = ["baresdk.dll"]
+    native_lib = ["echosdk.dll"]
 elif sys.platform == "darwin":
-    native_lib = ["baresdk.dylib"]
+    native_lib = ["echosdk.dylib"]
 else:
-    native_lib = ["baresdk.so"]
+    native_lib = ["echosdk.so"]
 
 
 class BinaryDistribution(Distribution):
@@ -28,5 +28,5 @@ class BinaryWheel(bdist_wheel):
 setup(
     distclass=BinaryDistribution,
     cmdclass={"bdist_wheel": BinaryWheel},
-    package_data={"baresdk": native_lib + ["_baresdk_clean.h"]},
+    package_data={"echo_sdk": native_lib + ["_echosdk_clean.h"]},
 )

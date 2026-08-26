@@ -2,7 +2,7 @@
 
 ## Overview
 
-baresdk supports encrypted SIP signaling via TLS (TCP) and WSS (WebSocket over TLS). This guide covers certificate configuration, common server setups, and troubleshooting.
+EchoSDK supports encrypted SIP signaling via TLS (TCP) and WSS (WebSocket over TLS). This guide covers certificate configuration, common server setups, and troubleshooting.
 
 ---
 
@@ -10,34 +10,34 @@ baresdk supports encrypted SIP signaling via TLS (TCP) and WSS (WebSocket over T
 
 | Transport | Enum | Default port | Encryption |
 |---|---|---|---|
-| UDP | `BARESDK_TRANSPORT_UDP` | 5060 | None |
-| TCP | `BARESDK_TRANSPORT_TCP` | 5060 | None |
-| TLS | `BARESDK_TRANSPORT_TLS` | 5061 | TLS over TCP |
-| WS | `BARESDK_TRANSPORT_WS` | 80/8088 | None |
-| WSS | `BARESDK_TRANSPORT_WSS` | 443 | TLS over WebSocket |
+| UDP | `ECHOSDK_TRANSPORT_UDP` | 5060 | None |
+| TCP | `ECHOSDK_TRANSPORT_TCP` | 5060 | None |
+| TLS | `ECHOSDK_TRANSPORT_TLS` | 5061 | TLS over TCP |
+| WS | `ECHOSDK_TRANSPORT_WS` | 80/8088 | None |
+| WSS | `ECHOSDK_TRANSPORT_WSS` | 443 | TLS over WebSocket |
 
 ---
 
 ## Basic TLS setup
 
 ```c
-baresdk_account_config_t cfg = {
+echosdk_account_config_t cfg = {
     .uri         = "alice@pbx.example.com",
     .password    = "secret",
-    .transport   = BARESDK_TRANSPORT_TLS,
+    .transport   = ECHOSDK_TRANSPORT_TLS,
     .server_host = "pbx.example.com",
     .server_port = 5061,
     .verify_tls  = true,
 };
 ```
 
-> **Note:** `verify_tls` is reserved for future per-account control. Currently the effective TLS verification setting is the global `verify_server` field in `baresdk_config_t` (defaults to `true`). Set it there to control verification for all accounts.
+> **Note:** `verify_tls` is reserved for future per-account control. Currently the effective TLS verification setting is the global `verify_server` field in `echosdk_config_t` (defaults to `true`). Set it there to control verification for all accounts.
 
-### Global TLS config (baresdk_config_t)
+### Global TLS config (echosdk_config_t)
 
 ```c
-baresdk_config_t cfg;
-baresdk_config_init(&cfg);
+echosdk_config_t cfg;
+echosdk_config_init(&cfg);
 
 cfg.ca_cert_path  = "/etc/ssl/certs/ca-bundle.crt";  // NULL = system store
 cfg.verify_server = true;
@@ -51,7 +51,7 @@ cfg.sni_hostname  = NULL;  // auto-derived from server_host
 WebSocket transport is required when connecting to SIP servers behind reverse proxies (Asterisk HTTP, Kamailio with XHTTP, OpenSIPS).
 
 ```c
-baresdk_account_config_t cfg = {
+echosdk_account_config_t cfg = {
     .uri         = "alice@pbx.example.com",
     .password    = "secret",
     .server_url  = "wss://pbx.example.com:443/ws",
@@ -65,8 +65,8 @@ When `server_url` is set, `transport` is derived from the URL scheme (`ws://` â†
 Some servers validate the WebSocket `Origin` header:
 
 ```c
-baresdk_config_t cfg;
-baresdk_config_init(&cfg);
+echosdk_config_t cfg;
+echosdk_config_init(&cfg);
 cfg.ws_origin = "https://app.example.com";
 ```
 
@@ -109,7 +109,7 @@ dtlsenable=yes
 dtlsautoarrange=yes
 ```
 
-baresdk config:
+EchoSDK config:
 ```c
 .server_url = "ws://asterisk.local:8088/ws",
 // or WSS:
@@ -130,7 +130,7 @@ registration is already connected to, so the existing connection is reused. With
 `log_level` at debug you will see
 
 ```
-baresdk: ws in-dialog target 127.0.0.1:8088 is loopback; reusing the registration flow to <server>
+EchoSDK: ws in-dialog target 127.0.0.1:8088 is loopback; reusing the registration flow to <server>
 ```
 
 Nothing to configure. One caveat:
@@ -181,10 +181,10 @@ cfg.sni_hostname = "proxy.example.com";  // matches cert CN/SAN
 ## Self-signed certificates (development)
 
 ```c
-baresdk_account_config_t cfg = {
+echosdk_account_config_t cfg = {
     .uri         = "alice@192.168.1.10",
     .password    = "secret",
-    .transport   = BARESDK_TRANSPORT_TLS,
+    .transport   = ECHOSDK_TRANSPORT_TLS,
     .server_host = "192.168.1.10",
     .server_port = 5061,
     .verify_tls  = false,   // accept self-signed
@@ -194,8 +194,8 @@ baresdk_account_config_t cfg = {
 Or load a specific CA:
 
 ```c
-baresdk_config_t gcfg;
-baresdk_config_init(&gcfg);
+echosdk_config_t gcfg;
+echosdk_config_init(&gcfg);
 gcfg.ca_cert_path  = "/path/to/self-signed-ca.pem";
 gcfg.verify_server = true;
 ```
@@ -217,8 +217,8 @@ cfg.client_key  = "/path/to/client.key";
 
 | Error | Cause | Fix |
 |---|---|---|
-| `BARESDK_ERR_TRANSPORT` | TLS handshake failed | Check server cert, set `verify_tls = false` to test |
-| `BARESDK_ERR_AUTH` after TLS connects | Wrong SIP credentials | Verify `uri` + `password` |
+| `ECHOSDK_ERR_TRANSPORT` | TLS handshake failed | Check server cert, set `verify_tls = false` to test |
+| `ECHOSDK_ERR_AUTH` after TLS connects | Wrong SIP credentials | Verify `uri` + `password` |
 | Certificate verification fails | Self-signed or expired | Set `ca_cert_path` or `verify_tls = false` |
 | SNI mismatch | Proxy cert doesn't match | Set `sni_hostname` explicitly |
 | WSS 403 / rejected | Origin check fails | Set `ws_origin` to match server's allowed origins |

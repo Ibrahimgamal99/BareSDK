@@ -13,7 +13,7 @@
  * its own previous output.  A parameter dropped, duplicated or corrupted here
  * silently changes how audio is encoded, which is why it gets its own test.
  *
- * Links src/adapt.c against libre only.  The baresip and baresdk symbols the
+ * Links src/adapt.c against libre only.  The baresip and EchoSDK symbols the
  * rest of that file references are stubbed below: pulling in libbaresip would
  * drag every audio backend the sysroot happens to have been built with.
  */
@@ -21,7 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include "../../src/baresdk_internal.h"
+#include "../../src/echosdk_internal.h"
 
 static int g_pass, g_fail;
 
@@ -37,8 +37,8 @@ static int g_pass, g_fail;
 
 struct bsdk_ctx g_bsdk;
 
-void bsdk_post_quality_alert(struct baresdk_call *lc,
-                             baresdk_quality_issue_t issue,
+void bsdk_post_quality_alert(struct echosdk_call *lc,
+                             echosdk_quality_issue_t issue,
                              float value, float threshold, bool recovering)
 {
 	(void)lc; (void)issue; (void)value; (void)threshold; (void)recovering;

@@ -14,7 +14,7 @@
  *
  *   1. Media-stall detection.  Watch the inbound RTP packet counter.  When it
  *      stops advancing for cfg.media_stall_ms, raise a non-fatal
- *      BARESDK_QUALITY_MEDIA_STALL alert; raise it again with `recovering`
+ *      ECHOSDK_QUALITY_MEDIA_STALL alert; raise it again with `recovering`
  *      when packets resume.  This is deliberately *not* a call teardown —
  *      cfg.rtp_timeout_s (baresip's avt.rtp_timeout) is there for apps that
  *      want the fatal version, and it defaults to off because ending a call
@@ -47,7 +47,7 @@
  * All functions here run on the re_main thread.
  */
 
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* Opus refuses a maxaveragebitrate outside this range (modules/opus/sdp.c),
  * so a target outside it would be silently ignored rather than clamped. */
@@ -167,7 +167,7 @@ int bsdk_adapt_fmtp_set_bitrate(char *buf, size_t sz, const char *src,
  * the negotiated codec has no encoder-update handler, which is how a G.711
  * call reports "nothing to adapt".
  */
-int bsdk_adapt_apply_bitrate(struct baresdk_call *lc, uint32_t bitrate)
+int bsdk_adapt_apply_bitrate(struct echosdk_call *lc, uint32_t bitrate)
 {
 	struct audio            *au;
 	struct stream           *strm;
@@ -210,19 +210,19 @@ int bsdk_adapt_apply_bitrate(struct baresdk_call *lc, uint32_t bitrate)
 
 /* ── Media-stall detection ───────────────────────────────────────────────── */
 
-static void stall_clear(struct baresdk_call *lc, uint32_t elapsed_ms)
+static void stall_clear(struct echosdk_call *lc, uint32_t elapsed_ms)
 {
 	if (!lc->stall_active)
 		return;
 
 	lc->stall_active = false;
-	bsdk_post_quality_alert(lc, BARESDK_QUALITY_MEDIA_STALL,
+	bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MEDIA_STALL,
 	                        (float)elapsed_ms,
 	                        (float)g_bsdk.cfg.media_stall_ms, true);
 }
 
-static void stall_tick(struct baresdk_call *lc,
-                        const baresdk_ev_media_stats_t *s)
+static void stall_tick(struct echosdk_call *lc,
+                        const echosdk_ev_media_stats_t *s)
 {
 	uint64_t now = tmr_jiffies();
 	uint32_t elapsed;
@@ -235,7 +235,7 @@ static void stall_tick(struct baresdk_call *lc,
 	 * MIGRATED / MIGRATION_FAILED).  Reporting a stall in either case would
 	 * be a second, less informative voice on the same event — so treat both
 	 * as a fresh start rather than a stall. */
-	if (lc->state == BARESDK_CALL_HELD || lc->local_hold ||
+	if (lc->state == ECHOSDK_CALL_HELD || lc->local_hold ||
 	    call_is_onhold(lc->bc) ||
 	    lc->net_mig_state == BSDK_MIG_WAIT_ADDR ||
 	    lc->net_mig_state == BSDK_MIG_DEFERRED ||
@@ -260,7 +260,7 @@ static void stall_tick(struct baresdk_call *lc,
 	elapsed = (uint32_t)(now - lc->stall_since);
 	if (!lc->stall_active && elapsed >= g_bsdk.cfg.media_stall_ms) {
 		lc->stall_active = true;
-		bsdk_post_quality_alert(lc, BARESDK_QUALITY_MEDIA_STALL,
+		bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MEDIA_STALL,
 		                        (float)elapsed,
 		                        (float)g_bsdk.cfg.media_stall_ms, false);
 	}
@@ -268,8 +268,8 @@ static void stall_tick(struct baresdk_call *lc,
 
 /* ── Bitrate adaptation ──────────────────────────────────────────────────── */
 
-static void bitrate_tick(struct baresdk_call *lc,
-                          const baresdk_ev_media_stats_t *s)
+static void bitrate_tick(struct echosdk_call *lc,
+                          const echosdk_ev_media_stats_t *s)
 {
 	uint32_t min_br, max_br, cur, next;
 
@@ -319,13 +319,13 @@ static void bitrate_tick(struct baresdk_call *lc,
 	if (bsdk_adapt_apply_bitrate(lc, next))
 		return;   /* fixed-rate codec or transient error — try again later */
 
-	info("baresdk: adaptive bitrate %u -> %u bps (loss %.1f%%)\n",
+	info("EchoSDK: adaptive bitrate %u -> %u bps (loss %.1f%%)\n",
 	     cur, next, s->loss_pct);
 }
 
 /* ── Entry points ────────────────────────────────────────────────────────── */
 
-void bsdk_adapt_call_start(struct baresdk_call *lc)
+void bsdk_adapt_call_start(struct echosdk_call *lc)
 {
 	if (!lc)
 		return;
@@ -337,8 +337,8 @@ void bsdk_adapt_call_start(struct baresdk_call *lc)
 	lc->stall_since       = tmr_jiffies();
 }
 
-void bsdk_adapt_tick(struct baresdk_call *lc,
-                      const baresdk_ev_media_stats_t *s)
+void bsdk_adapt_tick(struct echosdk_call *lc,
+                      const echosdk_ev_media_stats_t *s)
 {
 	if (!lc || !lc->bc || !s)
 		return;
@@ -350,7 +350,7 @@ void bsdk_adapt_tick(struct baresdk_call *lc,
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_call *lc;
+	struct echosdk_call *lc;
 	uint32_t             bitrate;
 	int                  result;
 } setbr_ctx_t;
@@ -361,24 +361,24 @@ static void set_bitrate_fn(void *arg)
 	int err = bsdk_adapt_apply_bitrate(ctx->lc, ctx->bitrate);
 
 	switch (err) {
-	case 0:       ctx->result = BARESDK_OK;            break;
-	case EINVAL:  ctx->result = BARESDK_ERR_INVAL;     break;
+	case 0:       ctx->result = ECHOSDK_OK;            break;
+	case EINVAL:  ctx->result = ECHOSDK_ERR_INVAL;     break;
 	case ENOENT:
-	case ENOTSUP: ctx->result = BARESDK_ERR_STATE;     break;
-	default:      ctx->result = BARESDK_ERR_TRANSPORT; break;
+	case ENOTSUP: ctx->result = ECHOSDK_ERR_STATE;     break;
+	default:      ctx->result = ECHOSDK_ERR_TRANSPORT; break;
 	}
 }
 
-int baresdk_call_set_bitrate(baresdk_call_handle_t call, uint32_t bitrate_bps)
+int echosdk_call_set_bitrate(echosdk_call_handle_t call, uint32_t bitrate_bps)
 {
 	setbr_ctx_t ctx = { .lc = call, .bitrate = bitrate_bps, .result = 0 };
 	int err;
 
 	if (!call)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 	if (bitrate_bps && (bitrate_bps < BSDK_ADAPT_BR_MIN ||
 	                    bitrate_bps > BSDK_ADAPT_BR_MAX))
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 
 	err = bsdk_dispatch_sync(set_bitrate_fn, &ctx);
 	return err ? err : ctx.result;
@@ -401,7 +401,7 @@ static void set_adaptive_fn(void *arg)
 		g_bsdk.cfg.adapt_max_bitrate = ctx->max_bps;
 }
 
-void baresdk_set_adaptive_bitrate(bool enabled, uint32_t min_bps,
+void echosdk_set_adaptive_bitrate(bool enabled, uint32_t min_bps,
                                    uint32_t max_bps)
 {
 	adaptcfg_ctx_t ctx = { .enabled = enabled, .min_bps = min_bps,
@@ -412,7 +412,7 @@ void baresdk_set_adaptive_bitrate(bool enabled, uint32_t min_bps,
 /* ── Per-call RTP timeout ────────────────────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_call *lc;
+	struct echosdk_call *lc;
 	uint32_t             seconds;
 	int                  result;
 } rtptmo_ctx_t;
@@ -420,10 +420,10 @@ typedef struct {
 static void set_rtp_timeout_fn(void *arg)
 {
 	rtptmo_ctx_t *ctx = arg;
-	struct baresdk_call *lc = ctx->lc;
+	struct echosdk_call *lc = ctx->lc;
 
 	if (!lc->bc) {
-		ctx->result = BARESDK_ERR_STATE;
+		ctx->result = ECHOSDK_ERR_STATE;
 		return;
 	}
 
@@ -440,16 +440,16 @@ static void set_rtp_timeout_fn(void *arg)
 		if (strm)
 			stream_enable_rtp_timeout(strm, ctx->seconds * 1000u);
 	}
-	ctx->result = BARESDK_OK;
+	ctx->result = ECHOSDK_OK;
 }
 
-int baresdk_call_set_rtp_timeout(baresdk_call_handle_t call, uint32_t seconds)
+int echosdk_call_set_rtp_timeout(echosdk_call_handle_t call, uint32_t seconds)
 {
 	rtptmo_ctx_t ctx = { .lc = call, .seconds = seconds, .result = 0 };
 	int err;
 
 	if (!call)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 
 	err = bsdk_dispatch_sync(set_rtp_timeout_fn, &ctx);
 	return err ? err : ctx.result;

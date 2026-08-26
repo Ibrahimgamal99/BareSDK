@@ -1,18 +1,18 @@
-package dev.baresdk
+package dev.echosdk
 
 import android.util.Log
 
 /**
- * Direct access to baresdk's app-owned audio device.
+ * Direct access to EchoSDK's app-owned audio device.
  *
  * These are the only SDK calls made from a realtime audio thread, which is why
  * they bypass Dart entirely: the loop has one frame-time (10-20 ms) to capture,
  * hand over, take the far end's audio back and write it out, and a Dart isolate
  * hop plus a GC pause does not fit in that budget.
  *
- * The entry points live in libbaresdk.so itself (platform/android/
+ * The entry points live in libechosdk.so itself (platform/android/
  * audio_external_jni.c), so nothing here needs an NDK build. Deliberately in
- * `dev.baresdk` rather than `dev.baresdk.flutter`: it is a plain Android
+ * `dev.echosdk` rather than `dev.echosdk.flutter`: it is a plain Android
  * binding and any Android consumer can use it, Flutter or not.
  *
  * PCM is S16LE interleaved at the rate [format] reports. Buffers must be
@@ -21,22 +21,22 @@ import android.util.Log
  */
 internal object ExternalAudio {
 
-    private const val TAG = "BaresdkExternalAudio"
+    private const val TAG = "EchoSDKExternalAudio"
 
     /** No call is capturing or playing. Normal between calls, not an error. */
     const val ENODEV = 19
     const val EINVAL = 22
 
     /**
-     * False when libbaresdk.so could not be loaded, in which case every call
+     * False when libechosdk.so could not be loaded, in which case every call
      * here throws. A host that never turns the feature on is unaffected, so
      * this is reported rather than fatal.
      */
     val available: Boolean = try {
-        System.loadLibrary("baresdk")
+        System.loadLibrary("EchoSDK")
         true
     } catch (t: Throwable) {
-        Log.e(TAG, "libbaresdk.so not loadable; app-owned audio unavailable", t)
+        Log.e(TAG, "libechosdk.so not loadable; app-owned audio unavailable", t)
         false
     }
 

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to baresdk are documented here.
+All notable changes to EchoSDK are documented here.
 
 ---
 
@@ -24,17 +24,17 @@ All notable changes to baresdk are documented here.
   call; wideband codecs are scored on the G.107.1 R scale (Ro = 129) rather
   than the narrowband one, checked against ITU's own reference calculator; and
   `mos_lq_avg` is averaged in the R-factor domain and converted once, since MOS
-  is non-linear in R. `baresdk_call_get_stats()` now zeroes `out` before
+  is non-linear in R. `echosdk_call_get_stats()` now zeroes `out` before
   anything else, so every field is defined even on an error return, and
   `rtt_ms` reading `0.0` means "no RR received yet", not "zero delay". Docs
   updated: [Observability](api/observability.md) and [Events](api/events.md).
 
 - **Documentation: the event-callback contract was documented backwards.**
-  `baresdk_event_cb_t` said "do not call baresdk APIs from inside this
+  `echosdk_event_cb_t` said "do not call EchoSDK APIs from inside this
   callback". The opposite is true and always has been — the event dispatch
   thread exists precisely so a consumer can re-enter the API without
   deadlocking `re_main`, and every example in the docs answers a call from
-  inside the handler. The comment in `include/baresdk.h`, the C++ wrapper and
+  inside the handler. The comment in `include/echosdk.h`, the C++ wrapper and
   the Dart FFI bindings now states the real contract: re-entry is safe, keep
   the handler fast (< 10 ms) because it runs inline with the event queue.
 
@@ -47,7 +47,7 @@ All notable changes to baresdk are documented here.
   The interpositions moved into the sources: `cmake/patch-re-sources.cmake`
   patches the fetched libre at build time — the ACK reply-drain is fixed in
   `sipsess/reply.c` itself, and `websock_connect()` / `sip_dialog_route()` are
-  renamed to `__real_*` behind compile-time switches so baresdk's `ws_path.c`
+  renamed to `__real_*` behind compile-time switches so EchoSDK's `ws_path.c`
   owns the public names everywhere. No link step passes `--wrap` any more, and
   `dist/` archives are self-contained (consumers no longer need the flags).
   `src/sipsess_fix.c` is gone; the `sip_transp_send` interposition is gone too
@@ -73,7 +73,7 @@ All notable changes to baresdk are documented here.
 
   The event queue is a bounded list plus a length counter. Producers increment
   it, the single consumer decrements it once per event drained, and every
-  producer refuses to enqueue once the length reaches `BARESDK_EV_QUEUE_MAX`.
+  producer refuses to enqueue once the length reaches `ECHOSDK_EV_QUEUE_MAX`.
   Four producers — incoming SIP MESSAGE, MWI NOTIFY, presence/BLF NOTIFY and the
   incoming REFER — appended to the list by hand and never incremented the
   counter. Each such event therefore left the counter one below the queue's real
@@ -108,7 +108,7 @@ All notable changes to baresdk are documented here.
   local SIP address; a port with no address binds that port on each local
   address, and an IPv6 literal is bracketed.
 
-- **Any failure inside `baresdk_init()` crashed the host application.** The
+- **Any failure inside `echosdk_init()` crashed the host application.** The
   unwind path called `bsdk_event_close()` unconditionally, which joined an event
   thread that had not been created — `thrd_t` has no "not a thread" value, and
   joining an unassigned one segfaults. Init failures now return their error code
@@ -120,7 +120,7 @@ All notable changes to baresdk are documented here.
   was never bumped, so nothing re-INVITEd them and no timer was armed to try
   again. With `net_monitor_interval_s = 0` — the setting mobile apps are told to
   use — nothing woke the SDK up again either. The calls stayed up with dead audio
-  and the app was never told. They now get `BARESDK_NET_CALL_MIGRATION_FAILED`
+  and the app was never told. They now get `ECHOSDK_NET_CALL_MIGRATION_FAILED`
   (and are hung up when `net_hangup_on_migration_failure` is set). The round
   state is also cleared, so the next handover announces itself instead of
   reporting an `elapsed_ms` accumulated from the failed one.
@@ -143,26 +143,26 @@ All notable changes to baresdk are documented here.
   terminal `FAILED` account back into recovery; the handover's re-REGISTER
   ignored that and retried anyway, leaving the account reporting `FAILED` to the
   app while carrying `reconnecting = true` internally. Accounts that failed on
-  `BARESDK_ERR_AUTH` are now left alone. Every other failure — transport,
+  `ECHOSDK_ERR_AUTH` are now left alone. Every other failure — transport,
   timeout, 5xx — is still retried, because a new network is exactly what might
   fix those.
 
-- **Python wheels published from CI had a corrupt `baresdk_config_t` layout.**
+- **Python wheels published from CI had a corrupt `echosdk_config_t` layout.**
   The release workflow generated the cffi header with its own copy of the
-  `gcc -E` pipeline, which was missing `-DBARESDK_NO_PACKED_ENUM=1` while still
-  stripping `__attribute__`. cffi therefore saw `baresdk_aec_mode_t` as 4 bytes
+  `gcc -E` pipeline, which was missing `-DECHOSDK_NO_PACKED_ENUM=1` while still
+  stripping `__attribute__`. cffi therefore saw `echosdk_aec_mode_t` as 4 bytes
   where the compiled library has 1, so every field after `cfg.aec_mode` was at
   the wrong offset — `sizeof` 760 against the library's 752 — and the
-  `version`/`struct_size` guard could not catch it, because `baresdk_config_init()`
+  `version`/`struct_size` guard could not catch it, because `echosdk_config_init()`
   fills both from the C side. Locally built wheels were correct; released ones
   were not. Both callers now share `bindings/python/gen_header.sh`, so they
   cannot drift again.
 
 ### Added
 
-- **`baresdk_call_transfer_accept()` / `baresdk_call_transfer_reject()` — an
+- **`echosdk_call_transfer_accept()` / `echosdk_call_transfer_reject()` — an
   incoming REFER can finally be answered.** The SDK raised
-  `BARESDK_EV_TRANSFER_REQUEST` and then had nothing to offer: no way to follow
+  `ECHOSDK_EV_TRANSFER_REQUEST` and then had nothing to offer: no way to follow
   the transfer, no way to refuse it, and — because RFC 3515 makes a REFER an
   implicit subscription — no way to send the final `message/sipfrag` NOTIFY the
   transferor is waiting on. The subscription stayed parked at `100 Trying` until
@@ -170,14 +170,14 @@ All notable changes to baresdk are documented here.
   looks reasonable and is exactly the thing that loses the NOTIFY: the new call
   is then unrelated to the REFER.
 
-  `baresdk_call_transfer_accept()` places the call *linked* to the original, so
+  `echosdk_call_transfer_accept()` places the call *linked* to the original, so
   the stack reports the outcome by itself — `200 OK` once the new call is
   established, or the failure status if it never is.
-  `baresdk_call_transfer_reject(call, scode, reason)` sends the terminating
+  `echosdk_call_transfer_reject(call, scode, reason)` sends the terminating
   NOTIFY and leaves the call up, so the user stays on the line. Answer every
-  `BARESDK_EV_TRANSFER_REQUEST` with exactly one of them.
+  `ECHOSDK_EV_TRANSFER_REQUEST` with exactly one of them.
 
-  `baresdk_ev_transfer_req_t` gains a trailing `auto_followed` flag, always
+  `echosdk_ev_transfer_req_t` gains a trailing `auto_followed` flag, always
   false today, so an app written now cannot be made to place a duplicate call if
   auto-follow policy is ever added. Appending it keeps the struct ABI intact.
 
@@ -185,14 +185,14 @@ All notable changes to baresdk are documented here.
   `transferAccept()` / `transferReject()` in Dart, and
   `Call::transfer_accept()` / `transfer_reject()` in C++.
 
-- **`baresdk_call_get_info()` — the call metadata every comparable SDK exposes.**
+- **`echosdk_call_get_info()` — the call metadata every comparable SDK exposes.**
   Peer URI and display name, local and contact URIs, Call-ID, diverter,
   direction, remote-hold state, last SIP status, duration, setup duration, line
   number, transport and state. Until now the peer URI was only visible on the
   incoming-call event, so anything that needed it later had to cache it.
 
-  It fills a caller-owned `baresdk_call_info_t` of fixed char arrays, matching
-  `baresdk_audio_device_t`: nothing in it can dangle when the call ends, and
+  It fills a caller-owned `echosdk_call_info_t` of fixed char arrays, matching
+  `echosdk_audio_device_t`: nothing in it can dangle when the call ends, and
   every binding can copy it without a lifetime rule. Safe to call at any point,
   including after the call has ended.
 
@@ -200,11 +200,11 @@ All notable changes to baresdk are documented here.
   `remote_user_agent`, because the stack exposes no getter for it, and the
   forwarding field is named `diverter_uri` because it carries Diversion /
   History-Info, not Referred-By. `is_remote_hold` is likewise named for what it
-  is — the peer holding *us*; local hold remains `baresdk_call_is_held()`.
+  is — the peer holding *us*; local hold remains `echosdk_call_is_held()`.
 
-- **`BARESDK_REG_RECONNECTING` — a registration the SDK is recovering is no
+- **`ECHOSDK_REG_RECONNECTING` — a registration the SDK is recovering is no
   longer reported as a failure.** Every transient loss used to arrive as
-  `BARESDK_REG_FAILED`: a REGISTER that timed out on a train, a 5xx, a keepalive
+  `ECHOSDK_REG_FAILED`: a REGISTER that timed out on a train, a 5xx, a keepalive
   probe the proxy stopped answering. The retry loop then fixed it a second later,
   but the app had already been told the registration failed and had no way to
   tell that from wrong credentials — so the honest UI was an error the user could
@@ -221,12 +221,12 @@ All notable changes to baresdk are documented here.
   - a keepalive probe (`cfg.keepalive_interval`) that went unanswered: registered
     on paper, unreachable in fact,
   - a network handover or a link that dropped entirely, from
-    `BARESDK_NET_CHANGE_DETECTED` (or `NET_DOWN`) until the REGISTER lands on the
+    `ECHOSDK_NET_CHANGE_DETECTED` (or `NET_DOWN`) until the REGISTER lands on the
     new path.
 
-  `FAILED` is kept for what the SDK has stopped acting on: `BARESDK_ERR_AUTH`, an
+  `FAILED` is kept for what the SDK has stopped acting on: `ECHOSDK_ERR_AUTH`, an
   exhausted `reg_retry_max_attempts`, or a retry the app cancelled with
-  `baresdk_account_cancel_retry()`.
+  `echosdk_account_cancel_retry()`.
 
   The recovery does not flicker: an account stays `RECONNECTING` across every
   attempt it makes — a retry's own REGISTER is reported as `RECONNECTING`, not
@@ -279,7 +279,7 @@ All notable changes to baresdk are documented here.
   moved, so a WebSocket call re-INVITEd purely to re-bind its dialog does not put
   working media through one. `cfg.ice_gathering_timeout_ms` bounds the re-gather
   as it bounds the one on dial (0 there means 3 s, not "for ever" — the call is
-  live and silent while it runs). `BARESDK_NET_CALL_ICE_STALE` and
+  live and silent while it runs). `ECHOSDK_NET_CALL_ICE_STALE` and
   `net_ice_handover` now apply only to a call the restart could not be performed
   for, and `FAIL_FAST` no longer caps a restarted call at one attempt: what it is
   waiting on is the peer's NAT rebinding, exactly like a direct-RTP call. The
@@ -402,9 +402,9 @@ All notable changes to baresdk are documented here.
   wait, and one path never reported at all: the ice module's no-STUN/TURN case
   arms a 1 ms timer whose handler walks the session's media list and fires the
   gather callback once per entry, so an empty list meant the callback was never
-  invoked. The call then sat in `BARESDK_CALL_CALLING` indefinitely — zero SIP
+  invoked. The call then sat in `ECHOSDK_CALL_CALLING` indefinitely — zero SIP
   messages on the wire under `trace_sip`, no event of any kind, and
-  `baresdk_call_invite()` had already returned success, so nothing in the SDK
+  `echosdk_call_invite()` had already returned success, so nothing in the SDK
   or the app could tell. A refused hangup looked dead because there was no
   transaction to cancel.
 
@@ -420,17 +420,17 @@ All notable changes to baresdk are documented here.
   call whose offer is already on the wire.
 
 - One dial on an IPv4-only network permanently disabled ICE for the whole
-  account. `baresdk_call_invite()` retries with the media-NAT cleared when
+  account. `echosdk_call_invite()` retries with the media-NAT cleared when
   `ua_connect()` reports `EAFNOSUPPORT` (a STUN/TURN lookup that needs IPv6),
   but never restored it — so every later call on that account was silently
   downgraded to no-ICE, including calls placed after the device moved to a
   network where ICE was both available and needed.
 
-- `baresdk_call_invite()` returned success without writing `*out` when
+- `echosdk_call_invite()` returned success without writing `*out` when
   `ua_connect()` reported success but produced no call, leaving the caller with
-  an untouched handle. It now returns `BARESDK_ERR_INVAL`.
+  an untouched handle. It now returns `ECHOSDK_ERR_INVAL`.
 
-- `baresdk_call_get_stats()` reported 0 for `mos_lq_min`, `mos_lq_avg`,
+- `echosdk_call_get_stats()` reported 0 for `mos_lq_min`, `mos_lq_avg`,
   `stats_tick` and `call_duration_ms` at every point in a call, however many
   stats ticks had already run — the session-history block was only filled on
   the event path. The getter now reads them from the call without advancing
@@ -502,16 +502,16 @@ All notable changes to baresdk are documented here.
   the stack reports the call as up, and the user hears silence. New guide:
   [Degraded links](guides/degraded_links.md).
 
-  - `cfg.media_stall_ms` (default 4000) fires `BARESDK_QUALITY_MEDIA_STALL`
+  - `cfg.media_stall_ms` (default 4000) fires `ECHOSDK_QUALITY_MEDIA_STALL`
     when inbound RTP stops advancing and again with `recovering` when it
     resumes. Non-fatal, and the only way this condition becomes observable at
     all — when RTP stops, every other metric simply stops changing.
     Suppressed on held calls and during a handover migration, where
-    `BARESDK_EV_NETWORK` already narrates the outage in more detail.
+    `ECHOSDK_EV_NETWORK` already narrates the outage in more detail.
   - `cfg.rtp_timeout_s` (default 0 = off) wires baresip's `avt.rtp_timeout`,
     which was never set: the fatal counterpart that ends such a call. Left off
     because ending a call is destructive and some deployments run legitimate
-    one-way media. Per-call override: `baresdk_call_set_rtp_timeout()`.
+    one-way media. Per-call override: `echosdk_call_set_rtp_timeout()`.
   - `cfg.adaptive_bitrate` steps the Opus encoder down under the loss the
     *peer* reports over RTCP and back up on recovery — halve down, +25% up,
     with a dead band between `adapt_loss_down_pct` and `adapt_loss_up_pct` so a
@@ -519,7 +519,7 @@ All notable changes to baresdk are documented here.
     `adapt_recover_ticks` clean ticks required before any increase. Applied
     through the codec's encoder-update path, so there is no re-INVITE, no
     renegotiation and no gap in the audio. Runtime control:
-    `baresdk_set_adaptive_bitrate()`, `baresdk_call_set_bitrate()`.
+    `echosdk_set_adaptive_bitrate()`, `echosdk_call_set_bitrate()`.
   - `cfg.opus_expected_loss_pct` supplies the `opus_packet_loss` the opus
     module needs. `cfg.opus.fec` alone only *permitted* in-band FEC: the
     encoder sizes its redundant LBRR frame from this percentage and baresip's
@@ -533,12 +533,12 @@ All notable changes to baresdk are documented here.
   after 30–180 s, while the default `reg_expires` is 3600 — and its answer, or
   absence, tests reachability. Any response counts, including 405: a proxy that
   refuses OPTIONS still received it. On failure the account reports
-  `BARESDK_ERR_TIMEOUT` and, with the new `cfg.keepalive_reregister` (default
+  `ECHOSDK_ERR_TIMEOUT` and, with the new `cfg.keepalive_reregister` (default
   true), re-REGISTERs immediately rather than leaving an unreachable
   registration nominally healthy for up to an hour. Suppressed while a call is
   up on the account: RTP already holds the binding open, and an extra request
   competing with media for a congested uplink is exactly wrong.
-  `baresdk_account_keepalive_now()` runs the same probe on demand, for a
+  `echosdk_account_keepalive_now()` runs the same probe on demand, for a
   foreground or push-wake handler.
 
 - **`cfg.sip_timer_b_ms` / `cfg.sip_timer_f_ms` now do something** — both were
@@ -547,7 +547,7 @@ All notable changes to baresdk are documented here.
   constant with no runtime knob — so an app that would rather fail in eight
   seconds and offer to retry had nowhere to say so. `sip_timer_b_ms` now arms
   an SDK-side watchdog that cancels an outgoing call still in `CALLING` with
-  408, surfacing as `BARESDK_CALL_FAILED` / `BARESDK_ERR_TIMEOUT`; only
+  408, surfacing as `ECHOSDK_CALL_FAILED` / `ECHOSDK_ERR_TIMEOUT`; only
   `CALLING` is watched, because a call that reached `RINGING` has proven the
   path works and how long to let it ring is a product decision.
   `sip_timer_f_ms` now bounds the registration watchdog, which was hardcoded to
@@ -572,14 +572,14 @@ All notable changes to baresdk are documented here.
   at the registrar as one burst, and because the schedules never diverged the
   herd re-formed on every subsequent attempt.
 
-- **`cfg.net_ice_handover`** and `BARESDK_NET_CALL_ICE_STALE` — an ICE call
+- **`cfg.net_ice_handover`** and `ECHOSDK_NET_CALL_ICE_STALE` — an ICE call
   cannot re-gather candidates mid-call (baresip fixes the local ufrag/pwd when
   the media session is allocated and its mnat update handler re-runs
   `icem_update()` rather than re-gathering), so the handover re-INVITE
   necessarily carries stale candidates. That cannot be fixed from outside the
   library, so instead it is made visible and bounded: the event is emitted once
   per call per handover *before* the offer goes out, and
-  `BARESDK_ICE_HANDOVER_FAIL_FAST` reports failure after one attempt rather
+  `ECHOSDK_ICE_HANDOVER_FAIL_FAST` reports failure after one attempt rather
   than spending `net_verify_ms` × `net_max_attempts` — 24 s of silence at the
   defaults — on an offer that cannot succeed. `max_attempts` in the event now
   reflects the budget the call is actually held to.
@@ -595,25 +595,25 @@ All notable changes to baresdk are documented here.
   recommended (`mos_alert_threshold` 3.5, `loss_alert_threshold` 5.0,
   `jitter_alert_threshold` 40.0). `stats_interval_ms` is the master switch for
   RTCP accounting in baresip, so at 0 the loss/jitter/RTT/MOS fields read back
-  as zero from `baresdk_call_get_stats()` too — an app that never set it got no
+  as zero from `echosdk_call_get_stats()` too — an app that never set it got no
   quality signal anywhere and nothing said so. Everything added above reads
   from this tick. Set it to 0 to opt out.
 
-- A `408` on a call now maps to `BARESDK_ERR_TIMEOUT` rather than
-  `BARESDK_ERR_INVAL`. It is what the new setup watchdog cancels with, and what
+- A `408` on a call now maps to `ECHOSDK_ERR_TIMEOUT` rather than
+  `ECHOSDK_ERR_INVAL`. It is what the new setup watchdog cancels with, and what
   a proxy sends when its own transaction timed out; neither is the
   malformed-request sense of `INVAL`.
 
 ### Fixed
 
 - **Python: every config field after `cfg.aec_mode` was written to the wrong
-  offset.** `baresdk_aec_mode_t` is a packed 1-byte enum, and the cffi header
+  offset.** `echosdk_aec_mode_t` is a packed 1-byte enum, and the cffi header
   generator strips `__attribute__((packed))` along with every other attribute,
   so cffi widened the field to 4 bytes and shifted the 29 members that follow —
   `stats_interval_ms`, the whole `net_*` group, the retry policy, the session
   timers. `sizeof` still matched by padding coincidence, which is why the
-  `struct_size` check in `baresdk_init()` never caught it.
-  `bindings/python/build.sh` now passes `-DBARESDK_NO_PACKED_ENUM=1`, selecting
+  `struct_size` check in `echosdk_init()` never caught it.
+  `bindings/python/build.sh` now passes `-DECHOSDK_NO_PACKED_ENUM=1`, selecting
   the `uint8_t` typedef that preserves the layout, the same way
   `bindings/flutter/ffigen.yaml` already did. Verified by comparing every field
   offset and every struct size against the C compiler: 0 mismatches.
@@ -624,7 +624,7 @@ All notable changes to baresdk are documented here.
   call failed from inside `_ensure_init()`. `transport` and `media_enc` are now
   translated there too.
 
-- `bindings/flutter`: `BareSDKConfig.statsIntervalMs` and the three alert
+- `bindings/flutter`: `EchoSDKConfig.statsIntervalMs` and the three alert
   thresholds defaulted to 0 and were written unconditionally, which would have
   overwritten the new native defaults with "disabled". They now mirror the
   native defaults.
@@ -633,9 +633,9 @@ All notable changes to baresdk are documented here.
   `--wrap` and the flag was absent, so `make test` failed out of the box on the
   first target that needs the sysroot.
 
-- **App-owned audio device** — `baresdk_audio_use_external(true)` stops the SDK opening any capture or playback device of its own (no OpenSL ES, no AudioUnit) and hands the microphone and speaker to the host app, which moves PCM across `baresdk_audio_external_push()` / `baresdk_audio_external_pull()` from whatever the platform gives it — `AudioRecord`/`AudioTrack`, `AVAudioEngine`, a WebRTC `AudioDeviceModule`, or a file for testing. `baresdk_audio_external_format()` reports the rate/channels/ptime the call negotiated. Switching is live, including mid-call, and `false` restores the platform device. Note it replaces the *device*: the platform echo cancellers the SDK relies on belong to the drivers being displaced, so an app that takes this over owns AEC too.
+- **App-owned audio device** — `echosdk_audio_use_external(true)` stops the SDK opening any capture or playback device of its own (no OpenSL ES, no AudioUnit) and hands the microphone and speaker to the host app, which moves PCM across `echosdk_audio_external_push()` / `echosdk_audio_external_pull()` from whatever the platform gives it — `AudioRecord`/`AudioTrack`, `AVAudioEngine`, a WebRTC `AudioDeviceModule`, or a file for testing. `echosdk_audio_external_format()` reports the rate/channels/ptime the call negotiated. Switching is live, including mid-call, and `false` restores the platform device. Note it replaces the *device*: the platform echo cancellers the SDK relies on belong to the drivers being displaced, so an app that takes this over owns AEC too.
 
-- **App-owned audio reaches every binding** — Flutter: `BareSDK.useAppOwnedAudio()`, `appOwnedAudioFormat` (an `ExternalAudioFormat` with `samplesPerFrame`), `appOwnedAudioActive`. C++: `SDK::use_external_audio()`, `audio_push()`, `audio_pull()`, `audio_format()`, `audio_external_active()`. Python: `use_external_audio()`, `external_audio_push()` (any S16LE buffer — `bytes`, `array('h')`, numpy), `external_audio_pull()`, `external_audio_format()`, `external_audio_active()`. The Dart facade deliberately omits push/pull: the realtime loop belongs in the plugin's native layer, because a GC pause on the capture path is a dropped frame.
+- **App-owned audio reaches every binding** — Flutter: `EchoSDK.useAppOwnedAudio()`, `appOwnedAudioFormat` (an `ExternalAudioFormat` with `samplesPerFrame`), `appOwnedAudioActive`. C++: `SDK::use_external_audio()`, `audio_push()`, `audio_pull()`, `audio_format()`, `audio_external_active()`. Python: `use_external_audio()`, `external_audio_push()` (any S16LE buffer — `bytes`, `array('h')`, numpy), `external_audio_pull()`, `external_audio_format()`, `external_audio_active()`. The Dart facade deliberately omits push/pull: the realtime loop belongs in the plugin's native layer, because a GC pause on the capture path is a dropped frame.
 
 - **The software echo suppressor is available again while the app owns the device** — it was vetoed wherever the platform driver cancels echo, but that driver is exactly what the app-owned device displaces, so the veto left mobile with no canceller anywhere in the chain and no way to ask for one. It is now offered as a fallback, still **off** by default (an app that takes the device is expected to capture through the platform voice path itself, and ducking its TX silently would be the SDK fighting the platform), and forced off again when the platform device returns so the two never stack.
 
@@ -648,7 +648,7 @@ All notable changes to baresdk are documented here.
 
 - **After a reconnect, a WebSocket call could never be ended by the far end** — handover skips the re-INVITE when the local address has not changed ("same path"), which is correct for address-routed transports. A WebSocket client has no listening port, though: its Contact is the RFC 7118 placeholder `sip:user@<ip>:9;transport=wss` and the server reaches it by remembering which WebSocket the dialog's requests arrived on. A transport reset always builds a *new* WebSocket, so that association went stale on every reconnect even when the IP never moved — media kept flowing and the app's own BYE still got out (it is routed, not received), but an inbound BYE had nowhere to be delivered and the call hung in `ESTABLISHED` for the rest of the session. WS/WSS calls now re-INVITE on a transport reset regardless of the address, which re-binds the dialog to the live connection. Address-routed transports keep the shortcut and gain no extra signalling. Verified on device: reconnect mid-call, then the far end hangs up → `CALL_MIGRATING` → `CALL_MIGRATED` → inbound BYE delivered → `ENDED`.
 
-- **Every remote hangup was reported as a call failure** — libre signals a peer-initiated termination by passing `ECONNRESET` to the session close handler: its BYE handler answers 200 OK and then calls `sipsess_terminate(sess, ECONNRESET, NULL)` (`re/src/sipsess/listen.c`), and the peer-CANCEL path does the same. baresip's close handler tests `err` before `msg`, so a perfectly normal hangup arrived as `"Connection reset by peer [104]"` and was classified `BARESDK_CALL_FAILED` with `BARESDK_ERR_TRANSPORT`. Apps that branch on `ENDED` left the call on screen, and every hangup looked like a network fault. A call that was ESTABLISHED and closes with a transport error is now reported as `BARESDK_CALL_ENDED` with the reason `"Remote hangup"`; SIP failures (486, 603, 4xx/5xx/6xx) and pre-answer errors are untouched. Verified on device against a live PBX: remote BYE → `ended`, 486 → `failed`, 603 → `failed`, local hangup → `ended`.
+- **Every remote hangup was reported as a call failure** — libre signals a peer-initiated termination by passing `ECONNRESET` to the session close handler: its BYE handler answers 200 OK and then calls `sipsess_terminate(sess, ECONNRESET, NULL)` (`re/src/sipsess/listen.c`), and the peer-CANCEL path does the same. baresip's close handler tests `err` before `msg`, so a perfectly normal hangup arrived as `"Connection reset by peer [104]"` and was classified `ECHOSDK_CALL_FAILED` with `ECHOSDK_ERR_TRANSPORT`. Apps that branch on `ENDED` left the call on screen, and every hangup looked like a network fault. A call that was ESTABLISHED and closes with a transport error is now reported as `ECHOSDK_CALL_ENDED` with the reason `"Remote hangup"`; SIP failures (486, 603, 4xx/5xx/6xx) and pre-answer errors are untouched. Verified on device against a live PBX: remote BYE → `ended`, 486 → `failed`, 603 → `failed`, local hangup → `ended`.
 
 - **WebSocket calls opened a second connection for every dialog** — RFC 7118 gives a WS client one connection and routes everything over it, but libre routes by address: for an in-dialog request it resolves the dialog's Route/Contact and looks the connection up by peer address, so a target that is not the registration peer gets a whole new WebSocket. Behind a reverse proxy that target is the server's own loopback address (Asterisk advertises `127.0.0.1:8088` in Record-Route), so every call opened a second socket that existed only for the life of the dialog. A loopback WS destination was rewritten to the address the registration is already connected to, so libre finds and reuses the existing connection. (Since superseded: in-dialog requests are routed over the registration flow itself — RFC 7118 §B.2 — which makes the connection lookup match without any address rewrite, on every platform.)
 
@@ -660,11 +660,11 @@ All notable changes to baresdk are documented here.
 
 - **App-owned audio: ending the second of two calls took the microphone for the rest of the session** — the selected device was a bare pointer, cleared only when the closing device was the selected one. Closing the newer of two open devices therefore left the older one alive but unreachable and `push()` returned `ENODEV` forever, so call-waiting and hold/resume both silenced the surviving call. Devices are tracked in a list now: the newest still wins, and closing it falls back to whichever is still open.
 
-- **App-owned audio did not survive a stack restart** — nothing called `bsdk_audio_external_close()` at shutdown, while `baresip_init()` re-initialises the device lists on the way back up. The driver believed it was still registered, skipped re-registering, and `baresdk_audio_use_external(true)` went on **returning 0** while the module name resolved to nothing — every call after a restart came up with no audio at all, with no error anywhere. Shutdown now closes the driver, and the lock is created once per process and never destroyed, so an app's realtime thread racing shutdown cannot land on a destroyed mutex.
+- **App-owned audio did not survive a stack restart** — nothing called `bsdk_audio_external_close()` at shutdown, while `baresip_init()` re-initialises the device lists on the way back up. The driver believed it was still registered, skipped re-registering, and `echosdk_audio_use_external(true)` went on **returning 0** while the module name resolved to nothing — every call after a restart came up with no audio at all, with no error anywhere. Shutdown now closes the driver, and the lock is created once per process and never destroyed, so an app's realtime thread racing shutdown cannot land on a destroyed mutex.
 
-- **The microphone was processed by filters the app had switched off** — `aufilt_register()` enables what it registers, and the SDK's TX filters were then enabled with `if (flag) aufilt_enable(name, true)`. A one-way enable never disables, so `bsdk_ns`, `bsdk_agc` and `bsdk_aec` all ran regardless of config: noise suppression and AGC ran with `ns`/`agc` at their default `false`, and the echo suppressor ran under `BARESDK_AEC_OFF`. Stacked on the TX path that is a −20 dB noise gate, a normaliser with a 0.1 gain floor, and a 16.5 dB duck whenever the far end has audio — worst case a caller the other end cannot hear. All five filters now take the flag directly.
+- **The microphone was processed by filters the app had switched off** — `aufilt_register()` enables what it registers, and the SDK's TX filters were then enabled with `if (flag) aufilt_enable(name, true)`. A one-way enable never disables, so `bsdk_ns`, `bsdk_agc` and `bsdk_aec` all ran regardless of config: noise suppression and AGC ran with `ns`/`agc` at their default `false`, and the echo suppressor ran under `ECHOSDK_AEC_OFF`. Stacked on the TX path that is a −20 dB noise gate, a normaliser with a 0.1 gain floor, and a 16.5 dB duck whenever the far end has audio — worst case a caller the other end cannot hear. All five filters now take the flag directly.
 
-- **Mobile: the software echo suppressor fought the hardware one** — Android captures through the `VOICE_COMMUNICATION` recording preset and iOS through `VoiceProcessingIO`, so the device cancels the echo before the SDK sees a sample. `aec_mode` still defaulted to `SUPPRESSOR` there (in C and in Flutter), which ducked TX by 16.5 dB every time the far end had any audio above roughly −44 dBFS and took ~0.85 s to release — removing no echo that was still present, and half-duplexing a call the hardware had already made full-duplex. The suppressor is now skipped wherever the platform driver cancels echo, including the runtime `baresdk_set_aec_mode()` path; the stock `opensles` fallback (generic preset, no platform AEC) still gets it.
+- **Mobile: the software echo suppressor fought the hardware one** — Android captures through the `VOICE_COMMUNICATION` recording preset and iOS through `VoiceProcessingIO`, so the device cancels the echo before the SDK sees a sample. `aec_mode` still defaulted to `SUPPRESSOR` there (in C and in Flutter), which ducked TX by 16.5 dB every time the far end had any audio above roughly −44 dBFS and took ~0.85 s to release — removing no echo that was still present, and half-duplexing a call the hardware had already made full-duplex. The suppressor is now skipped wherever the platform driver cancels echo, including the runtime `echosdk_set_aec_mode()` path; the stock `opensles` fallback (generic preset, no platform AEC) still gets it.
 
 - **Android: calls came up with audio in one direction only** — the platform was put into `MODE_IN_COMMUNICATION` from the call-established event, over an async method-channel hop, while the native core opened its OpenSL streams the moment media started. Android fixes a stream's routing when it is *created*, so whenever the mode landed second the playback stream stayed on the voice-call domain with nothing routing it: RTP flowed both ways, the far end heard everything, and the local user heard silence. `Account.call()` and `Call.answer()` now claim the audio session before starting media (`answer()` returns a `Future`, awaiting it is optional), and the event path is only a backstop.
 
@@ -674,20 +674,20 @@ All notable changes to baresdk are documented here.
 
 - **Flutter example re-registered by leaking accounts** — tapping Register built a new account and dropped the old one on the floor, still retrying its own registration forever and still counting against WebSocket pinning. It destroys the previous account first.
 
-- **iOS: init seized the audio session from CallKit** — `baresdk_init()` called `[AVAudioSession setActive:YES]` unconditionally, so merely starting the SDK (at app launch, or on a PushKit wake while CallKit was still reporting the call) took the exclusive PlayAndRecord route. Apple requires `CXProvider` to be the only activator, in `provider(_:didActivateAudioSession:)`. Activation is now controlled by `platform_audio_activate`; CallKit apps set it to `false` and get category + mode without activation.
+- **iOS: init seized the audio session from CallKit** — `echosdk_init()` called `[AVAudioSession setActive:YES]` unconditionally, so merely starting the SDK (at app launch, or on a PushKit wake while CallKit was still reporting the call) took the exclusive PlayAndRecord route. Apple requires `CXProvider` to be the only activator, in `provider(_:didActivateAudioSession:)`. Activation is now controlled by `platform_audio_activate`; CallKit apps set it to `false` and get category + mode without activation.
 
-- **Global codec list was never marshalled from Flutter** — `BareSDKConfig.audioCodecs` existed in Dart and stopped there: nothing wrote it into the native config, so a global codec preference was silently ignored (per-account `AccountConfig.audioCodecs` did work). The global list is now a first-class native field and reaches baresip in order.
-- **Re-entry on a live stack was unusable** — a host that loses its own runtime while the process survives (Android headless Flutter engine destroying the Dart isolate between push wakeups) came back to a stack that was still up, and `baresdk_init()` could only answer `BARESDK_ERR_ALREADY`: the event sink still pointed at the dead runtime and the handles it held were gone. There is now a reattach path — see "Reattaching to a live stack" in `docs/api/overview.md`.
+- **Global codec list was never marshalled from Flutter** — `EchoSDKConfig.audioCodecs` existed in Dart and stopped there: nothing wrote it into the native config, so a global codec preference was silently ignored (per-account `AccountConfig.audioCodecs` did work). The global list is now a first-class native field and reaches baresip in order.
+- **Re-entry on a live stack was unusable** — a host that loses its own runtime while the process survives (Android headless Flutter engine destroying the Dart isolate between push wakeups) came back to a stack that was still up, and `echosdk_init()` could only answer `ECHOSDK_ERR_ALREADY`: the event sink still pointed at the dead runtime and the handles it held were gone. There is now a reattach path — see "Reattaching to a live stack" in `docs/api/overview.md`.
 
 ### Added
 
-- `platform_audio_activate` in `baresdk_config_t` (default `true`) — whether `baresdk_init()` activates the platform audio session it configures. iOS only; other platforms ignore it. Flutter: `BareSDKConfig.platformAudioActivate`, normally paired with `BareSDK.start(manageAudioSession: false)`.
-- `audio_codec_names[8][32]` + `audio_codec_name_count` in `baresdk_config_t` — the global counterpart to the per-account name list, so codecs with no `baresdk_codec_t` constant (`"g729"`) and any codec a loaded module registers can be selected globally. Precedence: account names → account enums → global names → global enums.
-- `baresdk_is_initialized()` — is the stack up in this process.
-- `baresdk_set_event_handler(cb, userdata, deliver_owned_events)` — re-point event delivery at a new consumer, or park it with `NULL`, without tearing the stack down.
-- `baresdk_account_foreach()`, `baresdk_account_get_aor()`, `baresdk_account_get_reg_state()` — re-derive account handles and their state instead of creating duplicates.
-- `baresdk_call_get_account()`, `baresdk_call_get_state()` — pair with the existing `baresdk_call_foreach()` to recover a call that arrived while nobody was listening (events are dropped across the gap; the call itself is not).
-- Flutter: `BareSDK.start()` reattaches to a running stack by default (`reattachIfRunning: false` to opt out), `BareSDK.reattached`, `BareSDK.accounts` / `BareSDK.calls`, `BareSDK.detach()`, `Account.aor`, `Account.regState`.
+- `platform_audio_activate` in `echosdk_config_t` (default `true`) — whether `echosdk_init()` activates the platform audio session it configures. iOS only; other platforms ignore it. Flutter: `EchoSDKConfig.platformAudioActivate`, normally paired with `EchoSDK.start(manageAudioSession: false)`.
+- `audio_codec_names[8][32]` + `audio_codec_name_count` in `echosdk_config_t` — the global counterpart to the per-account name list, so codecs with no `echosdk_codec_t` constant (`"g729"`) and any codec a loaded module registers can be selected globally. Precedence: account names → account enums → global names → global enums.
+- `echosdk_is_initialized()` — is the stack up in this process.
+- `echosdk_set_event_handler(cb, userdata, deliver_owned_events)` — re-point event delivery at a new consumer, or park it with `NULL`, without tearing the stack down.
+- `echosdk_account_foreach()`, `echosdk_account_get_aor()`, `echosdk_account_get_reg_state()` — re-derive account handles and their state instead of creating duplicates.
+- `echosdk_call_get_account()`, `echosdk_call_get_state()` — pair with the existing `echosdk_call_foreach()` to recover a call that arrived while nobody was listening (events are dropped across the gap; the call itself is not).
+- Flutter: `EchoSDK.start()` reattaches to a running stack by default (`reattachIfRunning: false` to opt out), `EchoSDK.reattached`, `EchoSDK.accounts` / `EchoSDK.calls`, `EchoSDK.detach()`, `Account.aor`, `Account.regState`.
 - `test/reattach_test.c` — gate test for both fixes.
 
 ---
@@ -697,7 +697,7 @@ All notable changes to baresdk are documented here.
 ### Fixed
 
 - **Windows build — MSBuild tlog locking** — sub-project builds (`libre`, `baresip`, `opus`) could fail with "The requested operation cannot be performed on a file with a user-mapped section open" when Windows Defender (or any AV) held `.tlog` dependency-tracking files mapped. Fixed by passing `CMAKE_VS_GLOBALS=TrackFileAccess=false` to every `ExternalProject_Add` so MSBuild skips the tlog write step entirely.
-- **Windows DLL — missing exports** — `baresdk_strerror` and `baresdk_version` were absent from `baresdk.def` because the DEF-generation regex required whitespace before the function name, which doesn't match pointer-returning signatures (`const char *fn(`). Fixed regex to accept either whitespace or `*` as the separator.
+- **Windows DLL — missing exports** — `echosdk_strerror` and `echosdk_version` were absent from `echosdk.def` because the DEF-generation regex required whitespace before the function name, which doesn't match pointer-returning signatures (`const char *fn(`). Fixed regex to accept either whitespace or `*` as the separator.
 
 ### Changed
 
@@ -714,7 +714,7 @@ All notable changes to baresdk are documented here.
 
 ### Added
 
-- `rtcp_mux` field in `baresdk_config_t` (default `true`). Set to `false` to opt out of RTCP-mux and revert to separate RTCP ports (not recommended when ICE is enabled).
+- `rtcp_mux` field in `echosdk_config_t` (default `true`). Set to `false` to opt out of RTCP-mux and revert to separate RTCP ports (not recommended when ICE is enabled).
 
 ---
 
@@ -724,10 +724,10 @@ All notable changes to baresdk are documented here.
 
 #### Push notifications (RFC 8599 + REGISTER-only headers)
 
-- `baresdk_push_provider_t` enum — `BARESDK_PUSH_PROVIDER_NONE` / `APNS` / `APNS_SANDBOX` / `FCM`.
-- Three new fields in `baresdk_account_config_t`: `push_provider`, `push_token`, `push_param`. When set, the SDK encodes RFC 8599 `pn-provider` / `pn-prid` / `pn-param` URI parameters **inside** the Contact angle brackets on every REGISTER. Self-hosted servers (Kamailio, drachtio, FreeSWITCH) read these from the registrar and use them to wake the device via APNs or FCM.
-- `baresdk_account_set_push_token(acct, token)` — update the push token at runtime without re-creating the account. Re-registers immediately when safe (defers if a REGISTER/UNREGISTER transaction is in flight or a retry backoff is pending). Pass `NULL` to clear all push params.
-- `baresdk_account_add_register_header(acct, name, value)` — attach a custom SIP header to REGISTER requests **only**. Does not appear on INVITE, BYE, REFER, or any other request. Use this for hosted / vendor servers (Twilio, Plivo, Asterisk PJSIP) that dispatch push via non-standard headers rather than RFC 8599.
+- `echosdk_push_provider_t` enum — `ECHOSDK_PUSH_PROVIDER_NONE` / `APNS` / `APNS_SANDBOX` / `FCM`.
+- Three new fields in `echosdk_account_config_t`: `push_provider`, `push_token`, `push_param`. When set, the SDK encodes RFC 8599 `pn-provider` / `pn-prid` / `pn-param` URI parameters **inside** the Contact angle brackets on every REGISTER. Self-hosted servers (Kamailio, drachtio, FreeSWITCH) read these from the registrar and use them to wake the device via APNs or FCM.
+- `echosdk_account_set_push_token(acct, token)` — update the push token at runtime without re-creating the account. Re-registers immediately when safe (defers if a REGISTER/UNREGISTER transaction is in flight or a retry backoff is pending). Pass `NULL` to clear all push params.
+- `echosdk_account_add_register_header(acct, name, value)` — attach a custom SIP header to REGISTER requests **only**. Does not appear on INVITE, BYE, REFER, or any other request. Use this for hosted / vendor servers (Twilio, Plivo, Asterisk PJSIP) that dispatch push via non-standard headers rather than RFC 8599.
 - Flutter binding: `createAccount()` `pushProvider` / `pushToken` / `pushParam` named params; `Account.setPushToken()`; `Account.addRegisterHeader()`.
 - Python binding: `PUSH_PROVIDER_NONE/APNS/APNS_SANDBOX/FCM` constants; `SDK.create_account()` `push_provider` / `push_token` / `push_param` params; `Account.set_push_token()`; `Account.add_register_header()`.
 - C++ binding: same enum, new config fields, `Account::set_push_token()`, `Account::add_register_header()`, `SDK::create_account()` overload.
@@ -739,14 +739,14 @@ All notable changes to baresdk are documented here.
 ### Added
 
 #### Audio recording
-- `baresdk_call_record_start(call, path)` — record call audio to a single mixed WAV file (PCM S16LE). Both the received (RX) and sent (TX) audio are clip-summed into one stream.
-- `baresdk_call_record_stop(call)` — stop recording and finalize the WAV header with correct sizes. The file is also closed automatically if the call is destroyed.
+- `echosdk_call_record_start(call, path)` — record call audio to a single mixed WAV file (PCM S16LE). Both the received (RX) and sent (TX) audio are clip-summed into one stream.
+- `echosdk_call_record_stop(call)` — stop recording and finalize the WAV header with correct sizes. The file is also closed automatically if the call is destroyed.
 - Recording runs independently of the PCM media tap — both can be active simultaneously on the same call.
 
 #### Registration retry control
-- `baresdk_account_set_retry_policy(acct, initial_ms, max_ms, backoff, max_attempts)` — override the retry policy for a specific account at runtime without recreating it. Overrides the global `reg_retry_*` fields in `baresdk_config_t` for that account only.
-- `baresdk_account_cancel_retry(acct)` — cancel a pending retry timer and reset the attempt counter. The account stays in `FAILED` state; call `baresdk_account_register()` to restart manually.
-- `baresdk_account_retry_now(acct)` — skip the current backoff delay and re-register immediately. Resets the attempt counter.
+- `echosdk_account_set_retry_policy(acct, initial_ms, max_ms, backoff, max_attempts)` — override the retry policy for a specific account at runtime without recreating it. Overrides the global `reg_retry_*` fields in `echosdk_config_t` for that account only.
+- `echosdk_account_cancel_retry(acct)` — cancel a pending retry timer and reset the attempt counter. The account stays in `FAILED` state; call `echosdk_account_register()` to restart manually.
+- `echosdk_account_retry_now(acct)` — skip the current backoff delay and re-register immediately. Resets the attempt counter.
 
 ---
 
@@ -757,24 +757,24 @@ All notable changes to baresdk are documented here.
 #### Incoming calls
 - **AOR construction** now includes port and IPv6 brackets. Previously, registrations against a non-default SIP port received `404 Not Found` on every inbound call because Asterisk/FreeSWITCH matched AOR by exact string.
 - **Silent INCOMING_CALL drop under load** — the call wrapper is now registered only after a queue slot is confirmed. Previously under memory pressure the wrapper was registered but the event dropped, leaving baresip in EARLY state with the app unaware.
-- **Race on fast cancel** — if the caller cancels before the event thread delivers INCOMING_CALL, the CLOSED event no longer nulls the call handle first. `baresdk_call_answer()` no longer spuriously returns `ENOENT`.
+- **Race on fast cancel** — if the caller cancels before the event thread delivers INCOMING_CALL, the CLOSED event no longer nulls the call handle first. `echosdk_call_answer()` no longer spuriously returns `ENOENT`.
 - **Incoming call destructor** — tap lock and custom header list now have a proper destructor; previously leaked on every received call.
 
 #### Outgoing calls
 - **Orphaned baresip call on alloc failure** — if wrapper `mem_alloc` fails after `ua_connect` succeeds, the SIP INVITE is now cancelled with 500. Previously the call rang on the wire while the app received `ENOMEM` with no handle.
 
 #### Registration
-- **SIP error code parsing** — `strstr(reason, "5")` replaced with proper 3-digit extraction; 415, 451, 486 are no longer misclassified as 5xx. 407 Proxy Auth now correctly maps to `BARESDK_ERR_AUTH`.
+- **SIP error code parsing** — `strstr(reason, "5")` replaced with proper 3-digit extraction; 415, 451, 486 are no longer misclassified as 5xx. 407 Proxy Auth now correctly maps to `ECHOSDK_ERR_AUTH`.
 
 #### NAT / ICE
 - **STUN + TURN co-existence** — when both `stun_server` and `turn_server` are configured, TURN takes precedence as the active ICE server. Previously configuring TURN always silently overwrote the STUN setting.
 
 #### Memory
-- **Call wrapper leak** — wrappers are freed after `BARESDK_EV_CALL_CLOSED` is delivered. Previously every completed call leaked one wrapper.
+- **Call wrapper leak** — wrappers are freed after `ECHOSDK_EV_CALL_CLOSED` is delivered. Previously every completed call leaked one wrapper.
 - **Stats queue bypass** — stats events now respect `ev_queue_max` and update `ev_queue_len`; previously they bypassed the limit and could grow the queue without bound on long calls.
 
 #### Mutex safety
-- **Init-time mutex lock** (UB on Windows/RTOS) — `mtx_lock` before `mtx_init` replaced with `bsdk_call_global_init()` called from `baresdk_init`.
+- **Init-time mutex lock** (UB on Windows/RTOS) — `mtx_lock` before `mtx_init` replaced with `bsdk_call_global_init()` called from `echosdk_init`.
 - **Shutdown mutex order** — `mtx_destroy` now called after `mtx_unlock` in `bsdk_call_global_reset`.
 
 #### IPv6
@@ -801,9 +801,9 @@ All notable changes to baresdk are documented here.
   - `bash bindings/python/build.sh`
   - `bash bindings/nodejs/build.sh`
   - `bash bindings/rust/build.sh`
-- **Python** — `_loader.py` now auto-discovers `baresdk.so` in `dist/<platform>/<arch>/` when running from a source checkout. Manual `LD_LIBRARY_PATH` or file copy no longer required.
-- **Rust** — `build.rs` auto-selects the correct `dist/` sub-directory (`linux/x86_64`, `linux/arm64`, `macos/universal`, `windows/x64`) based on the Cargo target. `BARESDK_LIB_DIR` export no longer required for native builds.
-- **Node.js** — `binding.gyp` replaced fragile relative `-L` paths with absolute paths resolved at build time via `node -p`. Sets `-Wl,-rpath` so the addon finds `baresdk.so` at runtime without `LD_LIBRARY_PATH`. Supports `BARESDK_DIST_DIR` env var to override.
+- **Python** — `_loader.py` now auto-discovers `echosdk.so` in `dist/<platform>/<arch>/` when running from a source checkout. Manual `LD_LIBRARY_PATH` or file copy no longer required.
+- **Rust** — `build.rs` auto-selects the correct `dist/` sub-directory (`linux/x86_64`, `linux/arm64`, `macos/universal`, `windows/x64`) based on the Cargo target. `ECHOSDK_LIB_DIR` export no longer required for native builds.
+- **Node.js** — `binding.gyp` replaced fragile relative `-L` paths with absolute paths resolved at build time via `node -p`. Sets `-Wl,-rpath` so the addon finds `echosdk.so` at runtime without `LD_LIBRARY_PATH`. Supports `ECHOSDK_DIST_DIR` env var to override.
 - **C++** — `CMakeLists.txt` auto-detects platform and architecture (`linux/x86_64`, `linux/arm64`, `macos/universal`, `windows/x64`) instead of hardcoding `linux/x86_64`.
 - Quickstart docs updated for all languages to reflect one-command setup.
 
@@ -850,12 +850,12 @@ All notable changes to baresdk are documented here.
 
 #### Build system
 - CMake with ExternalProject (re + baresip + optional mbedTLS)
-- Static archive merge (`baresdk.a`) via libtool / lib.exe / ar MRI
-- `BARESDK_SHARED` option for shared library output (`.so` / `.dylib` / `.dll`)
+- Static archive merge (`echosdk.a`) via libtool / lib.exe / ar MRI
+- `ECHOSDK_SHARED` option for shared library output (`.so` / `.dylib` / `.dll`)
 - Platform build scripts: `build-linux.sh`, `build-macos.sh`, `build-ios.sh`, `build-android.sh`, `build-windows.ps1`
 
 #### C++ binding
-- Header-only RAII wrapper (`bindings/cpp/baresdk.hpp`)
+- Header-only RAII wrapper (`bindings/cpp/echosdk.hpp`)
 - `SDK`, `Account`, `Call` classes with automatic resource cleanup
 
 #### Python binding
@@ -865,8 +865,8 @@ All notable changes to baresdk are documented here.
 - Clean header preprocessing via `generate_clean_header.sh`
 
 #### Rust binding
-- `baresdk-sys` crate (bindgen auto-generated raw FFI)
-- `baresdk` crate (safe wrapper with `Result` error handling)
+- `EchoSDK-sys` crate (bindgen auto-generated raw FFI)
+- `EchoSDK` crate (safe wrapper with `Result` error handling)
 - Event delivery via `std::sync::mpsc` channel
 
 #### Node.js binding
@@ -877,8 +877,8 @@ All notable changes to baresdk are documented here.
 
 #### Flutter / Dart binding
 - dart:ffi + ffigen wrapper (`bindings/flutter/`)
-- `BareSDK`, `Account`, `Call` Dart classes
-- Event delivery via `Stream<BareSDKEvent>` with `StreamController`
+- `EchoSDK`, `Account`, `Call` Dart classes
+- Event delivery via `Stream<EchoSDKEvent>` with `StreamController`
 - Multi-platform library loading (Android, iOS, macOS, Windows, Linux)
 
 #### Documentation

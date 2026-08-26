@@ -1,4 +1,4 @@
-package dev.baresdk.flutter
+package dev.echosdk.flutter
 
 import android.content.Context
 import android.media.AudioAttributes
@@ -14,17 +14,17 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * Platform shim for the baresdk FFI plugin.
+ * Platform shim for the EchoSDK FFI plugin.
  *
  * The SIP/media work happens entirely in native code driven over Dart FFI;
  * this class only covers what FFI cannot reach:
- *  - the app cache dir (baresdk's required tmp_dir on Android),
+ *  - the app cache dir (EchoSDK's required tmp_dir on Android),
  *  - voice-call audio focus + MODE_IN_COMMUNICATION,
  *  - speakerphone routing,
  *  - ConnectivityManager default-network callbacks, forwarded to Dart so
  *    the SDK can re-register / migrate calls on network handover.
  */
-class BaresdkPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
+class EchoSDKPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -38,7 +38,7 @@ class BaresdkPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         context = binding.applicationContext
-        channel = MethodChannel(binding.binaryMessenger, "baresdk")
+        channel = MethodChannel(binding.binaryMessenger, "echo_sdk")
         channel.setMethodCallHandler(this)
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioManager = am
@@ -189,7 +189,7 @@ class BaresdkPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         am.mode = AudioManager.MODE_NORMAL
     }
 
-    // ── Network change → Dart → baresdk_network_changed() ──────────────
+    // ── Network change → Dart → echosdk_network_changed() ──────────────
 
     private fun registerNetworkCallback() {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE)

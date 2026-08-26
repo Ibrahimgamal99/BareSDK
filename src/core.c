@@ -1,5 +1,5 @@
 /**
- * @file core.c  Singleton lifecycle — baresdk_init / baresdk_shutdown
+ * @file core.c  Singleton lifecycle — echosdk_init / echosdk_shutdown
  */
 
 #include <stdlib.h>
@@ -12,20 +12,20 @@
 #include <winsock2.h>
 #include <windows.h>
 #endif
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* ── Global singleton ────────────────────────────────────────────────────── */
 
 struct bsdk_ctx g_bsdk;
 
-#define BARESDK_EV_QUEUE_MAX 4096
+#define ECHOSDK_EV_QUEUE_MAX 4096
 
-/* Cached result of getenv("BARESDK_DEBUG_INIT"); set on first call. */
+/* Cached result of getenv("ECHOSDK_DEBUG_INIT"); set on first call. */
 int bsdk_trace_enabled(void)
 {
 	static int cached = -1;
 	if (cached == -1) {
-		const char *v = getenv("BARESDK_DEBUG_INIT");
+		const char *v = getenv("ECHOSDK_DEBUG_INIT");
 		cached = (v && *v && *v != '0') ? 1 : 0;
 	}
 	return cached;
@@ -77,7 +77,7 @@ static void bsdk_free_strv(char **arr)
 	mem_deref(arr);
 }
 
-void bsdk_cfg_deep_copy(baresdk_config_t *dst, const baresdk_config_t *src,
+void bsdk_cfg_deep_copy(echosdk_config_t *dst, const echosdk_config_t *src,
                          struct bsdk_ctx *ctx)
 {
 	memcpy(dst, src, sizeof(*src));
@@ -143,17 +143,17 @@ void bsdk_cfg_deep_free(struct bsdk_ctx *ctx)
 	mem_deref(ctx->cfg_tmp_dir);          ctx->cfg_tmp_dir   = NULL;
 }
 
-/* ── baresdk_config_init ─────────────────────────────────────────────────── */
+/* ── echosdk_config_init ─────────────────────────────────────────────────── */
 
-void baresdk_config_init(baresdk_config_t *cfg)
+void echosdk_config_init(echosdk_config_t *cfg)
 {
 	if (!cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
-	cfg->version     = BARESDK_CONFIG_VERSION;
-	cfg->struct_size = sizeof(baresdk_config_t);
+	cfg->version     = ECHOSDK_CONFIG_VERSION;
+	cfg->struct_size = sizeof(echosdk_config_t);
 
-	cfg->transport             = BARESDK_TRANSPORT_UDP;
+	cfg->transport             = ECHOSDK_TRANSPORT_UDP;
 	cfg->verify_server         = true;
 	cfg->reg_expires           = 3600;
 	cfg->reg_refresh_pct       = 75;
@@ -170,10 +170,10 @@ void baresdk_config_init(baresdk_config_t *cfg)
 	cfg->session_timer_enabled = true;
 	cfg->session_expires_s     = 1800;
 	cfg->session_min_se_s      = 90;
-	cfg->mos_method            = BARESDK_MOS_EMODEL;
+	cfg->mos_method            = ECHOSDK_MOS_EMODEL;
 	cfg->log_level             = 1;
 	cfg->rtcp_mux              = true;
-	cfg->aec_mode              = BARESDK_AEC_SUPPRESSOR;
+	cfg->aec_mode              = ECHOSDK_AEC_SUPPRESSOR;
 	cfg->aec_suppression_level = 1.0f;
 	/* Activate the platform audio session at init (iOS only). CallKit apps
 	 * must set this to false — see the field docs. */
@@ -208,7 +208,7 @@ void baresdk_config_init(baresdk_config_t *cfg)
 
 	/* Network handover — poll as a safety net on platforms with no OS
 	 * connectivity callback; mobile apps should set this to 0 and drive
-	 * baresdk_network_changed() from ConnectivityManager / NWPathMonitor. */
+	 * echosdk_network_changed() from ConnectivityManager / NWPathMonitor. */
 	cfg->net_monitor_interval_s = 10;
 	cfg->net_settle_ms          = 1500;
 	cfg->net_reinvite_calls     = true;
@@ -305,7 +305,7 @@ static const char *bsdk_android_ca_bundle(const char *dir)
 	fclose(out);
 
 	if (!written) {
-		warning("baresdk: no Android system CAs found; TLS server "
+		warning("EchoSDK: no Android system CAs found; TLS server "
 		        "verification will fail unless ca_cert_path is set\n");
 		return NULL;
 	}
@@ -314,22 +314,22 @@ static const char *bsdk_android_ca_bundle(const char *dir)
 }
 #endif
 
-/* ── baresdk_init ────────────────────────────────────────────────────────── */
+/* ── echosdk_init ────────────────────────────────────────────────────────── */
 
-int baresdk_init(const baresdk_config_t *cfg)
+int echosdk_init(const echosdk_config_t *cfg)
 {
 	int err;
 
 	if (!cfg || !cfg->event_cb)
-		return BARESDK_ERR_INVAL;
-	if (cfg->version != BARESDK_CONFIG_VERSION)
-		return BARESDK_ERR_INVAL;
-	if (cfg->struct_size != sizeof(baresdk_config_t))
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
+	if (cfg->version != ECHOSDK_CONFIG_VERSION)
+		return ECHOSDK_ERR_INVAL;
+	if (cfg->struct_size != sizeof(echosdk_config_t))
+		return ECHOSDK_ERR_INVAL;
 	if (cfg->audio_codec_count < 0 || cfg->audio_codec_count > 8)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 	if (cfg->audio_codec_name_count < 0 || cfg->audio_codec_name_count > 8)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 
 	static bool once = false;
 	if (!once) {
@@ -341,7 +341,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 
 	if (g_bsdk.initialized) {
 		mtx_unlock(&g_bsdk.lock);
-		return BARESDK_ERR_ALREADY;
+		return ECHOSDK_ERR_ALREADY;
 	}
 
 	BSDK_TRACE("[bsdk] step 1: deep_copy\n");
@@ -349,7 +349,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 
 	list_init(&g_bsdk.ev_queue);
 	list_init(&g_bsdk.accounts);
-	g_bsdk.ev_queue_max = BARESDK_EV_QUEUE_MAX;
+	g_bsdk.ev_queue_max = ECHOSDK_EV_QUEUE_MAX;
 	g_bsdk.ev_queue_len = 0;
 	mtx_init(&g_bsdk.ev_lock, mtx_plain);
 	cnd_init(&g_bsdk.ev_cond);
@@ -377,13 +377,13 @@ int baresdk_init(const baresdk_config_t *cfg)
 	BSDK_TRACE("[bsdk] step 4: conf_path\n");
 	/* Redirect baresip's config directory so it never finds or reads
 	 * ~/.config/baresip/{config,accounts,contacts,...} from disk.
-	 * All SDK configuration is driven exclusively through baresdk_config_t.
+	 * All SDK configuration is driven exclusively through echosdk_config_t.
 	 * Directory must exist: the uuid module (required for WSS/outbound) writes into it. */
 	{
 		char _tmpbase[512];
 		char _confdir[640];
 		bsdk_resolve_tmpdir(g_bsdk.cfg.tmp_dir, _tmpbase, sizeof(_tmpbase));
-		(void)re_snprintf(_confdir, sizeof(_confdir), "%s/.baresdk", _tmpbase);
+		(void)re_snprintf(_confdir, sizeof(_confdir), "%s/.echosdk", _tmpbase);
 		(void)fs_mkdir(_confdir, 0700);
 		conf_path_set(_confdir);
 #ifdef __ANDROID__
@@ -438,8 +438,8 @@ int baresdk_init(const baresdk_config_t *cfg)
 			err = -1;
 		}
 		if (_seh) {
-			HMODULE _hm = GetModuleHandleA("baresdk.dll");
-			BSDK_TRACE("[bsdk] baresip_init SEH crash! code=0x%08lX at %p (RVA=0x%llX baresdk_base=%p)\n",
+			HMODULE _hm = GetModuleHandleA("echosdk.dll");
+			BSDK_TRACE("[bsdk] baresip_init SEH crash! code=0x%08lX at %p (RVA=0x%llX echosdk_base=%p)\n",
 			       _seh, _crash_addr,
 			       _hm ? (unsigned long long)((char*)_crash_addr - (char*)_hm) : 0,
 			       (void*)_hm);
@@ -477,7 +477,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 	BSDK_TRACE("[bsdk] step 7: ua_init\n");
 	{
 		const char *sw = g_bsdk.cfg.user_agent ? g_bsdk.cfg.user_agent
-		                                       : "baresdk/1.0";
+		                                       : "EchoSDK/1.0";
 		err = ua_init(sw, true, true, true);
 	}
 	if (err)
@@ -520,10 +520,10 @@ int baresdk_init(const baresdk_config_t *cfg)
 	 * Non-fatal: a session category the OS refuses right now (e.g. during
 	 * a CallKit-owned activation) still leaves the stack usable. */
 	if (bsdk_platform_audio_init(g_bsdk.cfg.platform_audio_activate))
-		warning("baresdk: platform audio init failed\n");
+		warning("EchoSDK: platform audio init failed\n");
 
 	{
-		const baresdk_opus_config_t *op = &g_bsdk.cfg.opus;
+		const echosdk_opus_config_t *op = &g_bsdk.cfg.opus;
 		char obuf[256];
 		int  olen = 0;
 		if (op->bitrate > 0)
@@ -555,7 +555,7 @@ int baresdk_init(const baresdk_config_t *cfg)
 		if (olen > 0)
 			conf_configure_buf((const uint8_t *)obuf, (size_t)olen);
 	}
-	if (g_bsdk.cfg.jbuf_type == BARESDK_JBUF_FIXED) {
+	if (g_bsdk.cfg.jbuf_type == ECHOSDK_JBUF_FIXED) {
 		struct config *c = conf_config();
 		c->avt.audio.jbtype = JBUF_FIXED;
 	}
@@ -603,11 +603,11 @@ int baresdk_init(const baresdk_config_t *cfg)
 	BSDK_TRACE("[bsdk] step 15: done\n");
 	g_bsdk.initialized = true;
 	mtx_unlock(&g_bsdk.lock);
-	return BARESDK_OK;
+	return ECHOSDK_OK;
 
 fail:
 	BSDK_TRACE("[bsdk] fail: cleanup start\n");
-	warning("baresdk: init failed: %m\n", err);
+	warning("EchoSDK: init failed: %m\n", err);
 	bsdk_re_loop_stop();
 	bsdk_netmon_close();
 	bsdk_call_setup_watch_close();
@@ -630,14 +630,14 @@ fail:
 	bsdk_cfg_deep_free(&g_bsdk);
 	memset(&g_bsdk, 0, sizeof(g_bsdk));
 	mtx_unlock(&g_bsdk.lock);
-	return err ? err : BARESDK_ERR_STATE;
+	return err ? err : ECHOSDK_ERR_STATE;
 }
 
-/* ── baresdk_is_initialized ──────────────────────────────────────────────── */
+/* ── echosdk_is_initialized ──────────────────────────────────────────────── */
 
-bool baresdk_is_initialized(void)
+bool echosdk_is_initialized(void)
 {
-	/* g_bsdk.lock is only initialized on the first baresdk_init(); before
+	/* g_bsdk.lock is only initialized on the first echosdk_init(); before
 	 * that the zeroed struct is answer enough and locking would be UB. */
 	if (!g_bsdk.initialized)
 		return false;
@@ -648,18 +648,18 @@ bool baresdk_is_initialized(void)
 	return up;
 }
 
-/* ── baresdk_set_event_handler ───────────────────────────────────────────── */
+/* ── echosdk_set_event_handler ───────────────────────────────────────────── */
 
-int baresdk_set_event_handler(baresdk_event_cb_t cb, void *userdata,
+int echosdk_set_event_handler(echosdk_event_cb_t cb, void *userdata,
                                bool deliver_owned_events)
 {
 	if (!g_bsdk.initialized)
-		return BARESDK_ERR_STATE;
+		return ECHOSDK_ERR_STATE;
 
 	mtx_lock(&g_bsdk.lock);
 	if (!g_bsdk.initialized) {
 		mtx_unlock(&g_bsdk.lock);
-		return BARESDK_ERR_STATE;
+		return ECHOSDK_ERR_STATE;
 	}
 
 	/* ev_lock is the one the event thread holds around its snapshot of
@@ -683,10 +683,10 @@ int baresdk_set_event_handler(baresdk_event_cb_t cb, void *userdata,
 	mtx_unlock(&g_bsdk.ev_lock);
 
 	mtx_unlock(&g_bsdk.lock);
-	return BARESDK_OK;
+	return ECHOSDK_OK;
 }
 
-/* ── baresdk_shutdown ────────────────────────────────────────────────────── */
+/* ── echosdk_shutdown ────────────────────────────────────────────────────── */
 
 /* Runs on the re thread: hang up all calls and free the UA. Audio drivers
  * (PulseAudio, CoreAudio, WASAPI, …) must be torn down from the same thread
@@ -698,7 +698,7 @@ static void hangup_ua_fn(void *arg)
 	*pua = mem_deref(*pua);
 }
 
-void baresdk_shutdown(void)
+void echosdk_shutdown(void)
 {
 	mtx_lock(&g_bsdk.lock);
 	if (!g_bsdk.initialized) {
@@ -727,7 +727,7 @@ void baresdk_shutdown(void)
 	 * same thread that opened the streams. */
 	struct le *le, *le_tmp;
 	LIST_FOREACH_SAFE(&g_bsdk.accounts, le, le_tmp) {
-		struct baresdk_account *acct = le->data;
+		struct echosdk_account *acct = le->data;
 		acct->destroyed = true;
 		tmr_cancel(&acct->retry_tmr);
 		tmr_cancel(&acct->reg_watch_tmr);
@@ -786,9 +786,9 @@ void baresdk_shutdown(void)
 	mtx_unlock(&g_bsdk.lock);
 }
 
-/* ── baresdk_version ─────────────────────────────────────────────────────── */
+/* ── echosdk_version ─────────────────────────────────────────────────────── */
 
-const char *baresdk_version(void)
+const char *echosdk_version(void)
 {
 	return "1.0.0";
 }

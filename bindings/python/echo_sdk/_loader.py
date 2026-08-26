@@ -1,11 +1,11 @@
 """
-_loader.py — cffi FFI setup for baresdk.
+_loader.py — cffi FFI setup for EchoSDK.
 
-Reads _baresdk_clean.h (generated from include/baresdk.h by build.sh) so
+Reads _echosdk_clean.h (generated from include/echosdk.h by build.sh) so
 the Python binding stays in sync with the C header automatically.
 
 The library is searched in this order:
-  1. BARESDK_LIB environment variable (absolute path to .so/.dylib/.dll)
+  1. ECHOSDK_LIB environment variable (absolute path to .so/.dylib/.dll)
   2. LD_LIBRARY_PATH / DYLD_LIBRARY_PATH directories
   3. The package directory (bundled .so copied by build.sh)
   4. The repo's dist/ directory (source checkout without install)
@@ -19,12 +19,12 @@ import sys
 from cffi import FFI
 
 
-# Hard runtime deps on Linux — these are DT_NEEDED entries in baresdk.so.
+# Hard runtime deps on Linux — these are DT_NEEDED entries in echosdk.so.
 # libm/libresolv/libgcc_s/libc are always present; only list libs that can
 # realistically be absent on a normal desktop/server install.
 #
 # libwebrtc-audio-processing-1 is intentionally NOT here — the shim in
-# baresdk handles it via dlopen; missing = AEC unavailable, not a crash.
+# EchoSDK handles it via dlopen; missing = AEC unavailable, not a crash.
 _REQUIRED_LINUX_LIBS = {
     "libssl.so.3": {
         "debian": "apt install libssl3",
@@ -46,7 +46,7 @@ _REQUIRED_LINUX_LIBS = {
     },
 }
 
-# baresdk.dll is built with x64-windows-static-md — OpenSSL and zlib are
+# echosdk.dll is built with x64-windows-static-md — OpenSSL and zlib are
 # statically embedded, but the MSVC runtime is dynamically linked and may
 # be absent on a clean Windows Server install.
 _REQUIRED_WINDOWS_LIBS = {
@@ -96,7 +96,7 @@ def _check_linux_deps():
                     missing.append(f"  {lib}\n    → install via your distro's package manager")
     if missing:
         raise ImportError(
-            "baresdk: missing required system libraries.\n\n"
+            "EchoSDK: missing required system libraries.\n\n"
             + "\n".join(missing)
         )
 
@@ -109,39 +109,39 @@ def _check_windows_deps():
         except OSError:
             missing.append(message)
     if missing:
-        raise ImportError("baresdk: missing required runtime.\n\n" + "\n\n".join(missing))
+        raise ImportError("EchoSDK: missing required runtime.\n\n" + "\n\n".join(missing))
 
 
 _here = os.path.dirname(os.path.abspath(__file__))
 _repo_root = os.path.normpath(os.path.join(_here, "..", "..", ".."))
 
 ffi = FFI()
-with open(os.path.join(_here, "_baresdk_clean.h")) as _f:
+with open(os.path.join(_here, "_echosdk_clean.h")) as _f:
     ffi.cdef(_f.read())
 
 
 def _lib_names():
     if sys.platform == "win32":
-        return ["baresdk.dll"]
+        return ["echosdk.dll"]
     if sys.platform == "darwin":
-        return ["baresdk.dylib"]
-    return ["baresdk.so"]
+        return ["echosdk.dylib"]
+    return ["echosdk.so"]
 
 
 def _dist_candidates():
     machine = platform.machine().lower()
     if sys.platform == "win32":
-        yield os.path.join(_repo_root, "dist", "windows", "x64", "baresdk.dll")
+        yield os.path.join(_repo_root, "dist", "windows", "x64", "echosdk.dll")
     elif sys.platform == "darwin":
-        yield os.path.join(_repo_root, "dist", "macos", "universal", "baresdk.dylib")
+        yield os.path.join(_repo_root, "dist", "macos", "universal", "echosdk.dylib")
     else:
         arch = "arm64" if machine in ("aarch64", "arm64") else "x86_64"
-        yield os.path.join(_repo_root, "dist", "linux", arch, "baresdk.so")
+        yield os.path.join(_repo_root, "dist", "linux", arch, "echosdk.so")
 
 
 def _find_lib():
     # 1. Explicit override
-    env = os.environ.get("BARESDK_LIB")
+    env = os.environ.get("ECHOSDK_LIB")
     if env:
         return env
 

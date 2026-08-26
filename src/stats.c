@@ -2,7 +2,7 @@
  * @file stats.c  RTCP stats polling timer + MOS calculation
  *
  * A tmr fires on re_main every cfg->stats_interval_ms. For each active call
- * it reads RTCP stats from the audio stream and posts BARESDK_EV_MEDIA_STATS.
+ * it reads RTCP stats from the audio stream and posts ECHOSDK_EV_MEDIA_STATS.
  *
  * ── Loss rates are windowed, not cumulative ──────────────────────────────
  * RTCP carries lifetime cumulative counters (RFC 3550 A.3), the same
@@ -41,7 +41,7 @@
  */
 
 #include <math.h>
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* ── MOS calculations ───────────────────────────────────────────────────── */
 
@@ -171,10 +171,10 @@ static mos_pair_t mos_simplified(float loss_pct, float jitter_ms, float rtt_ms)
 }
 
 static mos_pair_t calc_mos(float loss_pct, float jitter_ms, float jb_ms,
-                           float rtt_ms, baresdk_mos_method_t method,
+                           float rtt_ms, echosdk_mos_method_t method,
                            codec_params_t cp)
 {
-	if (method == BARESDK_MOS_SIMPLIFIED)
+	if (method == ECHOSDK_MOS_SIMPLIFIED)
 		return mos_simplified(loss_pct, jitter_ms, rtt_ms);
 	return mos_emodel(loss_pct, jb_ms, rtt_ms, cp);
 }
@@ -207,8 +207,8 @@ static uint32_t counter_delta_i(int32_t now, int32_t prev)
  *                 the same window without consuming it.
  *
  * Returns the aucodec so the caller can set codec_name appropriately. */
-static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
-                                               struct baresdk_call *lc,
+static const struct aucodec *fill_audio_stats(echosdk_ev_media_stats_t *s,
+                                               struct echosdk_call *lc,
                                                struct audio *au,
                                                struct stream *strm,
                                                bool advance)
@@ -392,15 +392,15 @@ static const struct aucodec *fill_audio_stats(baresdk_ev_media_stats_t *s,
 
 /* Session-average MOS.  The running sum is in the R domain for the E-model,
  * so the conversion to MOS happens once, on the mean — not per tick. */
-static float session_mos_avg(const struct baresdk_call *lc,
-                             const baresdk_ev_media_stats_t *s)
+static float session_mos_avg(const struct echosdk_call *lc,
+                             const echosdk_ev_media_stats_t *s)
 {
 	if (!lc->stats_mos_n)
 		return 0.f;
 
 	float mean = lc->stats_q_sum / (float)lc->stats_mos_n;
 
-	if (g_bsdk.cfg.mos_method == BARESDK_MOS_SIMPLIFIED)
+	if (g_bsdk.cfg.mos_method == ECHOSDK_MOS_SIMPLIFIED)
 		return mean;   /* already a MOS */
 
 	codec_params_t cp = codec_emodel_params(s->codec_name,
@@ -411,14 +411,14 @@ static float session_mos_avg(const struct baresdk_call *lc,
 
 /* ── Quality alert helper ────────────────────────────────────────────────── */
 
-void bsdk_post_quality_alert(struct baresdk_call *lc,
-                             baresdk_quality_issue_t issue,
+void bsdk_post_quality_alert(struct echosdk_call *lc,
+                             echosdk_quality_issue_t issue,
                              float value, float threshold, bool recovering)
 {
-	struct baresdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev) return;
-	qev->ev.type = BARESDK_EV_QUALITY_ALERT;
-	baresdk_ev_quality_alert_t *a = &qev->ev.u.quality_alert;
+	qev->ev.type = ECHOSDK_EV_QUALITY_ALERT;
+	echosdk_ev_quality_alert_t *a = &qev->ev.u.quality_alert;
 	a->call       = lc;
 	a->issue      = issue;
 	a->value      = value;
@@ -429,7 +429,7 @@ void bsdk_post_quality_alert(struct baresdk_call *lc,
 
 /* ── Per-call stats collection (timer path) ──────────────────────────────── */
 
-static void collect_call_stats(struct baresdk_call *lc)
+static void collect_call_stats(struct echosdk_call *lc)
 {
 	if (!lc->bc)
 		return;
@@ -442,12 +442,12 @@ static void collect_call_stats(struct baresdk_call *lc)
 	if (!strm)
 		return;
 
-	struct baresdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = BARESDK_EV_MEDIA_STATS;
-	baresdk_ev_media_stats_t *s = &qev->ev.u.stats;
+	qev->ev.type = ECHOSDK_EV_MEDIA_STATS;
+	echosdk_ev_media_stats_t *s = &qev->ev.u.stats;
 
 	/* advance=true: this is the tick that owns the loss window. */
 	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm, true);
@@ -467,27 +467,27 @@ static void collect_call_stats(struct baresdk_call *lc)
 	s->is_final        = false;
 
 	/* Quality alert threshold crossing detection */
-	const baresdk_config_t *cfg = &g_bsdk.cfg;
+	const echosdk_config_t *cfg = &g_bsdk.cfg;
 	if (cfg->mos_alert_threshold > 0.f && s->mos_lq > 0.f) {
 		bool was_bad = lc->last_mos_lq > 0.f
 		            && lc->last_mos_lq < cfg->mos_alert_threshold;
 		bool is_bad  = s->mos_lq < cfg->mos_alert_threshold;
 		if (is_bad != was_bad)
-			bsdk_post_quality_alert(lc, BARESDK_QUALITY_MOS, s->mos_lq,
+			bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MOS, s->mos_lq,
 			                   cfg->mos_alert_threshold, was_bad);
 	}
 	if (cfg->loss_alert_threshold > 0.f) {
 		bool was_bad = lc->last_loss_pct > cfg->loss_alert_threshold;
 		bool is_bad  = s->loss_pct      > cfg->loss_alert_threshold;
 		if (is_bad != was_bad)
-			bsdk_post_quality_alert(lc, BARESDK_QUALITY_LOSS, s->loss_pct,
+			bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_LOSS, s->loss_pct,
 			                   cfg->loss_alert_threshold, was_bad);
 	}
 	if (cfg->jitter_alert_threshold > 0.f) {
 		bool was_bad = lc->last_jitter_ms > cfg->jitter_alert_threshold;
 		bool is_bad  = s->jitter_ms       > cfg->jitter_alert_threshold;
 		if (is_bad != was_bad)
-			bsdk_post_quality_alert(lc, BARESDK_QUALITY_JITTER, s->jitter_ms,
+			bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_JITTER, s->jitter_ms,
 			                   cfg->jitter_alert_threshold, was_bad);
 	}
 	lc->last_mos_lq    = s->mos_lq;
@@ -504,7 +504,7 @@ static void collect_call_stats(struct baresdk_call *lc)
 
 /* ── Final stats snapshot on call teardown ───────────────────────────────── */
 
-void bsdk_stats_collect_final(struct baresdk_call *lc)
+void bsdk_stats_collect_final(struct echosdk_call *lc)
 {
 	if (!lc || !lc->bc)
 		return;
@@ -517,12 +517,12 @@ void bsdk_stats_collect_final(struct baresdk_call *lc)
 	if (!strm)
 		return;
 
-	struct baresdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = BARESDK_EV_MEDIA_STATS;
-	baresdk_ev_media_stats_t *s = &qev->ev.u.stats;
+	qev->ev.type = ECHOSDK_EV_MEDIA_STATS;
+	echosdk_ev_media_stats_t *s = &qev->ev.u.stats;
 
 	/* advance=false: the teardown snapshot reports the window since the
 	 * last tick but must not fold itself into the session average, which
@@ -545,10 +545,10 @@ void bsdk_stats_collect_final(struct baresdk_call *lc)
 
 /* ── Timer handler (re_main thread) ─────────────────────────────────────── */
 
-static void stats_visit(struct baresdk_call *lc, void *arg)
+static void stats_visit(struct echosdk_call *lc, void *arg)
 {
 	(void)arg;
-	if (lc->state == BARESDK_CALL_ESTABLISHED)
+	if (lc->state == ECHOSDK_CALL_ESTABLISHED)
 		collect_call_stats(lc);
 }
 
@@ -581,15 +581,15 @@ void bsdk_stats_close(void)
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_call      *lc;
-	baresdk_ev_media_stats_t *out;
+	struct echosdk_call      *lc;
+	echosdk_ev_media_stats_t *out;
 	int                       result;
 } getstats_ctx_t;
 
 static void getstats_fn(void *arg)
 {
 	getstats_ctx_t *ctx = arg;
-	struct baresdk_call *lc = ctx->lc;
+	struct echosdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = ENOENT; return; }
 
 	struct audio *au = call_audio(lc->bc);
@@ -598,7 +598,7 @@ static void getstats_fn(void *arg)
 	struct stream *strm = audio_strm(au);
 	if (!strm) { ctx->result = ENOENT; return; }
 
-	baresdk_ev_media_stats_t *s = ctx->out;
+	echosdk_ev_media_stats_t *s = ctx->out;
 
 	/* advance=false: a getter must not consume the polling tick's loss
 	 * window, or an app that polls between ticks would zero the rates the
@@ -625,10 +625,10 @@ static void getstats_fn(void *arg)
 	ctx->result = 0;
 }
 
-int baresdk_call_get_stats(baresdk_call_handle_t call,
-                            baresdk_ev_media_stats_t *out)
+int echosdk_call_get_stats(echosdk_call_handle_t call,
+                            echosdk_ev_media_stats_t *out)
 {
-	if (!call || !out) return BARESDK_ERR_INVAL;
+	if (!call || !out) return ECHOSDK_ERR_INVAL;
 
 	/* Zero before anything can fail.  Every early return below — no call
 	 * object, no audio, no stream, or a dispatch that never runs — used to

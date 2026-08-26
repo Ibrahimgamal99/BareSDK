@@ -3,7 +3,7 @@ import Flutter
 import Network
 import UIKit
 
-/// Platform shim for the baresdk FFI plugin (iOS).
+/// Platform shim for the EchoSDK FFI plugin (iOS).
 ///
 /// The SIP/media work happens in the native core driven over dart:ffi; this
 /// class covers only what FFI cannot reach:
@@ -13,7 +13,7 @@ import UIKit
 ///  - audio-route enumeration/selection (earpiece/speaker/Bluetooth/wired),
 ///  - NWPathMonitor network-change callbacks, forwarded to Dart so the SDK
 ///    can re-register / migrate calls on network handover.
-public class BaresdkPlugin: NSObject, FlutterPlugin {
+public class EchoSDKPlugin: NSObject, FlutterPlugin {
   private var channel: FlutterMethodChannel?
   private var pathMonitor: NWPathMonitor?
   private var lastPathStatus: NWPath.Status?
@@ -27,8 +27,8 @@ public class BaresdkPlugin: NSObject, FlutterPlugin {
 
   /// Reference implementation of the app-owned audio device (VoiceProcessingIO).
   /// Idle until Dart turns it on; the SDK owns the device by default.
-  private lazy var appAudio: BaresdkAudioEngine = {
-    let engine = BaresdkAudioEngine()
+  private lazy var appAudio: EchoSDKAudioEngine = {
+    let engine = EchoSDKAudioEngine()
     engine.onError = { [weak self] code, message in
       self?.channel?.invokeMethod("onAppOwnedAudioError",
                                   arguments: ["code": code, "message": message])
@@ -37,9 +37,9 @@ public class BaresdkPlugin: NSObject, FlutterPlugin {
   }()
 
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "baresdk",
+    let channel = FlutterMethodChannel(name: "echo_sdk",
                                        binaryMessenger: registrar.messenger())
-    let instance = BaresdkPlugin()
+    let instance = EchoSDKPlugin()
     instance.channel = channel
     registrar.addMethodCallDelegate(instance, channel: channel)
     instance.startPathMonitor()
@@ -75,7 +75,7 @@ public class BaresdkPlugin: NSObject, FlutterPlugin {
         do {
           try session.overrideOutputAudioPort(on ? .speaker : .none)
         } catch {
-          NSLog("baresdk: overrideOutputAudioPort failed: %@",
+          NSLog("EchoSDK: overrideOutputAudioPort failed: %@",
                 error.localizedDescription)
         }
       }
@@ -147,7 +147,7 @@ public class BaresdkPlugin: NSObject, FlutterPlugin {
                               options: .notifyOthersOnDeactivation)
       }
     } catch {
-      NSLog("baresdk: audio session setActive(%d) failed: %@",
+      NSLog("EchoSDK: audio session setActive(%d) failed: %@",
             active ? 1 : 0, error.localizedDescription)
     }
   }
@@ -241,7 +241,7 @@ public class BaresdkPlugin: NSObject, FlutterPlugin {
       // Unknown id → system default input.
       try session.setPreferredInput(nil)
     } catch {
-      NSLog("baresdk: selectRoute(%@) failed: %@", id, error.localizedDescription)
+      NSLog("EchoSDK: selectRoute(%@) failed: %@", id, error.localizedDescription)
     }
   }
 
@@ -266,7 +266,7 @@ public class BaresdkPlugin: NSObject, FlutterPlugin {
     }
   }
 
-  /// Forward network-path changes to Dart (drives baresdk_network_changed()).
+  /// Forward network-path changes to Dart (drives echosdk_network_changed()).
   private func startPathMonitor() {
     let monitor = NWPathMonitor()
     pathMonitor = monitor

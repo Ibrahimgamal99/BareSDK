@@ -20,7 +20,7 @@
  *                        (blocking there would deadlock the loop).
  */
 
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* ── Async (fire-and-forget) ─────────────────────────────────────────────── */
 
@@ -43,11 +43,11 @@ int bsdk_dispatch(bsdk_main_fn fn, void *arg)
 	dispatch_ctx_t *ctx;
 
 	if (!g_bsdk.initialized)
-		return BARESDK_ERR_STATE;
+		return ECHOSDK_ERR_STATE;
 
 	ctx = mem_alloc(sizeof(*ctx), NULL);
 	if (!ctx)
-		return BARESDK_ERR_NOMEM;
+		return ECHOSDK_ERR_NOMEM;
 
 	ctx->fn  = fn;
 	ctx->arg = arg;
@@ -87,13 +87,13 @@ int bsdk_dispatch_sync(bsdk_main_fn fn, void *arg)
 	int err;
 
 	if (!g_bsdk.initialized)
-		return BARESDK_ERR_STATE;
+		return ECHOSDK_ERR_STATE;
 
 	/* Already on the re-loop thread (e.g. called from a timer or netmon
 	 * handler): run inline — blocking here would deadlock the loop that
 	 * must execute the callback.  Compare against our own spawned thread:
 	 * re_thread_check() is NOT usable here because re->tid is stamped by
-	 * libre_init(), which runs on the app thread in baresdk_init(). */
+	 * libre_init(), which runs on the app thread in echosdk_init(). */
 	if (g_bsdk.re_thread_running &&
 	    thrd_equal(g_bsdk.re_thread, thrd_current())) {
 		fn(arg);

@@ -3,7 +3,7 @@
  *
  * baresip's stock `opensles` module records with the default (generic) input
  * preset and plays on the media stream, so the platform's built-in echo
- * cancellation and noise suppression never engage.  This driver is baresdk's
+ * cancellation and noise suppression never engage.  This driver is EchoSDK's
  * own replacement (third_party is never patched):
  *
  *   recorder — requests SL_IID_ANDROIDCONFIGURATION and sets
@@ -29,7 +29,7 @@
 #include <SLES/OpenSLES_Android.h>
 #include <re.h>
 #include <rem.h>
-#include "../../src/baresdk_internal.h"
+#include "../../src/echosdk_internal.h"
 
 #define N_QUEUE_BUFFERS 2
 #define PTIME 10

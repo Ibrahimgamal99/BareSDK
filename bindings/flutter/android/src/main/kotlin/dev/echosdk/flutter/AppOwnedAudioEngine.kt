@@ -1,4 +1,4 @@
-package dev.baresdk.flutter
+package dev.echosdk.flutter
 
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
@@ -11,7 +11,7 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
 import android.util.Log
-import dev.baresdk.ExternalAudio
+import dev.echosdk.ExternalAudio
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicLong
@@ -66,7 +66,7 @@ internal class AppOwnedAudioEngine(
     private val onError: (code: String, message: String) -> Unit,
 ) {
     private companion object {
-        const val TAG = "BaresdkAppAudio"
+        const val TAG = "EchoSDKAppAudio"
 
         /** App-side frame size. Independent of ptime: push() re-frames. */
         const val FRAME_MS = 20
@@ -126,7 +126,7 @@ internal class AppOwnedAudioEngine(
     fun arm() {
         synchronized(lock) {
             if (!ExternalAudio.available) {
-                report("unavailable", "libbaresdk.so is not loaded")
+                report("unavailable", "libechosdk.so is not loaded")
                 return
             }
             if (armed) return
@@ -134,7 +134,7 @@ internal class AppOwnedAudioEngine(
             paused = false
             lastError = null
 
-            watcher = Thread({ watchLoop() }, "baresdk-audio-watch").apply {
+            watcher = Thread({ watchLoop() }, "EchoSDK-audio-watch").apply {
                 priority = Thread.NORM_PRIORITY
                 start()
             }
@@ -358,9 +358,9 @@ internal class AppOwnedAudioEngine(
         t.play()
 
         captureThread = Thread({ captureLoop(frameSamples / ch, ch) },
-                               "baresdk-audio-capture").apply { start() }
+                               "EchoSDK-audio-capture").apply { start() }
         playbackThread = Thread({ playbackLoop(frameSamples, frameBytes) },
-                                "baresdk-audio-playback").apply { start() }
+                                "EchoSDK-audio-playback").apply { start() }
 
         Log.i(TAG, "app-owned audio open: ${srate}Hz ${ch}ch ptime=${ptime}ms " +
                    "frame=${FRAME_MS}ms aec=${aec != null} ns=${ns != null}")

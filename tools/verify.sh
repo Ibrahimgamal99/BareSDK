@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Verify a built baresdk.a archive.
+# Verify a built echosdk.a archive.
 # Usage:
-#   ./tools/verify.sh <path/to/baresdk.a> [link]
+#   ./tools/verify.sh <path/to/echosdk.a> [link]
 #
 # Without "link": checks symbol presence only.
 # With "link":    also compiles and runs a linkability smoke-test
@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-ARCHIVE="${1:?Usage: verify.sh <path/to/baresdk.a> [link]}"
+ARCHIVE="${1:?Usage: verify.sh <path/to/echosdk.a> [link]}"
 MODE="${2:-check}"
 
 if [ ! -f "${ARCHIVE}" ]; then
@@ -46,50 +46,50 @@ check_sym() {
 
 MISSING_SYMS=0
 
-# baresdk public API
-check_sym "baresdk_init"
-check_sym "baresdk_shutdown"
-check_sym "baresdk_config_init"
-check_sym "baresdk_account_create"
-check_sym "baresdk_account_destroy"
-check_sym "baresdk_account_register"
-check_sym "baresdk_account_unregister"
-check_sym "baresdk_call_invite"
-check_sym "baresdk_call_answer"
-check_sym "baresdk_call_hangup"
-check_sym "baresdk_call_hold"
-check_sym "baresdk_call_resume"
-check_sym "baresdk_call_send_dtmf"
-check_sym "baresdk_call_transfer"
-check_sym "baresdk_call_set_media_tap"
-check_sym "baresdk_call_get_stats"
-check_sym "baresdk_audio_mute"
-check_sym "baresdk_audio_set_input_device"
-check_sym "baresdk_audio_set_output_device"
-check_sym "baresdk_audio_use_external"
-check_sym "baresdk_audio_external_push"
-check_sym "baresdk_audio_external_pull"
-check_sym "baresdk_audio_external_format"
-check_sym "baresdk_audio_external_is_active"
-check_sym "baresdk_pcap_start"
-check_sym "baresdk_pcap_stop"
-check_sym "baresdk_version"
+# EchoSDK public API
+check_sym "echosdk_init"
+check_sym "echosdk_shutdown"
+check_sym "echosdk_config_init"
+check_sym "echosdk_account_create"
+check_sym "echosdk_account_destroy"
+check_sym "echosdk_account_register"
+check_sym "echosdk_account_unregister"
+check_sym "echosdk_call_invite"
+check_sym "echosdk_call_answer"
+check_sym "echosdk_call_hangup"
+check_sym "echosdk_call_hold"
+check_sym "echosdk_call_resume"
+check_sym "echosdk_call_send_dtmf"
+check_sym "echosdk_call_transfer"
+check_sym "echosdk_call_set_media_tap"
+check_sym "echosdk_call_get_stats"
+check_sym "echosdk_audio_mute"
+check_sym "echosdk_audio_set_input_device"
+check_sym "echosdk_audio_set_output_device"
+check_sym "echosdk_audio_use_external"
+check_sym "echosdk_audio_external_push"
+check_sym "echosdk_audio_external_pull"
+check_sym "echosdk_audio_external_format"
+check_sym "echosdk_audio_external_is_active"
+check_sym "echosdk_pcap_start"
+check_sym "echosdk_pcap_stop"
+check_sym "echosdk_version"
 
 # Phase 2
-check_sym "baresdk_call_attended_transfer"
+check_sym "echosdk_call_attended_transfer"
 # Incoming REFER completion (RFC 3515) + call metadata
-check_sym "baresdk_call_transfer_accept"
-check_sym "baresdk_call_transfer_reject"
-check_sym "baresdk_call_get_info"
-check_sym "baresdk_message_send"
-check_sym "baresdk_account_publish_presence"
-check_sym "baresdk_account_set_100rel"
+check_sym "echosdk_call_transfer_accept"
+check_sym "echosdk_call_transfer_reject"
+check_sym "echosdk_call_get_info"
+check_sym "echosdk_message_send"
+check_sym "echosdk_account_publish_presence"
+check_sym "echosdk_account_set_100rel"
 
 # Degraded-link handling
-check_sym "baresdk_call_set_rtp_timeout"
-check_sym "baresdk_call_set_bitrate"
-check_sym "baresdk_set_adaptive_bitrate"
-check_sym "baresdk_account_keepalive_now"
+check_sym "echosdk_call_set_rtp_timeout"
+check_sym "echosdk_call_set_bitrate"
+check_sym "echosdk_set_adaptive_bitrate"
+check_sym "echosdk_account_keepalive_now"
 
 # Underlying baresip/libre internals (should still be in the merged archive)
 check_sym "baresip_init"
@@ -169,7 +169,7 @@ if [ "${MODE}" = "link" ]; then
       TURN_PASS=$(   _jq_str '.turn_pass')
       VERIFY_TLS=$(   jq -r '.verify_tls // false' "${ACCOUNT_JSON}" | grep -q true && echo 1 || echo 0)
 
-      # Map transport string → baresdk_transport_t enum value
+      # Map transport string → echosdk_transport_t enum value
       case "${TRANSPORT}" in
         udp) TRANSPORT_ENUM=0 ;;
         tcp) TRANSPORT_ENUM=1 ;;
@@ -179,7 +179,7 @@ if [ "${MODE}" = "link" ]; then
         *)   TRANSPORT_ENUM=0 ;;
       esac
 
-      # Map media_enc string → baresdk_media_enc_t enum value
+      # Map media_enc string → echosdk_media_enc_t enum value
       case "${MEDIA_ENC}" in
         sdes|srtp)    MEDIA_ENC_ENUM=1 ;;
         dtls_srtp)    MEDIA_ENC_ENUM=2 ;;
@@ -218,8 +218,8 @@ if [ "${MODE}" = "link" ]; then
   fi
 
   cat > "${SMOKETEST_C}" <<'CSRC'
-/* baresdk linkability smoke-test — credentials loaded from tools/account.json */
-#include "baresdk.h"
+/* EchoSDK linkability smoke-test — credentials loaded from tools/account.json */
+#include "echosdk.h"
 #include <stdio.h>
 #include <unistd.h>
 
@@ -233,7 +233,7 @@ if [ "${MODE}" = "link" ]; then
 #define ACCOUNT_PASS        NULL
 #endif
 #ifndef ACCOUNT_TRANSPORT
-#define ACCOUNT_TRANSPORT   0       /* BARESDK_TRANSPORT_UDP */
+#define ACCOUNT_TRANSPORT   0       /* ECHOSDK_TRANSPORT_UDP */
 #endif
 #ifndef ACCOUNT_SERVER_URL
 #define ACCOUNT_SERVER_URL  NULL
@@ -248,7 +248,7 @@ if [ "${MODE}" = "link" ]; then
 #define ACCOUNT_OUTBOUND    NULL
 #endif
 #ifndef ACCOUNT_MEDIA_ENC
-#define ACCOUNT_MEDIA_ENC   0       /* BARESDK_MEDIA_ENC_NONE */
+#define ACCOUNT_MEDIA_ENC   0       /* ECHOSDK_MEDIA_ENC_NONE */
 #endif
 #ifndef ACCOUNT_ICE
 #define ACCOUNT_ICE         0
@@ -272,19 +272,19 @@ if [ "${MODE}" = "link" ]; then
 static volatile int g_reg_done = 0;
 static volatile int g_reg_ok   = 0;
 
-static void evt(const baresdk_event_t *ev, void *ud)
+static void evt(const echosdk_event_t *ev, void *ud)
 {
     (void)ud;
-    if (ev->type == BARESDK_EV_REG_STATE) {
-        const baresdk_ev_reg_state_t *r = &ev->u.reg;
-        if (r->state == BARESDK_REG_REGISTERED) {
+    if (ev->type == ECHOSDK_EV_REG_STATE) {
+        const echosdk_ev_reg_state_t *r = &ev->u.reg;
+        if (r->state == ECHOSDK_REG_REGISTERED) {
             printf("  REG: registered OK\n");
             g_reg_ok   = 1;
             g_reg_done = 1;
-        } else if (r->state == BARESDK_REG_FAILED ||
-                   r->state == BARESDK_REG_RECONNECTING) {
+        } else if (r->state == ECHOSDK_REG_FAILED ||
+                   r->state == ECHOSDK_REG_RECONNECTING) {
             printf("  REG: %s — %s\n",
-                   r->state == BARESDK_REG_RECONNECTING ? "RECONNECTING"
+                   r->state == ECHOSDK_REG_RECONNECTING ? "RECONNECTING"
                                                         : "FAILED",
                    r->error_str ? r->error_str : "unknown");
             g_reg_done = 1;
@@ -294,26 +294,26 @@ static void evt(const baresdk_event_t *ev, void *ud)
 
 int main(void)
 {
-    baresdk_config_t cfg;
-    baresdk_config_init(&cfg);
+    echosdk_config_t cfg;
+    echosdk_config_init(&cfg);
     cfg.event_cb      = evt;
     cfg.verify_server = SIP_VERIFY_TLS;
 
-    int err = baresdk_init(&cfg);
-    if (err) { fprintf(stderr, "baresdk_init: %d\n", err); return 1; }
+    int err = echosdk_init(&cfg);
+    if (err) { fprintf(stderr, "echosdk_init: %d\n", err); return 1; }
 
-    printf("baresdk_init OK — version %s\n", baresdk_version());
+    printf("echosdk_init OK — version %s\n", echosdk_version());
 
 #if ACCOUNT_ENABLED
-    baresdk_account_config_t acct_cfg = {
+    echosdk_account_config_t acct_cfg = {
         .uri          = ACCOUNT_URI,
         .password     = ACCOUNT_PASS,
-        .transport    = (baresdk_transport_t)ACCOUNT_TRANSPORT,
+        .transport    = (echosdk_transport_t)ACCOUNT_TRANSPORT,
         .server_url   = ACCOUNT_SERVER_URL,
         .auth_user    = ACCOUNT_AUTH,
         .display_name = ACCOUNT_DISPLAY,
         .outbound     = ACCOUNT_OUTBOUND,
-        .media_enc    = (baresdk_media_enc_t)ACCOUNT_MEDIA_ENC,
+        .media_enc    = (echosdk_media_enc_t)ACCOUNT_MEDIA_ENC,
         .ice_enabled  = ACCOUNT_ICE,
         .stun_server  = ACCOUNT_STUN,
         .turn_server  = ACCOUNT_TURN,
@@ -321,11 +321,11 @@ int main(void)
         .turn_pass    = ACCOUNT_TURN_PASS,
         .verify_tls   = SIP_VERIFY_TLS,
     };
-    baresdk_account_handle_t acct = NULL;
-    err = baresdk_account_create(&acct_cfg, &acct);
+    echosdk_account_handle_t acct = NULL;
+    err = echosdk_account_create(&acct_cfg, &acct);
     if (err) { fprintf(stderr, "account_create: %d\n", err); goto done; }
 
-    err = baresdk_account_register(acct);
+    err = echosdk_account_register(acct);
     if (err) { fprintf(stderr, "account_register: %d\n", err); goto done; }
 
     printf("Waiting for registration (10s max)...\n");
@@ -335,12 +335,12 @@ int main(void)
     if (!g_reg_done)
         printf("  REG: timed out — no response in 10s\n");
 
-    baresdk_account_unregister(acct);
-    baresdk_account_destroy(acct);
+    echosdk_account_unregister(acct);
+    echosdk_account_destroy(acct);
 done:
 #endif
 
-    baresdk_shutdown();
+    echosdk_shutdown();
     printf("smoketest PASSED\n");
     return g_reg_done && !g_reg_ok ? 1 : 0;
 }
@@ -365,7 +365,7 @@ CSRC
   if ${CC:-gcc} -o "${SMOKETEST_BIN}" "${SMOKETEST_C}" \
       ${INCS} ${ACCT_DEFS} "${ARCHIVE}" ${LDFLAGS} 2>&1; then
     echo "  Compilation: [OK]"
-    if HOME=/tmp/.baresdk-smoketest "${SMOKETEST_BIN}"; then
+    if HOME=/tmp/.EchoSDK-smoketest "${SMOKETEST_BIN}"; then
       echo "  Execution  : [OK]"
     else
       echo "  Execution  : [FAILED]"

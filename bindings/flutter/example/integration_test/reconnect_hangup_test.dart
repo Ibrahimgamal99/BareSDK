@@ -12,7 +12,7 @@
 @Timeout(Duration(minutes: 6))
 library;
 
-import 'package:baresdk/baresdk.dart';
+import 'package:echo_sdk/echo_sdk.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -29,8 +29,8 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   test('terminate after reconnect', () async {
-    final sdk = await BareSDK.start(
-      config: const BareSDKConfig(
+    final sdk = await EchoSDK.start(
+      config: const EchoSDKConfig(
         logLevel: 4,
         traceSip: true,
         netMonitorIntervalSeconds: 0,

@@ -1,49 +1,49 @@
 cmake_minimum_required(VERSION 3.16)
-project(baresdk_cpp_examples LANGUAGES CXX)
+project(echosdk_cpp_examples LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Path to the pre-built SDK distribution (can be overridden on the command line)
-if(NOT BARESDK_DIST_DIR)
+if(NOT ECHOSDK_DIST_DIR)
   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(BARESDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/macos/universal")
+    set(ECHOSDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/macos/universal")
   elseif(WIN32)
-    set(BARESDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/windows/x64")
+    set(ECHOSDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/windows/x64")
   else()
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-      set(BARESDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/linux/arm64")
+      set(ECHOSDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/linux/arm64")
     else()
-      set(BARESDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/linux/x86_64")
+      set(ECHOSDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../dist/linux/x86_64")
     endif()
   endif()
 endif()
 
 if(WIN32)
-  set(_sdk_lib "${BARESDK_DIST_DIR}/baresdk.dll")
+  set(_sdk_lib "${ECHOSDK_DIST_DIR}/echosdk.dll")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-  set(_sdk_lib "${BARESDK_DIST_DIR}/baresdk.dylib")
+  set(_sdk_lib "${ECHOSDK_DIST_DIR}/echosdk.dylib")
 else()
-  set(_sdk_lib "${BARESDK_DIST_DIR}/baresdk.so")
+  set(_sdk_lib "${ECHOSDK_DIST_DIR}/echosdk.so")
 endif()
 
 if(NOT EXISTS "${_sdk_lib}")
   message(FATAL_ERROR
-    "baresdk shared library not found at ${_sdk_lib}.\n"
+    "EchoSDK shared library not found at ${_sdk_lib}.\n"
     "Run the appropriate build script from the repo root first:\n"
     "  Linux:  bash scripts/build-linux.sh\n"
     "  macOS:  bash scripts/build-macos.sh\n"
     "  Windows: scripts\\build-windows.ps1")
 endif()
 
-add_library(baresdk SHARED IMPORTED)
-set_target_properties(baresdk PROPERTIES
+add_library(echosdk SHARED IMPORTED)
+set_target_properties(echosdk PROPERTIES
   IMPORTED_LOCATION             "${_sdk_lib}"
-  INTERFACE_INCLUDE_DIRECTORIES "${BARESDK_DIST_DIR}/include;${CMAKE_CURRENT_SOURCE_DIR}")
+  INTERFACE_INCLUDE_DIRECTORIES "${ECHOSDK_DIST_DIR}/include;${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(WIN32)
-  set_target_properties(baresdk PROPERTIES
-    IMPORTED_IMPLIB "${BARESDK_DIST_DIR}/baresdk.lib")
+  set_target_properties(echosdk PROPERTIES
+    IMPORTED_IMPLIB "${ECHOSDK_DIST_DIR}/echosdk.lib")
 endif()
 
 # ── Examples ──────────────────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ file(GLOB EXAMPLE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.cpp")
 foreach(src ${EXAMPLE_SRCS})
   get_filename_component(name ${src} NAME_WE)
   add_executable(${name} ${src})
-  target_link_libraries(${name} PRIVATE baresdk)
+  target_link_libraries(${name} PRIVATE echosdk)
   if(UNIX AND NOT APPLE)
     target_link_libraries(${name} PRIVATE pulse opus)
   endif()
@@ -60,5 +60,5 @@ foreach(src ${EXAMPLE_SRCS})
   add_custom_command(TARGET ${name} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${_sdk_lib}"
-      "$<TARGET_FILE_DIR:${name}>/$<TARGET_FILE_NAME:baresdk>")
+      "$<TARGET_FILE_DIR:${name}>/$<TARGET_FILE_NAME:echosdk>")
 endforeach()

@@ -1,9 +1,9 @@
 /**
- * @file baresdk_internal.h  Internal types — never exposed to consumers.
+ * @file echosdk_internal.h  Internal types — never exposed to consumers.
  */
 
-#ifndef BARESDK_INTERNAL_H
-#define BARESDK_INTERNAL_H
+#ifndef ECHOSDK_INTERNAL_H
+#define ECHOSDK_INTERNAL_H
 
 #include <string.h>
 #ifdef _WIN32
@@ -14,13 +14,13 @@
 #endif
 #include <re.h>
 #include <baresip.h>
-#include "../include/baresdk.h"
+#include "../include/echosdk.h"
 
 /* ── Forward declarations ──────────────────────────────────────────────── */
 
-struct baresdk_account;
-struct baresdk_call;
-struct baresdk_queued_event;
+struct echosdk_account;
+struct echosdk_call;
+struct echosdk_queued_event;
 
 /* ── baresip internal functions (defined in libbaresip but not in baresip.h) */
 extern struct rtp_sock   *stream_rtp_sock(const struct stream *strm);
@@ -40,7 +40,7 @@ struct bsdk_ctx {
 	mtx_t              lock;        /* guards initialized + shutdown */
 	bool               initialized;
 
-	baresdk_config_t   cfg;         /* deep-copied from caller */
+	echosdk_config_t   cfg;         /* deep-copied from caller */
 
 	/* Deep-copied string storage for cfg pointer fields */
 	char              *cfg_local_ip;
@@ -68,15 +68,15 @@ struct bsdk_ctx {
 	struct mqueue     *re_wakeup_mq;  /* wakes select() so re_cancel takes effect */
 
 	/* Event dispatch thread (separate from re_main to prevent consumer
-	 * deadlocks when they call back into baresdk from inside an event) */
+	 * deadlocks when they call back into EchoSDK from inside an event) */
 	thrd_t             ev_thread;
 	/* thrd_t carries no "not a thread" value, and joining a zeroed one
-	 * segfaults — which is what baresdk_init()'s failure path used to do
+	 * segfaults — which is what echosdk_init()'s failure path used to do
 	 * whenever it unwound before the event thread had been created. */
 	bool               ev_thread_started;
 	mtx_t              ev_lock;
 	cnd_t              ev_cond;
-	struct list        ev_queue;    /* struct baresdk_queued_event */
+	struct list        ev_queue;    /* struct echosdk_queued_event */
 	bool               ev_shutdown;
 	size_t             ev_queue_len;
 	size_t             ev_queue_max;
@@ -87,7 +87,7 @@ struct bsdk_ctx {
 	cnd_t              ev_idle_cond;
 
 	/* Account list */
-	struct list        accounts;    /* struct baresdk_account */
+	struct list        accounts;    /* struct echosdk_account */
 	mtx_t              acct_lock;
 
 	/* pcap */
@@ -101,8 +101,8 @@ struct bsdk_ctx {
 extern struct bsdk_ctx g_bsdk;
 
 /* ── Init/shutdown trace ───────────────────────────────────────────────────
- * Verbose "[bsdk] step N: ..." traces are gated behind the BARESDK_DEBUG_INIT
- * env var. Set BARESDK_DEBUG_INIT=1 to see them; default is silent. */
+ * Verbose "[bsdk] step N: ..." traces are gated behind the ECHOSDK_DEBUG_INIT
+ * env var. Set ECHOSDK_DEBUG_INIT=1 to see them; default is silent. */
 int bsdk_trace_enabled(void);
 #define BSDK_TRACE(...) \
 	do { if (bsdk_trace_enabled()) { printf(__VA_ARGS__); fflush(stdout); } } while (0)
@@ -114,10 +114,10 @@ int bsdk_trace_enabled(void);
  * retrying the first one. */
 #define BSDK_SRV_MAX_TARGETS 4
 
-struct baresdk_account {
+struct echosdk_account {
 	struct le                 le;
 	struct ua                *ua;
-	baresdk_account_config_t  cfg;
+	echosdk_account_config_t  cfg;
 	/* heap-allocated copies of cfg string fields */
 	char                     *cfg_uri;
 	char                     *cfg_password;
@@ -137,15 +137,15 @@ struct baresdk_account {
 	char                      parsed_user[64];
 	char                      parsed_host[256];
 	uint16_t                  parsed_port;
-	baresdk_transport_t       parsed_transport;
+	echosdk_transport_t       parsed_transport;
 	char                      auto_server_url[512];
 	/* WS/WSS connection pinning claimed at create time and released in the
 	 * destructor — see bsdk_ws_set_server(). ws_port 0 = nothing claimed. */
 	char                      ws_host[256];
 	char                      ws_pin_path[256];
 	uint16_t                  ws_port;
-	baresdk_reg_state_t       reg_state;
-	baresdk_error_t           reg_error;
+	echosdk_reg_state_t       reg_state;
+	echosdk_error_t           reg_error;
 	char                      reg_error_str[256];
 	/* True while the SDK is recovering this registration on its own — a
 	 * retry loop, a dead keepalive path, a network handover.  It is what
@@ -165,7 +165,7 @@ struct baresdk_account {
 	float                     retry_backoff;
 	uint32_t                  retry_max_attempts;
 	bool                      destroyed;
-	/* True between baresdk_account_register() and _unregister(): the app
+	/* True between echosdk_account_register() and _unregister(): the app
 	 * wants this account registered.  netmon.c re-REGISTERs only these, so
 	 * a created-but-never-registered account is left alone on handover. */
 	bool                      reg_wanted;
@@ -192,21 +192,21 @@ struct baresdk_account {
 
 /* ── Call ──────────────────────────────────────────────────────────────── */
 
-struct baresdk_call {
+struct echosdk_call {
 	struct le                  le;
 	struct call               *bc;          /* baresip call (weak ref) */
-	struct baresdk_account    *acct;
-	baresdk_call_state_t       state;
-	/* SDP capture for BARESDK_EV_SDP_NEGOTIATION */
+	struct echosdk_account    *acct;
+	echosdk_call_state_t       state;
+	/* SDP capture for ECHOSDK_EV_SDP_NEGOTIATION */
 	char                       local_sdp[4096];
 	char                       remote_sdp[4096];
 	bool                       local_sdp_set;
 	bool                       remote_sdp_set;
 	/* Local hold state — baresip emits no bevent for our own call_hold(),
-	 * so baresdk_call_is_held() reads this flag instead of `state`. */
+	 * so echosdk_call_is_held() reads this flag instead of `state`. */
 	bool                       local_hold;
 	/* Media tap */
-	baresdk_media_tap_cb_t     tap_cb;
+	echosdk_media_tap_cb_t     tap_cb;
 	void                      *tap_userdata;
 	mtx_t                      tap_lock;
 	/* Audio recording (WAV) */
@@ -224,8 +224,8 @@ struct baresdk_call {
 	/* ── Incoming REFER (transfer.c; re_main thread only) ───────────── */
 	/* Refer-To of a transfer request the app has been told about and has
 	 * not answered yet.  Held here because the decision is asynchronous:
-	 * BARESDK_EV_TRANSFER_REQUEST is delivered on the event thread and
-	 * baresdk_call_transfer_accept() may arrive many seconds later, long
+	 * ECHOSDK_EV_TRANSFER_REQUEST is delivered on the event thread and
+	 * echosdk_call_transfer_accept() may arrive many seconds later, long
 	 * after the bevent that carried the URI has gone. */
 	char                       xfer_refer_to[256];
 	bool                       xfer_pending;
@@ -289,7 +289,7 @@ struct baresdk_call {
 	uint64_t                   setup_start;
 };
 
-/* Per-call migration state machine (struct baresdk_call.net_mig_state). */
+/* Per-call migration state machine (struct echosdk_call.net_mig_state). */
 enum bsdk_mig_state {
 	BSDK_MIG_IDLE = 0,   /* nothing to do                                  */
 	BSDK_MIG_WAIT_ADDR,  /* new source address not discoverable yet        */
@@ -301,14 +301,14 @@ enum bsdk_mig_state {
 
 /* ── Event queue entry ─────────────────────────────────────────────────── */
 
-struct baresdk_queued_event {
+struct echosdk_queued_event {
 	struct le            le;
-	baresdk_event_t      ev;
+	echosdk_event_t      ev;
 	/* Inline string storage — pointers in ev.u may point into buf. */
 	char                 buf[4096];
 	/* If set, mem_deref'd on the event thread after the app callback returns.
 	 * Used to defer call-wrapper cleanup until after CALL_ENDED is delivered. */
-	struct baresdk_call *deref_after_deliver;
+	struct echosdk_call *deref_after_deliver;
 };
 
 /* ── dispatch.c ────────────────────────────────────────────────────────── */
@@ -325,14 +325,14 @@ int bsdk_dispatch_sync(bsdk_main_fn fn, void *arg);
 
 int  bsdk_event_init(void);
 void bsdk_event_close(void);
-void bsdk_event_post(const baresdk_event_t *ev);
+void bsdk_event_post(const echosdk_event_t *ev);
 /* Takes ownership of qev; frees it if queue is full. Returns true on success. */
 /* Allocate a zeroed queued event with the destructor that releases
  * deref_after_deliver.  Always use this rather than mem_alloc/mem_zalloc
  * directly, or the call-wrapper reference leaks on the drop path. */
-struct baresdk_queued_event *bsdk_qev_alloc(void);
+struct echosdk_queued_event *bsdk_qev_alloc(void);
 
-bool bsdk_event_post_qev(struct baresdk_queued_event *qev);
+bool bsdk_event_post_qev(struct echosdk_queued_event *qev);
 
 /* ── log.c ─────────────────────────────────────────────────────────────── */
 
@@ -357,7 +357,7 @@ bool bsdk_platform_has_aec(void);
 
 /* Name of the platform device module modules_init() selected ("sles_vc",
  * "audiounit", "pulse", ...), or NULL when this build has none.  Used to
- * restore the SDK-owned device after baresdk_audio_use_external(false). */
+ * restore the SDK-owned device after echosdk_audio_use_external(false). */
 const char *bsdk_platform_audio_mod(void);
 
 /* ── audio_external.c ──────────────────────────────────────────────────── */
@@ -366,7 +366,7 @@ int  bsdk_audio_external_init(void);
 void bsdk_audio_external_close(void);
 
 /* True while the app-owned device is the one selected, i.e. between
- * baresdk_audio_use_external(true) and (false).  Reads conf_config(), so it
+ * echosdk_audio_use_external(true) and (false).  Reads conf_config(), so it
  * must be called on the re thread.  Defined in audio.c next to the switch. */
 bool bsdk_audio_external_selected(void);
 
@@ -380,7 +380,7 @@ void bsdk_sles_vc_close(void);
 
 /* ── platform/<os>/audio_*.c ───────────────────────────────────────────── */
 
-/* One-time platform audio setup, called from baresdk_init() after the
+/* One-time platform audio setup, called from echosdk_init() after the
  * modules are loaded.  iOS: configures the AVAudioSession
  * (PlayAndRecord + VoiceChat) — required before any VoIP audio works.
  * Every other platform provides a no-op stub.
@@ -391,60 +391,60 @@ int bsdk_platform_audio_init(bool activate);
 
 /* ── account.c ─────────────────────────────────────────────────────────── */
 
-struct baresdk_account *bsdk_account_find_by_ua(const struct ua *ua);
-void bsdk_account_schedule_retry(struct baresdk_account *acct);
-void bsdk_account_watch_registration(struct baresdk_account *acct);
+struct echosdk_account *bsdk_account_find_by_ua(const struct ua *ua);
+void bsdk_account_schedule_retry(struct echosdk_account *acct);
+void bsdk_account_watch_registration(struct echosdk_account *acct);
 
 /* Which state a registration failure should be reported as: RECONNECTING when
  * the SDK will keep trying by itself, FAILED when it is done.  Updates
  * acct->reconnecting to match, so call it once per failure, before posting the
  * event.  re_main thread only. */
-baresdk_reg_state_t bsdk_account_reg_fail_state(struct baresdk_account *acct,
-                                                baresdk_error_t err);
+echosdk_reg_state_t bsdk_account_reg_fail_state(struct echosdk_account *acct,
+                                                echosdk_error_t err);
 
 /* Report that a registration is recovering (network handover, link loss):
  * moves a REGISTERED/REGISTERING account to RECONNECTING and posts the event.
  * A no-op for an account that is already there, or that the app never asked to
  * register.  re_main thread only. */
-void bsdk_account_reg_reconnecting(struct baresdk_account *acct);
+void bsdk_account_reg_reconnecting(struct echosdk_account *acct);
 
 /* Keepalive / reachability probe — cfg.keepalive_interval.  _arm() on a
  * successful registration, _cancel() when the account stops being
  * registered. */
-void bsdk_account_keepalive_arm(struct baresdk_account *acct);
-void bsdk_account_keepalive_cancel(struct baresdk_account *acct);
+void bsdk_account_keepalive_arm(struct echosdk_account *acct);
+void bsdk_account_keepalive_cancel(struct echosdk_account *acct);
 /* Kick off the one-shot SRV lookup that feeds failover, if eligible. */
-void bsdk_account_srv_resolve(struct baresdk_account *acct);
+void bsdk_account_srv_resolve(struct echosdk_account *acct);
 
 /* ── call.c ────────────────────────────────────────────────────────────── */
 
 void bsdk_call_destructor(void *data);  /* mem_alloc destructor for call wrappers */
 /* ── record.c ──────────────────────────────────────────────────────────── */
 
-void bsdk_record_write_frame(struct baresdk_call *lc, baresdk_media_dir_t dir,
+void bsdk_record_write_frame(struct echosdk_call *lc, echosdk_media_dir_t dir,
                               const int16_t *pcm, size_t samples,
                               uint32_t srate, uint8_t ch);
-struct baresdk_call *bsdk_call_find(const struct call *bc);
+struct echosdk_call *bsdk_call_find(const struct call *bc);
 /* Allocate, initialise and register a call wrapper.  Used by the outgoing,
  * incoming and transfer-accept paths — see the doc comment in call.c. */
-struct baresdk_call *bsdk_call_wrap_new(struct call *bc,
-                                        struct baresdk_account *acct,
-                                        baresdk_call_state_t state,
+struct echosdk_call *bsdk_call_wrap_new(struct call *bc,
+                                        struct echosdk_account *acct,
+                                        echosdk_call_state_t state,
                                         bool inherit_hdrs);
 
-void bsdk_call_register(struct baresdk_call *lc);
-void bsdk_call_unregister(struct baresdk_call *lc);
-void bsdk_call_foreach(void (*fn)(struct baresdk_call *, void *), void *arg);
+void bsdk_call_register(struct echosdk_call *lc);
+void bsdk_call_unregister(struct echosdk_call *lc);
+void bsdk_call_foreach(void (*fn)(struct echosdk_call *, void *), void *arg);
 
 /* Call-setup watchdog — cfg.sip_timer_b_ms.  _start() on a fresh outgoing
  * call, _cancel() once it is answered or gone; _close() at shutdown. */
-void bsdk_call_setup_watch_start(struct baresdk_call *lc);
-void bsdk_call_setup_watch_cancel(struct baresdk_call *lc);
+void bsdk_call_setup_watch_start(struct echosdk_call *lc);
+void bsdk_call_setup_watch_cancel(struct echosdk_call *lc);
 void bsdk_call_setup_watch_close(void);
 
 /* ── timers.c ──────────────────────────────────────────────────────────── */
 
-void bsdk_timers_configure(const baresdk_config_t *cfg);
+void bsdk_timers_configure(const echosdk_config_t *cfg);
 
 /* ── trace.c ───────────────────────────────────────────────────────────── */
 
@@ -481,14 +481,14 @@ void bsdk_pcap_write_sip(const char *data, size_t len,
 /* ── audio_processing.c ────────────────────────────────────────────────── */
 
 void bsdk_audio_processing_init(bool ns, bool agc,
-                                baresdk_aec_mode_t aec_mode,
+                                echosdk_aec_mode_t aec_mode,
                                 float aec_suppression_level,
                                 float mic_db, float spk_db);
 void bsdk_audio_processing_close(void);
 
 /* Whether the half-duplex TX suppressor should run: SUPPRESSOR mode AND no
  * platform echo canceller underneath us (see bsdk_platform_has_aec). */
-bool bsdk_aec_suppressor_wanted(baresdk_aec_mode_t mode);
+bool bsdk_aec_suppressor_wanted(echosdk_aec_mode_t mode);
 
 /* Atomic gain accessors used by the setters in audio.c. */
 void bsdk_mic_gain_store(float linear);
@@ -499,21 +499,21 @@ void bsdk_aec_floor_store(float floor);
 
 int  bsdk_stats_init(void);
 void bsdk_stats_close(void);
-void bsdk_stats_collect_final(struct baresdk_call *lc);
-void bsdk_post_quality_alert(struct baresdk_call *lc,
-                             baresdk_quality_issue_t issue,
+void bsdk_stats_collect_final(struct echosdk_call *lc);
+void bsdk_post_quality_alert(struct echosdk_call *lc,
+                             echosdk_quality_issue_t issue,
                              float value, float threshold, bool recovering);
 
 /* ── Degraded-link adaptation (adapt.c) ────────────────────────────────── */
 
 /* Reset per-call adaptation state; call when the call reaches established. */
-void bsdk_adapt_call_start(struct baresdk_call *lc);
+void bsdk_adapt_call_start(struct echosdk_call *lc);
 /* Evaluate stall detection and bitrate adaptation for one stats sample. */
-void bsdk_adapt_tick(struct baresdk_call *lc,
-                     const baresdk_ev_media_stats_t *s);
+void bsdk_adapt_tick(struct echosdk_call *lc,
+                     const echosdk_ev_media_stats_t *s);
 /* Re-run the encoder update with `bitrate` (bps; 0 = negotiated rate).
  * Returns 0, or ENOTSUP for a codec with no encoder-update handler. */
-int  bsdk_adapt_apply_bitrate(struct baresdk_call *lc, uint32_t bitrate);
+int  bsdk_adapt_apply_bitrate(struct echosdk_call *lc, uint32_t bitrate);
 /* Rewrite an SDP fmtp string with a new maxaveragebitrate (0 = strip only).
  * Internal to adapt.c; exposed for test/unit/test_fmtp_bitrate.c.
  * Returns 0, or EINVAL when the result would not fit in `sz`. */
@@ -528,10 +528,10 @@ void bsdk_netmon_close(void);  /* re loop stopped: cancel timers */
 /* Called from event.c when a call reaches a state where a re-INVITE becomes
  * legal again, so a deferred migration can proceed without waiting for the
  * next retry tick. */
-void bsdk_netmon_call_refreshable(struct baresdk_call *lc);
+void bsdk_netmon_call_refreshable(struct echosdk_call *lc);
 /* Called from event.c when the peer answers our SDP offer, so a migration
  * in flight can report "accepted — waiting for audio". */
-void bsdk_netmon_call_sdp_answer(struct baresdk_call *lc);
+void bsdk_netmon_call_sdp_answer(struct echosdk_call *lc);
 
 /* ── dns.c ─────────────────────────────────────────────────────────────── */
 
@@ -572,7 +572,7 @@ bool bsdk_ice_call_active(void *call);
 /* Async RFC 3263 resolution. done_h fires on re_main thread.
  * port_hint > 0 skips NAPTR/SRV (explicit port in URI). */
 int  bsdk_dns_resolve(const char *domain,
-                      baresdk_transport_t transport_hint,
+                      echosdk_transport_t transport_hint,
                       uint16_t port_hint,
                       bsdk_dns_done_h *done_h, void *arg);
 
@@ -581,24 +581,24 @@ int  bsdk_dns_resolve(const char *domain,
 size_t bsdk_dns_result_count(const struct bsdk_dns_result *res);
 int    bsdk_dns_result_err(const struct bsdk_dns_result *res);
 int    bsdk_dns_result_get(const struct bsdk_dns_result *res, size_t idx,
-                           baresdk_transport_t *transport,
+                           echosdk_transport_t *transport,
                            char *host, size_t host_sz, uint16_t *port);
 
 /* ── transport.c ───────────────────────────────────────────────────────── */
 
 int bsdk_parse_server_url(const char *url,
-                           baresdk_transport_t *out_transport,
+                           echosdk_transport_t *out_transport,
                            char *host, size_t host_sz,
                            uint16_t *port,
                            char *path, size_t path_sz);
 
 int bsdk_build_outbound(const char *server_url,
                          const char *server_host, uint16_t server_port,
-                         baresdk_transport_t transport,
+                         echosdk_transport_t transport,
                          char *buf, size_t buf_sz);
 
-const char *bsdk_transport_str(baresdk_transport_t t);
-const char *bsdk_mediaenc_str(baresdk_media_enc_t enc);
+const char *bsdk_transport_str(echosdk_transport_t t);
+const char *bsdk_mediaenc_str(echosdk_media_enc_t enc);
 
 /* ── WebSocket path (ws_path.c) ────────────────────────────────────────── */
 
@@ -609,9 +609,9 @@ extern char g_bsdk_ws_server[288];
  * once per WS/WSS account on create, and the matching unset on destroy — the
  * servers are refcounted, and pinning is only active while all live accounts
  * agree on one server. */
-void bsdk_ws_set_server(baresdk_transport_t tp, const char *host,
+void bsdk_ws_set_server(echosdk_transport_t tp, const char *host,
                          uint16_t port, const char *path);
-void bsdk_ws_unset_server(baresdk_transport_t tp, const char *host,
+void bsdk_ws_unset_server(echosdk_transport_t tp, const char *host,
                            uint16_t port, const char *path);
 
 /* ── Utility macros ────────────────────────────────────────────────────── */
@@ -632,19 +632,19 @@ struct bsdk_custom_hdr {
 /* ── Deep-copy helpers ─────────────────────────────────────────────────── */
 
 char *bsdk_strdup(const char *s);
-void bsdk_cfg_deep_copy(baresdk_config_t *dst, const baresdk_config_t *src,
+void bsdk_cfg_deep_copy(echosdk_config_t *dst, const echosdk_config_t *src,
                          struct bsdk_ctx *ctx);
 void bsdk_cfg_deep_free(struct bsdk_ctx *ctx);
-void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
-                              const baresdk_account_config_t *src,
-                              struct baresdk_account *acct);
-void bsdk_acct_cfg_deep_free(struct baresdk_account *acct);
+void bsdk_acct_cfg_deep_copy(echosdk_account_config_t *dst,
+                              const echosdk_account_config_t *src,
+                              struct echosdk_account *acct);
+void bsdk_acct_cfg_deep_free(struct echosdk_account *acct);
 
 /* ── Global state reset (call from shutdown) ───────────────────────────── */
 
-void bsdk_call_global_init(void);   /* call once from baresdk_init */
-void bsdk_call_global_reset(void);  /* call from baresdk_shutdown / fail path */
+void bsdk_call_global_init(void);   /* call once from echosdk_init */
+void bsdk_call_global_reset(void);  /* call from echosdk_shutdown / fail path */
 void bsdk_tap_global_init(void);
 void bsdk_tap_global_reset(void);
 
-#endif /* BARESDK_INTERNAL_H */
+#endif /* ECHOSDK_INTERNAL_H */

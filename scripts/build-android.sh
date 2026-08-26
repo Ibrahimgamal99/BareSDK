@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build baresdk for Android (arm64-v8a, armeabi-v7a, x86_64).
+# Build EchoSDK for Android (arm64-v8a, armeabi-v7a, x86_64).
 # Output per ABI:
-#   dist/android/<abi>/baresdk.a       merged static archive
-#   dist/android/<abi>/libbaresdk.so   shared library (16 KB page aligned)
+#   dist/android/<abi>/echosdk.a       merged static archive
+#   dist/android/<abi>/libechosdk.so   shared library (16 KB page aligned)
 #   dist/android/<abi>/include/
 # Also refreshes the Flutter plugin's bundled (stripped) copies in
 # bindings/flutter/android/src/main/jniLibs/<abi>/ — no second command to run.
@@ -15,11 +15,11 @@
 # Env knobs:
 #   ANDROID_ABIS         ABIs to build (default: arm64-v8a armeabi-v7a x86_64)
 #   ANDROID_PLATFORM     API level (default: android-24; re needs >= 24)
-#   BARESDK_BUILD_ROOT   Build directory root (default: <repo>/build).
+#   ECHOSDK_BUILD_ROOT   Build directory root (default: <repo>/build).
 #                        Point at a native filesystem (e.g. ~/.cache) when the
 #                        repo lives on NTFS — incremental builds there silently
 #                        reuse stale objects.
-#   BARESDK_INCREMENTAL  Set to 1 to keep existing build dirs (default: clean)
+#   ECHOSDK_INCREMENTAL  Set to 1 to keep existing build dirs (default: clean)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -27,13 +27,13 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 ABIS="${ANDROID_ABIS:-arm64-v8a armeabi-v7a x86_64}"
 API="${ANDROID_PLATFORM:-android-24}"  # re requires >= 24 for getifaddrs
-BUILD_ROOT="${BARESDK_BUILD_ROOT:-${ROOT}/build}"
+BUILD_ROOT="${ECHOSDK_BUILD_ROOT:-${ROOT}/build}"
 
 # Fetch third-party sources (idempotent — skips dirs that already exist).
 # OpenSSL, not mbedTLS: libre only implements TLS/DTLS over OpenSSL, so an
 # mbedTLS build silently loses SIP/TLS, SIP/WSS, DTLS-SRTP and AES (see the
 # Phase 0.5 comment in CMakeLists.txt).
-BARESDK_TLS=openssl BARESDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
+ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
 
 # Locate NDK
 NDK="${ANDROID_NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_LATEST_HOME:-}}}"
@@ -56,7 +56,7 @@ JNILIBS="${ROOT}/bindings/flutter/android/src/main/jniLibs"
 for ABI in ${ABIS}; do
   echo "=== Building Android ${ABI} ==="
   BUILD_DIR="${BUILD_ROOT}/android-${ABI}"
-  if [ "${BARESDK_INCREMENTAL:-0}" != "1" ]; then
+  if [ "${ECHOSDK_INCREMENTAL:-0}" != "1" ]; then
     rm -rf "${BUILD_DIR}"
   fi
 
@@ -66,24 +66,24 @@ for ABI in ${ABIS}; do
     -DANDROID_ABI="${ABI}" \
     -DANDROID_PLATFORM="${API}" \
     -DANDROID_STL=c++_static \
-    -DBARESDK_TLS=openssl \
-    -DBARESDK_MODULES_PROFILE=mobile \
-    -DBARESDK_SHARED=ON
+    -DECHOSDK_TLS=openssl \
+    -DECHOSDK_MODULES_PROFILE=mobile \
+    -DECHOSDK_SHARED=ON
 
-  cmake --build "${BUILD_DIR}" --target baresdk baresdk_shared -j"$(nproc)"
+  cmake --build "${BUILD_DIR}" --target echosdk echosdk_shared -j"$(nproc)"
   cmake --install "${BUILD_DIR}"
 
   DIST_DIR="${ROOT}/dist/android/${ABI}"
-  SO="${DIST_DIR}/libbaresdk.so"
+  SO="${DIST_DIR}/libechosdk.so"
 
   # ── Verify the artifact before trusting it ────────────────────────────────
   # (grep -q + pipefail is a footgun: grep exits at first match and llvm-nm
   #  dies with SIGPIPE — capture the symbol table once instead.)
   echo "  === Verifying ${SO} ==="
   DEFINED=$("${LLVM_BIN}/llvm-nm" -D --defined-only "${SO}")
-  EXPORTS=$(grep -c ' T baresdk_' <<<"${DEFINED}" || true)
+  EXPORTS=$(grep -c ' T echosdk_' <<<"${DEFINED}" || true)
   if [ "${EXPORTS}" -lt 40 ]; then
-    echo "ERROR: only ${EXPORTS} baresdk_* symbols exported" >&2; exit 1
+    echo "ERROR: only ${EXPORTS} echosdk_* symbols exported" >&2; exit 1
   fi
   # The SIP fixes ride the patched libre sources (cmake/patch-re-sources.cmake):
   # libre's definitions are renamed to __real_* and ws_path.c owns the public
@@ -139,16 +139,16 @@ for ABI in ${ABIS}; do
   # Stripped of debug info: these copies are tracked in git and shipped inside
   # the pub package, while the dist/ ones keep full symbols for debugging.
   mkdir -p "${JNILIBS}/${ABI}"
-  "${LLVM_BIN}/llvm-strip" --strip-unneeded -o "${JNILIBS}/${ABI}/libbaresdk.so" "${SO}"
+  "${LLVM_BIN}/llvm-strip" --strip-unneeded -o "${JNILIBS}/${ABI}/libechosdk.so" "${SO}"
 
-  echo "  -> dist/android/${ABI}/baresdk.a"
-  echo "  -> dist/android/${ABI}/libbaresdk.so"
-  echo "  -> bindings/flutter/android/src/main/jniLibs/${ABI}/libbaresdk.so (stripped)"
+  echo "  -> dist/android/${ABI}/echosdk.a"
+  echo "  -> dist/android/${ABI}/libechosdk.so"
+  echo "  -> bindings/flutter/android/src/main/jniLibs/${ABI}/libechosdk.so (stripped)"
 done
 
 echo ""
 echo "Done. Outputs:"
-find "${ROOT}/dist/android" \( -name "baresdk.a" -o -name "libbaresdk.so" \) -exec ls -lh {} \;
+find "${ROOT}/dist/android" \( -name "echosdk.a" -o -name "libechosdk.so" \) -exec ls -lh {} \;
 
 echo ""
 echo "Flutter plugin jniLibs refreshed (commit these alongside the C change —"

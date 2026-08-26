@@ -2,7 +2,7 @@
 
 ## Thread model
 
-baresdk uses three threads internally:
+EchoSDK uses three threads internally:
 
 ```
 Your code (any thread)
@@ -27,7 +27,7 @@ Your code (any thread)
 
 **Key rules:**
 - All public API functions are thread-safe — call from any thread.
-- Event callbacks are called from the **event dispatch thread**, not `re_main`. You may call baresdk APIs from inside the callback.
+- Event callbacks are called from the **event dispatch thread**, not `re_main`. You may call EchoSDK APIs from inside the callback.
 - Keep the callback fast (< 10 ms). Heavy work (recording, transcription) should be dispatched to your own thread.
 
 ---
@@ -35,17 +35,17 @@ Your code (any thread)
 ## Lifecycle
 
 ```
-baresdk_config_init()        ← fill config struct with defaults
-baresdk_init()               ← start re_main + event threads
-  baresdk_account_create()   ← create account (does not register)
-  baresdk_account_register() ← send REGISTER
+echosdk_config_init()        ← fill config struct with defaults
+echosdk_init()               ← start re_main + event threads
+  echosdk_account_create()   ← create account (does not register)
+  echosdk_account_register() ← send REGISTER
     ...events...
-  baresdk_account_destroy()  ← unregister + free
-baresdk_shutdown()           ← stop all threads, free everything
+  echosdk_account_destroy()  ← unregister + free
+echosdk_shutdown()           ← stop all threads, free everything
 ```
 
-`baresdk_init()` is not idempotent: on a stack that is already up it returns
-`BARESDK_ERR_ALREADY` and changes nothing. Config applies at init only.
+`echosdk_init()` is not idempotent: on a stack that is already up it returns
+`ECHOSDK_ERR_ALREADY` and changes nothing. Config applies at init only.
 
 ---
 
@@ -60,30 +60,30 @@ wakeups, and any re-loaded plugin or scripting VM behaves the same way.
 Re-initializing is not the recovery; re-pointing is:
 
 ```c
-if (baresdk_is_initialized()) {
+if (echosdk_is_initialized()) {
         /* Take over event delivery from the consumer that is gone. */
-        baresdk_set_event_handler(my_event_cb, my_userdata, /*owned=*/true);
+        echosdk_set_event_handler(my_event_cb, my_userdata, /*owned=*/true);
 
         /* Re-derive the handles it held instead of creating duplicates. */
-        baresdk_account_foreach(adopt_account, NULL);   /* + baresdk_account_get_aor() */
-        baresdk_call_foreach(adopt_call, NULL);         /* + baresdk_call_get_state() */
+        echosdk_account_foreach(adopt_account, NULL);   /* + echosdk_account_get_aor() */
+        echosdk_call_foreach(adopt_call, NULL);         /* + echosdk_call_get_state() */
 }
 else {
-        baresdk_init(&cfg);
+        echosdk_init(&cfg);
 }
 ```
 
 Events that fired while nobody was listening are **dropped, not buffered** — so
 recover state, not history. An INVITE that arrived during the gap is not
-replayed as an event, but the call is still live: `baresdk_call_foreach()` finds
-it and `baresdk_call_get_state()` reports it still `RINGING`. Registration state
-comes back the same way via `baresdk_account_get_reg_state()`.
+replayed as an event, but the call is still live: `echosdk_call_foreach()` finds
+it and `echosdk_call_get_state()` reports it still `RINGING`. Registration state
+comes back the same way via `echosdk_account_get_reg_state()`.
 
 Going the other way, a consumer that knows it is about to disappear should call
-`baresdk_set_event_handler(NULL, NULL, false)` so nothing is delivered into a
+`echosdk_set_event_handler(NULL, NULL, false)` so nothing is delivered into a
 runtime being torn down. The stack stays up, registered and push-reachable.
 
-Flutter does all of this for you: `BareSDK.start()` reattaches when the stack is
+Flutter does all of this for you: `EchoSDK.start()` reattaches when the stack is
 already running and sets [`reattached`](../quickstart/flutter.md), adopting the
 live accounts and calls; `detach()` is the park-and-leave-running counterpart to
 `shutdown()`.
@@ -92,12 +92,12 @@ live accounts and calls; `detach()` is the park-and-leave-running counterpart to
 
 ## Config deep-copy
 
-All strings passed to `baresdk_init()` and `baresdk_account_create()` are **deep-copied** internally. You may free your config structs immediately after the call returns.
+All strings passed to `echosdk_init()` and `echosdk_account_create()` are **deep-copied** internally. You may free your config structs immediately after the call returns.
 
 ---
 
 ## ABI stability
 
 - Fields are only **appended** to structs — never reordered or removed.
-- `baresdk_config_t` carries `version` and `struct_size` fields. Always call `baresdk_config_init()` to zero-fill and set these correctly before populating.
-- Opaque handle types (`baresdk_account_handle_t`, `baresdk_call_handle_t`) are stable across minor versions.
+- `echosdk_config_t` carries `version` and `struct_size` fields. Always call `echosdk_config_init()` to zero-fill and set these correctly before populating.
+- Opaque handle types (`echosdk_account_handle_t`, `echosdk_call_handle_t`) are stable across minor versions.

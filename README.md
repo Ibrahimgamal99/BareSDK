@@ -1,4 +1,4 @@
-# baresdk
+# EchoSDK
 
 **A general-purpose SIP client SDK.** Register against any standards-compliant
 SIP server, place and answer calls, and let the SDK handle SIP parsing, RTP
@@ -10,13 +10,13 @@ server URL, codecs, `User-Agent` — as configuration. Softphone, contact-centre
 agent, embedded intercom, door station, or a headless call bot are all the same
 API.
 
-One shared library, one header (`include/baresdk.h`), full thread safety — call
+One shared library, one header (`include/echosdk.h`), full thread safety — call
 any API from any thread. Built on [baresip](https://github.com/baresip/baresip)
 and [libre](https://github.com/baresip/re), with the SIP/RTP internals kept out
 of your way.
 
 ```python
-import baresdk as sdk
+import echo_sdk as sdk
 
 acc = sdk.create_account("alice@pbx.example.com", "secret",
                          transport="wss", media_enc="dtls_srtp",
@@ -39,7 +39,7 @@ The same flow in C++ and Dart is in [Quick start](#quick-start) below.
 
 ---
 
-## Why baresdk
+## Why EchoSDK
 
 | | |
 |---|---|
@@ -101,11 +101,11 @@ common deployments is in [TLS and WSS](docs/guides/tls_wss.md) and
 
 | Platform | Shared library | Static archive | TLS backend |
 |---|---|---|---|
-| Linux x86_64 | `dist/linux/x86_64/baresdk.so` | `baresdk.a` | OpenSSL (embedded) |
-| macOS universal | `dist/macos/universal/baresdk.dylib` | `baresdk.a` | OpenSSL (embedded) |
-| Windows x64 | `dist\windows\x64\baresdk.dll` | `bare.lib` | OpenSSL (embedded via vcpkg) |
-| Android arm64-v8a · armeabi-v7a · x86_64 | `dist/android/<ABI>/baresdk.so` | `baresdk.a` | mbedTLS (bundled) |
-| iOS device + simulator | `dist/ios/baresdk.xcframework` | — | mbedTLS (bundled) |
+| Linux x86_64 | `dist/linux/x86_64/echosdk.so` | `echosdk.a` | OpenSSL (embedded) |
+| macOS universal | `dist/macos/universal/echosdk.dylib` | `echosdk.a` | OpenSSL (embedded) |
+| Windows x64 | `dist\windows\x64\echosdk.dll` | `bare.lib` | OpenSSL (embedded via vcpkg) |
+| Android arm64-v8a · armeabi-v7a · x86_64 | `dist/android/<ABI>/echosdk.so` | `echosdk.a` | mbedTLS (bundled) |
+| iOS device + simulator | `dist/ios/EchoSDK.xcframework` | — | mbedTLS (bundled) |
 
 Shared libraries are **fully self-contained** — OpenSSL, zlib, and the audio
 dependencies are baked in, so nothing extra is needed at runtime.
@@ -114,8 +114,8 @@ dependencies are baked in, so nothing extra is needed at runtime.
 
 | Language | Location | Style |
 |---|---|---|
-| C | `include/baresdk.h` | the entire API surface |
-| C++ | `bindings/cpp/baresdk.hpp` | header-only RAII wrapper |
+| C | `include/echosdk.h` | the entire API surface |
+| C++ | `bindings/cpp/echosdk.hpp` | header-only RAII wrapper |
 | Python | `bindings/python/` | cffi + event decorators |
 | Flutter / Dart | `bindings/flutter/` | `dart:ffi` + ffigen, event streams |
 
@@ -124,8 +124,8 @@ dependencies are baked in, so nothing extra is needed at runtime.
 ## Getting the source
 
 ```bash
-git clone --recurse-submodules https://github.com/Ibrahimgamal99/BareSDK.git
-cd BareSDK
+git clone --recurse-submodules https://github.com/NawyRE/echo-sdk.git
+cd EchoSDK
 ```
 
 Already cloned without submodules:
@@ -165,29 +165,29 @@ bash bindings/cpp/build.sh           # builds the examples
 [vcpkg](https://vcpkg.io) with `vcpkg install openssl zlib:x64-windows-static-md`:
 
 ```powershell
-.\scripts\build-windows.ps1          # dist\windows\x64\baresdk.dll + bare.lib
+.\scripts\build-windows.ps1          # dist\windows\x64\echosdk.dll + bare.lib
 cd bindings\cpp
 .\build-examples.ps1
 .\build\Release\quickstart.exe examples\account.json
 ```
 
-The C++ wrapper in `bindings/cpp/baresdk.hpp`:
+The C++ wrapper in `bindings/cpp/echosdk.hpp`:
 
 ```cpp
-#include "baresdk.hpp"
+#include "echosdk.hpp"
 
-baresdk::SDK sdk;
-sdk.on_event([](const baresdk_event_t& ev) {
-    if (ev.type == BARESDK_EV_REG_STATE &&
-        ev.u.reg.state == BARESDK_REG_REGISTERED)
+EchoSDK::SDK sdk;
+sdk.on_event([](const echosdk_event_t& ev) {
+    if (ev.type == ECHOSDK_EV_REG_STATE &&
+        ev.u.reg.state == ECHOSDK_REG_REGISTERED)
         puts("registered");
-    if (ev.type == BARESDK_EV_INCOMING_CALL)
-        baresdk::Call(ev.u.incoming.call).answer();
+    if (ev.type == ECHOSDK_EV_INCOMING_CALL)
+        EchoSDK::Call(ev.u.incoming.call).answer();
 });
 sdk.init();
 
 auto acct = sdk.create_account("alice@pbx.example.com", "secret",
-                               BARESDK_TRANSPORT_TLS, {BARESDK_CODEC_OPUS});
+                               ECHOSDK_TRANSPORT_TLS, {ECHOSDK_CODEC_OPUS});
 acct.register_account();
 auto call = acct.call("bob@pbx.example.com");
 ```
@@ -198,14 +198,14 @@ Plain C, manual compile, and Windows linking: [docs/quickstart/c.md](docs/quicks
 
 ```yaml
 dependencies:
-  baresdk:
+  EchoSDK:
     git:
-      url: https://github.com/Ibrahimgamal99/BareSDK.git
+      url: https://github.com/NawyRE/echo-sdk.git
       path: bindings/flutter
 ```
 
 ```dart
-final sdk = await BareSDK.start(config: const BareSDKConfig(statsIntervalMs: 5000));
+final sdk = await EchoSDK.start(config: const EchoSDKConfig(statsIntervalMs: 5000));
 
 final account = sdk.createAccount('alice@pbx.example.com', 'secret',
     config: const AccountConfig(
@@ -259,14 +259,14 @@ The SDK is silent by default. For verbose init/shutdown traces
 (`[bsdk] step N: ...`):
 
 ```bash
-BARESDK_DEBUG_INIT=1 ./quickstart account.json        # Linux / macOS
+ECHOSDK_DEBUG_INIT=1 ./quickstart account.json        # Linux / macOS
 ```
 
 ```powershell
-$env:BARESDK_DEBUG_INIT=1; .\quickstart.exe account.json
+$env:ECHOSDK_DEBUG_INIT=1; .\quickstart.exe account.json
 ```
 
-For runtime SIP/media verbosity, raise `baresdk_config_t.log_level`
+For runtime SIP/media verbosity, raise `echosdk_config_t.log_level`
 (0=err, 1=warn, 2=info, 3=debug). To read the signalling itself, subscribe to
 SIP trace events — see [docs/guides/debugging.md](docs/guides/debugging.md).
 
@@ -299,7 +299,7 @@ Everything lives in [`docs/`](docs/index.md):
 
 ## License
 
-baresdk is released under the [BSD 3-Clause License](LICENSE).
+EchoSDK is released under the [BSD 3-Clause License](LICENSE).
 
 The shipped libraries statically link baresip, libre and Opus (all BSD-3-Clause)
 and — on Android/iOS — Mbed TLS (Apache-2.0). Each dependency's own licence text

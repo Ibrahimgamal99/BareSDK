@@ -1,7 +1,7 @@
 """
-baresdk — simple, flat Python SDK for SIP/RTP.
+EchoSDK — simple, flat Python SDK for SIP/RTP.
 
-    import baresdk as sdk
+    import echo_sdk as sdk
 
     sdk.configure(transport="wss", media_enc="dtls_srtp")
 
@@ -39,7 +39,7 @@ from .events import (
     CallStats,
 )
 
-_log = logging.getLogger("baresdk")
+_log = logging.getLogger("echo_sdk")
 
 # ── Push provider constants (no string equivalent in the C API) ───────────────
 PUSH_PROVIDER_NONE         = 0
@@ -103,7 +103,7 @@ def _str_array(arr) -> list:
 
 def _check(rc, what):
     if rc != 0:
-        raise RuntimeError(f"baresdk.{what} failed (code {rc}): {strerror(rc)}")
+        raise RuntimeError(f"EchoSDK.{what} failed (code {rc}): {strerror(rc)}")
 
 
 def _ensure_init():
@@ -118,8 +118,8 @@ def _ensure_init():
             sys.stdout.reconfigure(line_buffering=True)
         except AttributeError:
             pass
-        cfg = ffi.new("baresdk_config_t *")
-        lib.baresdk_config_init(cfg)
+        cfg = ffi.new("echosdk_config_t *")
+        lib.echosdk_config_init(cfg)
         # configure() documents the enum options in their string form, and
         # create_account() already translates the global "transport" that way.
         # Without the same translation here the string reaches setattr() as a
@@ -142,7 +142,7 @@ def _ensure_init():
         cfg.event_cb       = _global_event_cb
         cfg.event_userdata = ffi.NULL
         _cdata_keepalive.append(cfg)  # C may hold pointers into this struct
-        _check(lib.baresdk_init(cfg), "init")
+        _check(lib.echosdk_init(cfg), "init")
         _init_done = True
 
 
@@ -198,7 +198,7 @@ def _raw_stats_to_event(s) -> MediaStatsEvent:
 
 
 def _list_audio_devices(fn) -> list:
-    buf = ffi.new("baresdk_audio_device_t[32]")
+    buf = ffi.new("echosdk_audio_device_t[32]")
     n = fn(buf, 32)
     out = []
     for i in range(max(n, 0)):
@@ -212,7 +212,7 @@ def _list_audio_devices(fn) -> list:
 
 # ── C event callback → global queue ──────────────────────────────────────────
 
-@ffi.callback("void(const baresdk_event_t *, void *)")
+@ffi.callback("void(const echosdk_event_t *, void *)")
 def _global_event_cb(ev_ptr, _userdata):
     ev  = ev_ptr[0]
     typ = ev.type
@@ -413,7 +413,7 @@ def _dispatch_event(obj):
             try:
                 h(obj)
             except Exception:
-                _log.exception("baresdk handler %r raised", h)
+                _log.exception("EchoSDK handler %r raised", h)
 
 
 def _dispatcher_loop():
@@ -484,7 +484,7 @@ def configure(**kwargs):
     """
     global _config_locked
     if _config_locked:
-        raise RuntimeError("baresdk.configure() must be called before create_account()")
+        raise RuntimeError("echo_sdk.configure() must be called before create_account()")
     _config.update(kwargs)
 
 
@@ -514,7 +514,7 @@ def on(name: str):
     """
     if name not in _VALID_NAMES:
         raise ValueError(
-            f"baresdk.on({name!r}): unknown event name. "
+            f"echo_sdk.on({name!r}): unknown event name. "
             f"Valid names: {sorted(_VALID_NAMES)}"
         )
     def decorator(fn: Callable) -> Callable:
@@ -532,11 +532,11 @@ def run():
     global _dispatcher
 
     if not _handlers:
-        raise RuntimeError("baresdk.run() called with no @sdk.on() handlers registered")
+        raise RuntimeError("echo_sdk.run() called with no @sdk.on() handlers registered")
 
     _stop_evt.clear()
     _dispatcher = threading.Thread(
-        target=_dispatcher_loop, name="baresdk-dispatcher", daemon=True)
+        target=_dispatcher_loop, name="EchoSDK-dispatcher", daemon=True)
     _dispatcher.start()
 
     old_sigint = signal.getsignal(signal.SIGINT)
@@ -567,7 +567,7 @@ def run():
                 pass
 
         if _init_done:
-            lib.baresdk_shutdown()
+            lib.echosdk_shutdown()
 
 
 def stop():
@@ -618,7 +618,7 @@ def create_account(uri: str, password: str,
         kwargs["dtmf_mode"] = dtmf_val
     extra_headers = kwargs.pop("extra_headers", {})
 
-    cfg = ffi.new("baresdk_account_config_t *")
+    cfg = ffi.new("echosdk_account_config_t *")
     keepalive = [cfg]
     uri_ref  = ffi.new("char[]", uri.encode())
     pass_ref = ffi.new("char[]", password.encode())
@@ -662,12 +662,12 @@ def create_account(uri: str, password: str,
         else:
             setattr(cfg, key, val)
 
-    h = ffi.new("baresdk_account_handle_t *")
-    _check(lib.baresdk_account_create(cfg, h), "account_create")
+    h = ffi.new("echosdk_account_handle_t *")
+    _check(lib.echosdk_account_create(cfg, h), "account_create")
 
     account = Account(h[0], uri, keepalive)
     if rel100_val is not None:
-        lib.baresdk_account_set_100rel(account._h, rel100_val)
+        lib.echosdk_account_set_100rel(account._h, rel100_val)
     for k, v in extra_headers.items():
         account.add_header(k, v)
 
@@ -706,79 +706,79 @@ def call(target: str, account: Optional["Account"] = None) -> "Call":
             n = len(_accounts)
             if n == 0:
                 raise RuntimeError(
-                    "baresdk.call() requires an account; none have been created")
+                    "echo_sdk.call() requires an account; none have been created")
             if n > 1:
                 raise RuntimeError(
-                    f"baresdk.call() is ambiguous: {n} accounts registered, "
+                    f"echo_sdk.call() is ambiguous: {n} accounts registered, "
                     "pass account=...")
             account = _accounts[0]
     return account.call(_normalize_target(target, account))
 
 
 def version() -> str:
-    """Return the baresdk library version string."""
+    """Return the EchoSDK library version string."""
     _ensure_init()
-    return ffi.string(lib.baresdk_version()).decode()
+    return ffi.string(lib.echosdk_version()).decode()
 
 
 def strerror(err: int) -> str:
-    """Return a human-readable string for a BARESDK_ERR_* code."""
-    return ffi.string(lib.baresdk_strerror(err)).decode("utf-8", errors="replace")
+    """Return a human-readable string for a ECHOSDK_ERR_* code."""
+    return ffi.string(lib.echosdk_strerror(err)).decode("utf-8", errors="replace")
 
 
 # ── Audio (module-level) ─────────────────────────────────────────────────────
 
 def list_input_devices() -> list:
     """Return a list of dicts with keys: name, description, is_default."""
-    return _list_audio_devices(lib.baresdk_audio_list_input_devices)
+    return _list_audio_devices(lib.echosdk_audio_list_input_devices)
 
 
 def list_output_devices() -> list:
     """Return a list of dicts with keys: name, description, is_default."""
-    return _list_audio_devices(lib.baresdk_audio_list_output_devices)
+    return _list_audio_devices(lib.echosdk_audio_list_output_devices)
 
 
 def set_input_device(name: str):
-    lib.baresdk_audio_set_input_device(name.encode())
+    lib.echosdk_audio_set_input_device(name.encode())
 
 
 def set_output_device(name: str):
-    lib.baresdk_audio_set_output_device(name.encode())
+    lib.echosdk_audio_set_output_device(name.encode())
 
 
 def set_aec(enable: bool):
     """Enable or disable acoustic echo cancellation."""
-    lib.baresdk_set_aec(int(enable))
+    lib.echosdk_set_aec(int(enable))
 
 
 def set_aec_mode(mode: int):
     """0=off, 1=suppressor, 2=webrtc. AEC_WEBRTC requires a desktop build."""
-    _check(lib.baresdk_set_aec_mode(mode), "set_aec_mode")
+    _check(lib.echosdk_set_aec_mode(mode), "set_aec_mode")
 
 
 def set_aec_suppression_level(level: float):
     """Suppressor aggressiveness: 0.0=none, 1.0=maximum (default)."""
-    lib.baresdk_set_aec_suppression_level(float(level))
+    lib.echosdk_set_aec_suppression_level(float(level))
 
 
 def set_ns(enable: bool):
     """Enable or disable noise suppression."""
-    lib.baresdk_set_ns(int(enable))
+    lib.echosdk_set_ns(int(enable))
 
 
 def set_agc(enable: bool):
     """Enable or disable automatic gain control."""
-    lib.baresdk_set_agc(int(enable))
+    lib.echosdk_set_agc(int(enable))
 
 
 def set_mic_gain(db: float):
     """Microphone (TX) gain in dB. Range: -20 to +20. 0 = unity."""
-    lib.baresdk_set_mic_gain_db(float(db))
+    lib.echosdk_set_mic_gain_db(float(db))
 
 
 def set_speaker_gain(db: float):
     """Speaker (RX) gain in dB. Range: -20 to +20. 0 = unity."""
-    lib.baresdk_set_speaker_gain_db(float(db))
+    lib.echosdk_set_speaker_gain_db(float(db))
 
 
 # ── App-owned audio device ───────────────────────────────────────────────────
@@ -799,7 +799,7 @@ def use_external_audio(enable: bool):
     relies on belong to the drivers being displaced, so you own AEC too.
     """
     _ensure_init()
-    _check(lib.baresdk_audio_use_external(bool(enable)), "use_external_audio")
+    _check(lib.echosdk_audio_use_external(bool(enable)), "use_external_audio")
 
 
 def external_audio_format() -> Optional[tuple]:
@@ -811,14 +811,14 @@ def external_audio_format() -> Optional[tuple]:
     srate = ffi.new("uint32_t *")
     ch = ffi.new("uint8_t *")
     ptime = ffi.new("uint32_t *")
-    if lib.baresdk_audio_external_format(srate, ch, ptime) != 0:
+    if lib.echosdk_audio_external_format(srate, ch, ptime) != 0:
         return None
     return srate[0], ch[0], ptime[0]
 
 
 def external_audio_active() -> bool:
     """True while a call is capturing or playing through the app-owned device."""
-    return bool(lib.baresdk_audio_external_is_active())
+    return bool(lib.echosdk_audio_external_is_active())
 
 
 def external_audio_push(pcm) -> int:
@@ -831,7 +831,7 @@ def external_audio_push(pcm) -> int:
     Returns 0, or errno.ENODEV between calls, which is not worth acting on.
     """
     buf = ffi.from_buffer("int16_t[]", pcm)
-    return lib.baresdk_audio_external_push(buf, len(buf))
+    return lib.echosdk_audio_external_push(buf, len(buf))
 
 
 def external_audio_pull(nsamp: int) -> bytes:
@@ -841,7 +841,7 @@ def external_audio_pull(nsamp: int) -> bytes:
     so the result can go straight to the speaker without checking.
     """
     buf = ffi.new("int16_t[]", nsamp)
-    lib.baresdk_audio_external_pull(buf, nsamp)
+    lib.echosdk_audio_external_pull(buf, nsamp)
     return bytes(ffi.buffer(buf))
 
 
@@ -853,20 +853,20 @@ def network_changed():
     local address, reporting progress as "network" events.
     """
     _ensure_init()
-    return lib.baresdk_network_changed()
+    return lib.echosdk_network_changed()
 
 
 def network_set_monitor_interval(seconds: int):
     """Interface poll period in seconds; 0 disables polling entirely."""
     _ensure_init()
-    return lib.baresdk_network_set_monitor_interval(int(seconds))
+    return lib.echosdk_network_set_monitor_interval(int(seconds))
 
 
 def network_set_handover_policy(reinvite_calls: bool = True,
                                  hangup_on_failure: bool = False):
     """Re-INVITE active calls on handover; optionally hang up on failure."""
     _ensure_init()
-    return lib.baresdk_network_set_handover_policy(int(reinvite_calls),
+    return lib.echosdk_network_set_handover_policy(int(reinvite_calls),
                                                    int(hangup_on_failure))
 
 
@@ -874,7 +874,7 @@ def network_local_addr() -> str:
     """Local IP the SDK is currently using, or "" when there is none."""
     _ensure_init()
     buf = ffi.new("char[64]")
-    if lib.baresdk_network_local_addr(buf, 64) != 0:
+    if lib.echosdk_network_local_addr(buf, 64) != 0:
         return ""
     return ffi.string(buf).decode()
 
@@ -882,11 +882,11 @@ def network_local_addr() -> str:
 def network_is_up() -> bool:
     """False while the device has no usable (non-loopback) local address."""
     _ensure_init()
-    return bool(lib.baresdk_network_is_up())
+    return bool(lib.echosdk_network_is_up())
 
 
 def set_jitter_buffer(min_ms: int, max_ms: int):
-    lib.baresdk_set_jitter_buffer(min_ms, max_ms)
+    lib.echosdk_set_jitter_buffer(min_ms, max_ms)
 
 
 def set_adaptive_bitrate(enabled: bool, min_bps: int = 0, max_bps: int = 0):
@@ -897,23 +897,23 @@ def set_adaptive_bitrate(enabled: bool, min_bps: int = 0, max_bps: int = 0):
     negotiated one.
     """
     _ensure_init()
-    lib.baresdk_set_adaptive_bitrate(enabled, min_bps, max_bps)
+    lib.echosdk_set_adaptive_bitrate(enabled, min_bps, max_bps)
 
 
 def pcap_start(path: str):
     """Start capturing SIP/RTP to a pcap file."""
-    _check(lib.baresdk_pcap_start(path.encode()), "pcap_start")
+    _check(lib.echosdk_pcap_start(path.encode()), "pcap_start")
 
 
 def pcap_stop():
     """Stop pcap capture and finalize the file."""
-    lib.baresdk_pcap_stop()
+    lib.echosdk_pcap_stop()
 
 
 # ── Call ──────────────────────────────────────────────────────────────────────
 
 class Call:
-    """Wrapper around a baresdk_call_handle_t.
+    """Wrapper around a echosdk_call_handle_t.
 
     Obtained from sdk.call(...), account.call(...), or ev.call in a handler.
     """
@@ -924,25 +924,25 @@ class Call:
         self._poll_thread: Optional[threading.Thread] = None
 
     def answer(self):
-        _check(lib.baresdk_call_answer(self._h), "answer")
+        _check(lib.echosdk_call_answer(self._h), "answer")
 
     def hangup(self):
-        lib.baresdk_call_hangup(self._h)
+        lib.echosdk_call_hangup(self._h)
 
     def hold(self):
-        _check(lib.baresdk_call_hold(self._h), "hold")
+        _check(lib.echosdk_call_hold(self._h), "hold")
 
     def resume(self):
-        _check(lib.baresdk_call_resume(self._h), "resume")
+        _check(lib.echosdk_call_resume(self._h), "resume")
 
     def is_held(self) -> bool:
-        return bool(lib.baresdk_call_is_held(self._h))
+        return bool(lib.echosdk_call_is_held(self._h))
 
     def send_dtmf(self, digit: str):
-        lib.baresdk_call_send_dtmf(self._h, ord(digit))
+        lib.echosdk_call_send_dtmf(self._h, ord(digit))
 
     def transfer(self, uri: str):
-        _check(lib.baresdk_call_transfer(self._h, uri.encode()), "transfer")
+        _check(lib.echosdk_call_transfer(self._h, uri.encode()), "transfer")
 
     def transfer_accept(self) -> "Call":
         """Follow an incoming REFER; returns the new Call to the target.
@@ -958,8 +958,8 @@ class Call:
 
         The original call stays up; end it when the new one connects.
         """
-        out = ffi.new("baresdk_call_handle_t *")
-        _check(lib.baresdk_call_transfer_accept(self._h, out),
+        out = ffi.new("echosdk_call_handle_t *")
+        _check(lib.echosdk_call_transfer_accept(self._h, out),
                "transfer_accept")
         return Call(out[0])
 
@@ -969,7 +969,7 @@ class Call:
         ``scode`` is the SIP status the transferor is told, 400-699; 603
         Decline is the usual "the user said no", 486 for busy.
         """
-        _check(lib.baresdk_call_transfer_reject(self._h, scode,
+        _check(lib.echosdk_call_transfer_reject(self._h, scode,
                                                 reason.encode()),
                "transfer_reject")
 
@@ -979,8 +979,8 @@ class Call:
         Complements :meth:`stats`, which is the per-tick media numbers. Safe
         to call at any point in the call's life, including after it ends.
         """
-        i = ffi.new("baresdk_call_info_t *")
-        _check(lib.baresdk_call_get_info(self._h, i), "get_info")
+        i = ffi.new("echosdk_call_info_t *")
+        _check(lib.echosdk_call_get_info(self._h, i), "get_info")
         _TRANSPORTS = ("udp", "tcp", "tls", "ws", "wss")
         _STATES     = ("calling", "ringing", "established", "held",
                        "ended", "cancelled", "failed")
@@ -1007,16 +1007,16 @@ class Call:
         }
 
     def mute(self, muted: bool = True):
-        lib.baresdk_audio_mute(self._h, muted)
+        lib.echosdk_audio_mute(self._h, muted)
 
     def is_muted(self) -> bool:
-        return bool(lib.baresdk_audio_is_muted(self._h))
+        return bool(lib.echosdk_audio_is_muted(self._h))
 
     def mute_rx(self, muted: bool = True):
-        lib.baresdk_audio_mute_rx(self._h, muted)
+        lib.echosdk_audio_mute_rx(self._h, muted)
 
     def set_dscp_rtp(self, dscp: int):
-        _check(lib.baresdk_call_set_dscp_rtp(self._h, dscp), "set_dscp_rtp")
+        _check(lib.echosdk_call_set_dscp_rtp(self._h, dscp), "set_dscp_rtp")
 
     def set_rtp_timeout(self, seconds: int):
         """End this call after *seconds* with no inbound RTP; 0 = never.
@@ -1024,7 +1024,7 @@ class Call:
         Per-call override of configure(rtp_timeout_s=...).  Only sendrecv
         streams are checked, so a held call is never torn down by it.
         """
-        _check(lib.baresdk_call_set_rtp_timeout(self._h, seconds),
+        _check(lib.echosdk_call_set_rtp_timeout(self._h, seconds),
                "set_rtp_timeout")
 
     def set_bitrate(self, bitrate_bps: int):
@@ -1035,21 +1035,21 @@ class Call:
         With configure(adaptive_bitrate=True) the controller will override
         this on its next decision.
         """
-        _check(lib.baresdk_call_set_bitrate(self._h, bitrate_bps),
+        _check(lib.echosdk_call_set_bitrate(self._h, bitrate_bps),
                "set_bitrate")
 
     def stats(self) -> CallStats:
         """Return a fresh CallStats snapshot (synchronous, one-shot)."""
-        s = ffi.new("baresdk_ev_media_stats_t *")
-        lib.baresdk_call_get_stats(self._h, s)
+        s = ffi.new("echosdk_ev_media_stats_t *")
+        lib.echosdk_call_get_stats(self._h, s)
         cs = CallStats()
         cs._update(_raw_stats_to_event(s[0]))
         return cs
 
     def fetch_stats(self, target: CallStats) -> CallStats:
         """Update *target* in-place with the current stats and return it."""
-        s = ffi.new("baresdk_ev_media_stats_t *")
-        lib.baresdk_call_get_stats(self._h, s)
+        s = ffi.new("echosdk_ev_media_stats_t *")
+        lib.echosdk_call_get_stats(self._h, s)
         target._update(_raw_stats_to_event(s[0]))
         return target
 
@@ -1070,7 +1070,7 @@ class Call:
                 try:
                     on_update(stats)
                 except Exception:
-                    _log.exception("baresdk poll_stats on_update raised")
+                    _log.exception("EchoSDK poll_stats on_update raised")
                 if stats.is_final:
                     break
 
@@ -1083,11 +1083,11 @@ class Call:
 
     def record_start(self, path: str):
         """Record mixed call audio (RX+TX) to a WAV file."""
-        _check(lib.baresdk_call_record_start(self._h, path.encode()), "record_start")
+        _check(lib.echosdk_call_record_start(self._h, path.encode()), "record_start")
 
     def record_stop(self):
         """Stop recording and finalize WAV headers."""
-        lib.baresdk_call_record_stop(self._h)
+        lib.echosdk_call_record_stop(self._h)
 
     @property
     def handle(self):
@@ -1106,56 +1106,56 @@ class Account:
 
     def register(self):
         """Send a SIP REGISTER to activate this account."""
-        _check(lib.baresdk_account_register(self._h), "register")
+        _check(lib.echosdk_account_register(self._h), "register")
 
     def unregister(self):
         """Send an unregistration (Expires: 0)."""
-        lib.baresdk_account_unregister(self._h)
+        lib.echosdk_account_unregister(self._h)
 
     def call(self, uri: str) -> Call:
         """Place an outbound call to a full SIP URI."""
-        ch = ffi.new("baresdk_call_handle_t *")
-        _check(lib.baresdk_call_invite(self._h, uri.encode(), ch), "call_invite")
+        ch = ffi.new("echosdk_call_handle_t *")
+        _check(lib.echosdk_call_invite(self._h, uri.encode(), ch), "call_invite")
         return Call(ch[0])
 
     def send_message(self, to: str, body: str, content_type: str = "text/plain"):
         _check(
-            lib.baresdk_message_send(self._h, to.encode(), body.encode(),
+            lib.echosdk_message_send(self._h, to.encode(), body.encode(),
                                      content_type.encode()),
             "message_send")
 
     def publish_presence(self, status: int):
-        lib.baresdk_account_publish_presence(self._h, status)
+        lib.echosdk_account_publish_presence(self._h, status)
 
     def subscribe_presence(self, target_uri: str):
-        _check(lib.baresdk_account_subscribe_presence(self._h, target_uri.encode()),
+        _check(lib.echosdk_account_subscribe_presence(self._h, target_uri.encode()),
                "subscribe_presence")
 
     def add_header(self, name: str, value: str):
-        _check(lib.baresdk_account_add_header(self._h, name.encode(), value.encode()),
+        _check(lib.echosdk_account_add_header(self._h, name.encode(), value.encode()),
                "add_header")
 
     def add_register_header(self, name: str, value: str):
         """Add a header sent only on REGISTER (not on INVITE/BYE)."""
-        _check(lib.baresdk_account_add_register_header(
+        _check(lib.echosdk_account_add_register_header(
             self._h, name.encode(), value.encode()), "add_register_header")
 
     def set_push_token(self, push_token: Optional[str]) -> int:
         """Update the push notification token at runtime. Pass None to clear."""
         tok = push_token.encode() if push_token is not None else ffi.NULL
-        return lib.baresdk_account_set_push_token(self._h, tok)
+        return lib.echosdk_account_set_push_token(self._h, tok)
 
     def set_retry_policy(self, initial_ms: int, max_ms: int,
                          backoff: float, max_attempts: int = 0):
-        _check(lib.baresdk_account_set_retry_policy(
+        _check(lib.echosdk_account_set_retry_policy(
             self._h, initial_ms, max_ms, backoff, max_attempts),
             "set_retry_policy")
 
     def cancel_retry(self):
-        lib.baresdk_account_cancel_retry(self._h)
+        lib.echosdk_account_cancel_retry(self._h)
 
     def retry_now(self):
-        lib.baresdk_account_retry_now(self._h)
+        lib.echosdk_account_retry_now(self._h)
 
     def keepalive_now(self):
         """Send a reachability probe (SIP OPTIONS) for this account now.
@@ -1165,10 +1165,10 @@ class Account:
         call.  Nothing is reported on success; on failure the account goes to
         reg_failed and, with configure(keepalive_reregister=True), re-registers.
         """
-        _check(lib.baresdk_account_keepalive_now(self._h), "keepalive_now")
+        _check(lib.echosdk_account_keepalive_now(self._h), "keepalive_now")
 
     def set_100rel(self, mode: int):
-        lib.baresdk_account_set_100rel(self._h, mode)
+        lib.echosdk_account_set_100rel(self._h, mode)
 
     def destroy(self):
         if self._h is None:
@@ -1179,7 +1179,7 @@ class Account:
             except ValueError:
                 pass
             _accounts_by_handle.pop(int(ffi.cast("uintptr_t", self._h)), None)
-        lib.baresdk_account_destroy(self._h)
+        lib.echosdk_account_destroy(self._h)
         self._h = None
 
     def __enter__(self):

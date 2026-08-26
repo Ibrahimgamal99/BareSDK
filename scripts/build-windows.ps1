@@ -1,5 +1,5 @@
-# Build baresdk for Windows x64.
-# Output: dist\windows\x64\baresdk.dll + baresdk.lib (import lib) + bare.lib + dist\windows\x64\include\
+# Build EchoSDK for Windows x64.
+# Output: dist\windows\x64\echosdk.dll + echosdk.lib (import lib) + bare.lib + dist\windows\x64\include\
 #
 # Prerequisites:
 #   - Visual Studio 2022 (or 2019)
@@ -54,12 +54,12 @@ cmake -S $Root -B $BuildDir `
     -G "Visual Studio 17 2022" -A x64 `
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" `
     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
-    -DBARESDK_TLS=openssl `
-    -DBARESDK_MODULES_PROFILE=desktop `
-    -DBARESDK_WITH_WEBRTC_AEC=OFF
+    -DECHOSDK_TLS=openssl `
+    -DECHOSDK_MODULES_PROFILE=desktop `
+    -DECHOSDK_WITH_WEBRTC_AEC=OFF
 
 Write-Host "=== Building ==="
-cmake --build $BuildDir --config $BuildType --target baresdk
+cmake --build $BuildDir --config $BuildType --target echosdk
 if ($LASTEXITCODE -ne 0) { Write-Error "cmake --build failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
 
 Write-Host "=== Installing ==="
@@ -105,15 +105,15 @@ if (-not (Test-Path $ZlibLib)) {
     exit 1
 }
 
-$DllPath = Join-Path $Root "dist\windows\x64\baresdk.dll"
-$DefPath = Join-Path $Root "dist\windows\x64\baresdk.def"
-$HeaderPath = Join-Path $Root "include\baresdk.h"
+$DllPath = Join-Path $Root "dist\windows\x64\echosdk.dll"
+$DefPath = Join-Path $Root "dist\windows\x64\echosdk.def"
+$HeaderPath = Join-Path $Root "include\echosdk.h"
 
 Write-Host ""
 Write-Host "=== Generating DEF file ==="
 $exports = @()
 foreach ($line in Get-Content $HeaderPath) {
-    if ($line -match '^\s*BARESDK_EXPORT\s+.*?[*\s](\w+)\s*\(') {
+    if ($line -match '^\s*ECHOSDK_EXPORT\s+.*?[*\s](\w+)\s*\(') {
         $exports += $Matches[1]
     }
 }
@@ -146,7 +146,7 @@ $LinkArgs = "/DLL /NOLOGO /DEF:`"$DefPath`" /OUT:`"$DllPath`" /WHOLEARCHIVE:`"$S
 if (Test-Path $VcvarsAll) {
     # Use call operator with properly escaped arguments
     $BatContent = "@echo off`ncall `"$VcvarsAll`" x64 >nul 2>&1`n`"$LinkExe`" $LinkArgs`n"
-    $TempBat = Join-Path $env:TEMP "link_baresdk.bat"
+    $TempBat = Join-Path $env:TEMP "link_echosdk.bat"
     $BatContent | Out-File -FilePath $TempBat -Encoding ASCII
     & cmd /c $TempBat
     Remove-Item $TempBat -ErrorAction SilentlyContinue

@@ -1,47 +1,47 @@
-# ffigen configuration for baresdk
+# ffigen configuration for EchoSDK
 # Run: dart run ffigen --config ffigen.yaml
 # Output: lib/src/ffi_bindings.dart
 
-name: BareSDKBindings
-description: 'Auto-generated Dart FFI bindings for baresdk.'
+name: EchoSDKBindings
+description: 'Auto-generated Dart FFI bindings for EchoSDK.'
 output: 'lib/src/ffi_bindings.dart'
 
 headers:
   entry-points:
-    - '../../include/baresdk.h'
+    - '../../include/echosdk.h'
 
 compiler-opts:
   - '-I../../include'
   # ffigen ignores __attribute__((packed)) on enums and would widen
-  # baresdk_aec_mode_t to 4 bytes, shifting every later config field.
-  - '-DBARESDK_NO_PACKED_ENUM=1'
+  # echosdk_aec_mode_t to 4 bytes, shifting every later config field.
+  - '-DECHOSDK_NO_PACKED_ENUM=1'
   # Adjust to the local clang resource dir (ls /usr/lib/clang/).
   - '-isystem/usr/lib/clang/21/include'
 
 # Symbol filtering
 functions:
   include:
-    - 'baresdk_.*'
+    - 'echosdk_.*'
 
 globals:
   include:
-    - 'BARESDK_.*'
+    - 'ECHOSDK_.*'
 
 macros:
   include:
-    - 'BARESDK_.*'
+    - 'ECHOSDK_.*'
 
 enums:
   include:
-    - 'baresdk_.*'
+    - 'echosdk_.*'
 
 structs:
   include:
-    - 'baresdk_.*'
+    - 'echosdk_.*'
 
 typedefs:
   include:
-    - 'baresdk_.*'
+    - 'echosdk_.*'
 
 comments:
   style: any

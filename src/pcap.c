@@ -8,7 +8,7 @@
  * Per-packet: pcap_pkthdr + IPv4 header (proto=UDP) + UDP header + SIP payload
  *
  * All writes are serialized under g_bsdk.pcap_lock (called from re_main thread
- * only in practice, but the lock guards against baresdk_pcap_start/stop races).
+ * only in practice, but the lock guards against echosdk_pcap_start/stop races).
  */
 
 #include <stdint.h>
@@ -43,10 +43,10 @@ static int gettimeofday(struct timeval *tv, void *tz)
 #include <sys/time.h>
 #include <arpa/inet.h>
 #endif
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* Packing must apply ONLY to the on-wire pcap/IP/UDP/TCP structs below.
- * Pushing pack(1) before baresdk_internal.h would change the layout of
+ * Pushing pack(1) before echosdk_internal.h would change the layout of
  * struct bsdk_ctx in this TU only, breaking access to g_bsdk fields. */
 #ifdef _WIN32
 #pragma pack(push, 1)
@@ -299,16 +299,16 @@ void bsdk_pcap_write_sip(const char *data, size_t len,
 
 /* ── Public control API ──────────────────────────────────────────────────── */
 
-int baresdk_pcap_start(const char *path)
+int echosdk_pcap_start(const char *path)
 {
-	if (!path) return BARESDK_ERR_INVAL;
+	if (!path) return ECHOSDK_ERR_INVAL;
 	return bsdk_pcap_open(path);
 }
 
-int baresdk_pcap_stop(void)
+int echosdk_pcap_stop(void)
 {
 	bsdk_pcap_close();
-	return BARESDK_OK;
+	return ECHOSDK_OK;
 }
 
 #ifdef _WIN32

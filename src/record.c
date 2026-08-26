@@ -9,7 +9,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* ── WAV header (44 bytes, PCM S16LE) ───────────────────────────────────── */
 
@@ -53,7 +53,7 @@ static void mix_s16(int16_t *dst, const int16_t *src, size_t count)
 
 /* ── Internal frame writer (called from audio thread via media tap) ──────── */
 
-void bsdk_record_write_frame(struct baresdk_call *lc, baresdk_media_dir_t dir,
+void bsdk_record_write_frame(struct echosdk_call *lc, echosdk_media_dir_t dir,
                               const int16_t *pcm, size_t samples,
                               uint32_t srate, uint8_t ch)
 {
@@ -76,7 +76,7 @@ void bsdk_record_write_frame(struct baresdk_call *lc, baresdk_media_dir_t dir,
 		return;
 	}
 
-	if (dir == BARESDK_MEDIA_DIR_TX) {
+	if (dir == ECHOSDK_MEDIA_DIR_TX) {
 		/* Store TX frame so the next RX write can mix it in */
 		size_t cap = sizeof(lc->rec_tx_buf) / sizeof(lc->rec_tx_buf[0]);
 		lc->rec_tx_count = samples < cap ? samples : cap;
@@ -110,7 +110,7 @@ void bsdk_record_write_frame(struct baresdk_call *lc, baresdk_media_dir_t dir,
 /* ── record_start ────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_call *lc;
+	struct echosdk_call *lc;
 	char                 path[512];
 	int                  result;
 } rec_start_ctx_t;
@@ -118,7 +118,7 @@ typedef struct {
 static void record_start_fn(void *arg)
 {
 	rec_start_ctx_t *ctx = arg;
-	struct baresdk_call *lc = ctx->lc;
+	struct echosdk_call *lc = ctx->lc;
 
 	mtx_lock(&lc->rec_lock);
 
@@ -146,9 +146,9 @@ static void record_start_fn(void *arg)
 	ctx->result = 0;
 }
 
-int baresdk_call_record_start(baresdk_call_handle_t call, const char *path)
+int echosdk_call_record_start(echosdk_call_handle_t call, const char *path)
 {
-	if (!call || !path) return BARESDK_ERR_INVAL;
+	if (!call || !path) return ECHOSDK_ERR_INVAL;
 
 	rec_start_ctx_t ctx = {.lc = call, .result = 0};
 	str_ncpy(ctx.path, path, sizeof(ctx.path));
@@ -160,7 +160,7 @@ int baresdk_call_record_start(baresdk_call_handle_t call, const char *path)
 
 static void record_stop_fn(void *arg)
 {
-	struct baresdk_call *lc = arg;
+	struct echosdk_call *lc = arg;
 
 	mtx_lock(&lc->rec_lock);
 	lc->rec_active     = false;
@@ -181,8 +181,8 @@ static void record_stop_fn(void *arg)
 	}
 }
 
-int baresdk_call_record_stop(baresdk_call_handle_t call)
+int echosdk_call_record_stop(echosdk_call_handle_t call)
 {
-	if (!call) return BARESDK_ERR_INVAL;
+	if (!call) return ECHOSDK_ERR_INVAL;
 	return bsdk_dispatch_sync(record_stop_fn, call);
 }

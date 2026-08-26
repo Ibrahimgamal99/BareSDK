@@ -2,19 +2,19 @@
  * @file audio.c  Audio device control, mute, and runtime quality settings
  */
 
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 #include <re_udp.h>
 #include <math.h>
 
 
-/* ── baresdk_audio_mute ──────────────────────────────────────────────────── */
+/* ── echosdk_audio_mute ──────────────────────────────────────────────────── */
 
-typedef struct { struct baresdk_call *lc; bool mute; int result; } mute_ctx_t;
+typedef struct { struct echosdk_call *lc; bool mute; int result; } mute_ctx_t;
 
 static void mute_fn(void *arg)
 {
 	mute_ctx_t *ctx = arg;
-	struct baresdk_call *lc = ctx->lc;
+	struct echosdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = ENOENT; return; }
 
 	struct audio *au = call_audio(lc->bc);
@@ -24,28 +24,28 @@ static void mute_fn(void *arg)
 	ctx->result = 0;
 }
 
-int baresdk_audio_mute(baresdk_call_handle_t call, bool mute)
+int echosdk_audio_mute(echosdk_call_handle_t call, bool mute)
 {
-	if (!call) return BARESDK_ERR_INVAL;
+	if (!call) return ECHOSDK_ERR_INVAL;
 	mute_ctx_t ctx = {.lc = call, .mute = mute, .result = 0};
 	int err = bsdk_dispatch_sync(mute_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
-/* ── baresdk_audio_is_muted ──────────────────────────────────────────────── */
+/* ── echosdk_audio_is_muted ──────────────────────────────────────────────── */
 
-typedef struct { struct baresdk_call *lc; bool result; } is_muted_ctx_t;
+typedef struct { struct echosdk_call *lc; bool result; } is_muted_ctx_t;
 
 static void is_muted_fn(void *arg)
 {
 	is_muted_ctx_t *ctx = arg;
-	struct baresdk_call *lc = ctx->lc;
+	struct echosdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = false; return; }
 	struct audio *au = call_audio(lc->bc);
 	ctx->result = au ? audio_ismuted(au) : false;
 }
 
-bool baresdk_audio_is_muted(baresdk_call_handle_t call)
+bool echosdk_audio_is_muted(echosdk_call_handle_t call)
 {
 	if (!call) return false;
 	is_muted_ctx_t ctx = {.lc = call, .result = false};
@@ -53,12 +53,12 @@ bool baresdk_audio_is_muted(baresdk_call_handle_t call)
 	return ctx.result;
 }
 
-/* ── baresdk_audio_mute_rx ───────────────────────────────────────────────── */
+/* ── echosdk_audio_mute_rx ───────────────────────────────────────────────── */
 
 static void mute_rx_fn(void *arg)
 {
 	mute_ctx_t *ctx = arg;
-	struct baresdk_call *lc = ctx->lc;
+	struct echosdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = ENOENT; return; }
 
 	struct audio *au = call_audio(lc->bc);
@@ -70,29 +70,29 @@ static void mute_rx_fn(void *arg)
 	ctx->result = stream_enable_rx(strm, !ctx->mute);
 }
 
-int baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute)
+int echosdk_audio_mute_rx(echosdk_call_handle_t call, bool mute)
 {
-	if (!call) return BARESDK_ERR_INVAL;
+	if (!call) return ECHOSDK_ERR_INVAL;
 	mute_ctx_t ctx = {.lc = call, .mute = mute, .result = 0};
 	int err = bsdk_dispatch_sync(mute_rx_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
-/* ── baresdk_audio_set_input_device ──────────────────────────────────────── */
+/* ── echosdk_audio_set_input_device ──────────────────────────────────────── */
 
 typedef struct { const char *name; int result; } device_ctx_t;
 
 typedef struct {
-	struct baresdk_call *lc;
+	struct echosdk_call *lc;
 	const char *mod;
 	const char *dev;
 	bool        is_input;
 } update_call_dev_ctx_t;
 
-static void update_call_device(struct baresdk_call *lc, void *arg)
+static void update_call_device(struct echosdk_call *lc, void *arg)
 {
 	update_call_dev_ctx_t *ctx = arg;
-	if (lc->state != BARESDK_CALL_ESTABLISHED || !lc->bc)
+	if (lc->state != ECHOSDK_CALL_ESTABLISHED || !lc->bc)
 		return;
 	struct audio *au = call_audio(lc->bc);
 	if (!au)
@@ -123,7 +123,7 @@ static void set_input_fn(void *arg)
 	ctx->result = 0;
 }
 
-int baresdk_audio_set_input_device(const char *name)
+int echosdk_audio_set_input_device(const char *name)
 {
 	device_ctx_t ctx = {.name = name, .result = 0};
 	int err = bsdk_dispatch_sync(set_input_fn, &ctx);
@@ -150,7 +150,7 @@ static void set_output_fn(void *arg)
 	ctx->result = 0;
 }
 
-int baresdk_audio_set_output_device(const char *name)
+int echosdk_audio_set_output_device(const char *name)
 {
 	device_ctx_t ctx = {.name = name, .result = 0};
 	int err = bsdk_dispatch_sync(set_output_fn, &ctx);
@@ -174,7 +174,7 @@ static void use_external_fn(void *arg)
 			/* Nothing to go back to — this build has no platform
 			 * device compiled in. Leaving "external" in place beats
 			 * pointing the stack at a module that does not exist. */
-			warning("baresdk: no platform audio device to restore; "
+			warning("EchoSDK: no platform audio device to restore; "
 			        "staying on the app-owned device\n");
 			return;
 		}
@@ -210,16 +210,16 @@ static void use_external_fn(void *arg)
 	 * capture through VOICE_COMMUNICATION / VoiceProcessingIO itself, and
 	 * silently ducking its TX by 16.5 dB would be the SDK fighting the
 	 * platform — the exact failure this feature exists to avoid.  Apps that
-	 * want the fallback ask for it with baresdk_set_aec_mode(). */
+	 * want the fallback ask for it with echosdk_set_aec_mode(). */
 	if (!*enable && bsdk_platform_has_aec()) {
 		/* PROTECTED BY RE_MAIN — already on the re thread here. */
 		aufilt_enable(baresip_aufiltl(), "bsdk_aec", false);
 	}
 
-	info("baresdk: audio device -> '%s'\n", mod);
+	info("EchoSDK: audio device -> '%s'\n", mod);
 }
 
-int baresdk_audio_use_external(bool enable)
+int echosdk_audio_use_external(bool enable)
 {
 	bool flag = enable;
 	return bsdk_dispatch_sync(use_external_fn, &flag);
@@ -241,7 +241,7 @@ struct audio_mod_hdr {
 };
 
 typedef struct {
-	baresdk_audio_device_t *devices;
+	echosdk_audio_device_t *devices;
 	int                     max_count;
 	int                     count;
 	bool                    is_input;
@@ -254,7 +254,7 @@ static bool fill_mediadev(struct le *le, void *arg)
 	if (ctx->count >= ctx->max_count)
 		return true;  /* stop */
 	struct mediadev *md = le->data;
-	baresdk_audio_device_t *d = &ctx->devices[ctx->count++];
+	echosdk_audio_device_t *d = &ctx->devices[ctx->count++];
 	str_ncpy(d->name, md->name, sizeof(d->name));
 	d->description[0] = '\0';
 	d->is_default = ctx->is_input ? md->src.is_default : md->play.is_default;
@@ -270,7 +270,7 @@ static bool fill_module_devices(struct le *le, void *arg)
 		/* Module registered but no enumerated devices yet — expose the
 		 * module name itself as a usable device identifier. */
 		if (ctx->count < ctx->max_count) {
-			baresdk_audio_device_t *d = &ctx->devices[ctx->count++];
+			echosdk_audio_device_t *d = &ctx->devices[ctx->count++];
 			str_ncpy(d->name, mod->name, sizeof(d->name));
 			d->description[0] = '\0';
 			d->is_default = true;  /* single entry = default */
@@ -282,7 +282,7 @@ static bool fill_module_devices(struct le *le, void *arg)
 }
 
 typedef struct {
-	baresdk_audio_device_t *devices;
+	echosdk_audio_device_t *devices;
 	int                     max_count;
 	int                     result;
 	bool                    is_input;
@@ -314,9 +314,9 @@ static void enum_output_fn(void *arg)
 	ctx->result = lctx.count;
 }
 
-int baresdk_audio_list_input_devices(baresdk_audio_device_t *devices, int max_count)
+int echosdk_audio_list_input_devices(echosdk_audio_device_t *devices, int max_count)
 {
-	if (!devices || max_count <= 0) return BARESDK_ERR_INVAL;
+	if (!devices || max_count <= 0) return ECHOSDK_ERR_INVAL;
 	enum_dev_ctx_t ctx = {
 		.devices   = devices,
 		.max_count = max_count,
@@ -327,9 +327,9 @@ int baresdk_audio_list_input_devices(baresdk_audio_device_t *devices, int max_co
 	return err ? err : ctx.result;
 }
 
-int baresdk_audio_list_output_devices(baresdk_audio_device_t *devices, int max_count)
+int echosdk_audio_list_output_devices(echosdk_audio_device_t *devices, int max_count)
 {
-	if (!devices || max_count <= 0) return BARESDK_ERR_INVAL;
+	if (!devices || max_count <= 0) return ECHOSDK_ERR_INVAL;
 	enum_dev_ctx_t ctx = {
 		.devices   = devices,
 		.max_count = max_count,
@@ -355,40 +355,40 @@ static void set_filter_fn(void *arg)
 
 static void set_aec_mode_fn(void *arg)
 {
-	baresdk_aec_mode_t mode = *(baresdk_aec_mode_t *)arg;
+	echosdk_aec_mode_t mode = *(echosdk_aec_mode_t *)arg;
 	struct list *fl = baresip_aufiltl();
 
 	/* PROTECTED BY RE_MAIN */
 	aufilt_enable(fl, "bsdk_aec", bsdk_aec_suppressor_wanted(mode));
 
-#if defined(BARESDK_PROFILE_DESKTOP) && defined(BARESDK_HAS_WEBRTC_AEC)
-	aufilt_enable(fl, "webrtc_aec", mode == BARESDK_AEC_WEBRTC);
+#if defined(ECHOSDK_PROFILE_DESKTOP) && defined(ECHOSDK_HAS_WEBRTC_AEC)
+	aufilt_enable(fl, "webrtc_aec", mode == ECHOSDK_AEC_WEBRTC);
 #endif
 }
 
-void baresdk_set_aec(bool enable)
+void echosdk_set_aec(bool enable)
 {
 	/* Re-enables the aec_mode configured at init; disables all AEC backends
 	 * when enable=false.  Back-compat shim for the former bool aec API. */
-	baresdk_aec_mode_t target = enable ? g_bsdk.cfg.aec_mode : BARESDK_AEC_OFF;
-	baresdk_set_aec_mode(target);
+	echosdk_aec_mode_t target = enable ? g_bsdk.cfg.aec_mode : ECHOSDK_AEC_OFF;
+	echosdk_set_aec_mode(target);
 }
 
-int baresdk_set_aec_mode(baresdk_aec_mode_t mode)
+int echosdk_set_aec_mode(echosdk_aec_mode_t mode)
 {
 	/* Only AEC_OFF ↔ init_mode transitions are valid at runtime.
 	 * Switching between SUPPRESSOR and WEBRTC requires re-init. */
-	if (mode != BARESDK_AEC_OFF && mode != g_bsdk.cfg.aec_mode) {
-		warning("baresdk: set_aec_mode: cannot switch from %d to %d at runtime "
+	if (mode != ECHOSDK_AEC_OFF && mode != g_bsdk.cfg.aec_mode) {
+		warning("EchoSDK: set_aec_mode: cannot switch from %d to %d at runtime "
 		        "(only OFF ↔ init mode transitions allowed)\n",
 		        (int)g_bsdk.cfg.aec_mode, (int)mode);
 		return EINVAL;
 	}
 
-#if !defined(BARESDK_PROFILE_DESKTOP) || !defined(BARESDK_HAS_WEBRTC_AEC)
-	if (mode == BARESDK_AEC_WEBRTC) {
-		warning("baresdk: set_aec_mode: WEBRTC AEC not available "
-		        "(requires desktop build with BARESDK_WITH_WEBRTC_AEC=ON)\n");
+#if !defined(ECHOSDK_PROFILE_DESKTOP) || !defined(ECHOSDK_HAS_WEBRTC_AEC)
+	if (mode == ECHOSDK_AEC_WEBRTC) {
+		warning("EchoSDK: set_aec_mode: WEBRTC AEC not available "
+		        "(requires desktop build with ECHOSDK_WITH_WEBRTC_AEC=ON)\n");
 		return ENOTSUP;
 	}
 #endif
@@ -399,7 +399,7 @@ int baresdk_set_aec_mode(baresdk_aec_mode_t mode)
 	return bsdk_dispatch_sync(set_aec_mode_fn, &mode);
 }
 
-void baresdk_set_aec_suppression_level(float level)
+void echosdk_set_aec_suppression_level(float level)
 {
 	if (level < 0.0f) level = 0.0f;
 	if (level > 1.0f) level = 1.0f;
@@ -410,7 +410,7 @@ void baresdk_set_aec_suppression_level(float level)
 	g_bsdk.cfg.aec_suppression_level = level;
 }
 
-void baresdk_set_ns(bool enable)
+void echosdk_set_ns(bool enable)
 {
 	struct { const char *name; bool enable; } ctx = { "bsdk_ns", enable };
 	/* PROTECTED BY RE_MAIN */
@@ -418,7 +418,7 @@ void baresdk_set_ns(bool enable)
 	g_bsdk.cfg.ns = enable;
 }
 
-void baresdk_set_agc(bool enable)
+void echosdk_set_agc(bool enable)
 {
 	struct { const char *name; bool enable; } ctx = { "bsdk_agc", enable };
 	/* PROTECTED BY RE_MAIN */
@@ -426,7 +426,7 @@ void baresdk_set_agc(bool enable)
 	g_bsdk.cfg.agc = enable;
 }
 
-void baresdk_set_mic_gain_db(float db)
+void echosdk_set_mic_gain_db(float db)
 {
 	if (db < -20.0f) db = -20.0f;
 	if (db >  20.0f) db =  20.0f;
@@ -434,7 +434,7 @@ void baresdk_set_mic_gain_db(float db)
 	g_bsdk.cfg.mic_gain_db = db;
 }
 
-void baresdk_set_speaker_gain_db(float db)
+void echosdk_set_speaker_gain_db(float db)
 {
 	if (db < -20.0f) db = -20.0f;
 	if (db >  20.0f) db =  20.0f;
@@ -445,7 +445,7 @@ void baresdk_set_speaker_gain_db(float db)
 /* ── Per-call DSCP ───────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_call *lc;
+	struct echosdk_call *lc;
 	uint8_t              dscp;
 	int                  result;
 } dscp_ctx_t;
@@ -471,9 +471,9 @@ static void set_dscp_rtp_fn(void *arg)
 	ctx->result = udp_settos(us, ctx->dscp);
 }
 
-int baresdk_call_set_dscp_rtp(baresdk_call_handle_t call, uint8_t dscp)
+int echosdk_call_set_dscp_rtp(echosdk_call_handle_t call, uint8_t dscp)
 {
-	if (!call) return BARESDK_ERR_INVAL;
+	if (!call) return ECHOSDK_ERR_INVAL;
 	dscp_ctx_t ctx = { .lc = call, .dscp = dscp, .result = 0 };
 	int err = bsdk_dispatch_sync(set_dscp_rtp_fn, &ctx);
 	return err ? err : ctx.result;
@@ -490,7 +490,7 @@ static void set_jbuf_fn(void *arg)
 	c->avt.audio.jbuf_del.max = bounds[1] ? bounds[1] : 150u;
 }
 
-void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms)
+void echosdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms)
 {
 	uint32_t bounds[2] = { min_ms, max_ms };
 	bsdk_dispatch_sync(set_jbuf_fn, bounds);
@@ -498,16 +498,16 @@ void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms)
 	g_bsdk.cfg.jitter_buffer_max_ms = max_ms;
 }
 
-/* ── baresdk_set_jitter_buffer_type ──────────────────────────────────────── */
+/* ── echosdk_set_jitter_buffer_type ──────────────────────────────────────── */
 
 static void set_jbuf_type_fn(void *arg)
 {
-	baresdk_jbuf_type_t *type = arg;
+	echosdk_jbuf_type_t *type = arg;
 	struct config *c = conf_config();
-	c->avt.audio.jbtype = (*type == BARESDK_JBUF_FIXED) ? JBUF_FIXED : JBUF_ADAPTIVE;
+	c->avt.audio.jbtype = (*type == ECHOSDK_JBUF_FIXED) ? JBUF_FIXED : JBUF_ADAPTIVE;
 }
 
-void baresdk_set_jitter_buffer_type(baresdk_jbuf_type_t type)
+void echosdk_set_jitter_buffer_type(echosdk_jbuf_type_t type)
 {
 	bsdk_dispatch_sync(set_jbuf_type_fn, &type);
 	g_bsdk.cfg.jbuf_type = type;

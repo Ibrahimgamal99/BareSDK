@@ -1,32 +1,32 @@
 # Quick start — Flutter / Dart
 
-The `baresdk` Flutter package (`bindings/flutter/`) is a hybrid plugin:
+The `EchoSDK` Flutter package (`bindings/flutter/`) is a hybrid plugin:
 
-- **Dart FFI** drives the native SIP/media core (`libbaresdk`).
-- On **Android** the plugin ships prebuilt `libbaresdk.so` for
+- **Dart FFI** drives the native SIP/media core (`libechosdk`).
+- On **Android** the plugin ships prebuilt `libechosdk.so` for
   `arm64-v8a`, `armeabi-v7a` and `x86_64` inside its `jniLibs`, plus a small
-  Kotlin shim (`BaresdkPlugin`) that provides the app cache dir, voice-call
+  Kotlin shim (`EchoSDKPlugin`) that provides the app cache dir, voice-call
   audio focus, speakerphone routing, and network-change callbacks.
-- On **iOS** the plugin vendors a prebuilt dynamic `baresdk.xcframework`
+- On **iOS** the plugin vendors a prebuilt dynamic `EchoSDK.xcframework`
   (device arm64 + simulator arm64/x86_64) plus a Swift shim
-  (`BaresdkPlugin`) for audio-session activation, speakerphone routing, and
+  (`EchoSDKPlugin`) for audio-session activation, speakerphone routing, and
   `NWPathMonitor` network-change callbacks. Capture uses Apple's
   VoiceProcessingIO audio unit (hardware echo cancellation).
 - **Desktop** (Linux/Windows/macOS) works as a plain FFI binding — the app
-  bundles the native library itself (or passes `BareSDK(libPath: ...)`).
+  bundles the native library itself (or passes `EchoSDK(libPath: ...)`).
 
 ## 1 — Add the package
 
 ```yaml
 dependencies:
-  baresdk:
+  EchoSDK:
     git:
-      url: https://github.com/Ibrahimgamal99/BareSDK.git
+      url: https://github.com/NawyRE/echo-sdk.git
       path: bindings/flutter
       ref: <full-40-char-sha>   # pin for anything you ship
   # or, from a checkout:
-  # baresdk:
-  #   path: path/to/baresdk/bindings/flutter
+  # EchoSDK:
+  #   path: path/to/EchoSDK/bindings/flutter
 ```
 
 `path:` is required either way — the plugin lives in a subdirectory, not at
@@ -48,8 +48,8 @@ actually shipped:
 ```bash
 # The two hashes must match; if they differ, the APK carries a stale library.
 unzip -p build/app/outputs/flutter-apk/app-release.apk \
-  lib/arm64-v8a/libbaresdk.so | md5sum
-md5sum bindings/flutter/android/src/main/jniLibs/arm64-v8a/libbaresdk.so
+  lib/arm64-v8a/libechosdk.so | md5sum
+md5sum bindings/flutter/android/src/main/jniLibs/arm64-v8a/libechosdk.so
 ```
 
 Android needs nothing else — the plugin already carries the native libraries
@@ -75,8 +75,8 @@ server-side push).
 With CallKit, hand it the audio session:
 
 ```dart
-final sdk = await BareSDK.start(
-  config: const BareSDKConfig(platformAudioActivate: false),
+final sdk = await EchoSDK.start(
+  config: const EchoSDKConfig(platformAudioActivate: false),
   manageAudioSession: false,   // CXProvider owns activation
 );
 ```
@@ -89,7 +89,7 @@ under CallKit. The category and mode are still configured, so audio works as
 soon as CallKit activates the session.
 
 The vendored xcframework must exist at
-`bindings/flutter/ios/Frameworks/baresdk.xcframework` — it is built by CI
+`bindings/flutter/ios/Frameworks/EchoSDK.xcframework` — it is built by CI
 (`.github/workflows/build-mobile.yml`) or on any Mac with
 `scripts/build-ios.sh`; `pod install` fails with a clear error when it is
 missing.
@@ -97,10 +97,10 @@ missing.
 ## 2 — Start the SDK
 
 ```dart
-import 'package:baresdk/baresdk.dart';
+import 'package:echo_sdk/echo_sdk.dart';
 
-final sdk = await BareSDK.start(
-  config: const BareSDKConfig(
+final sdk = await EchoSDK.start(
+  config: const EchoSDKConfig(
     statsIntervalMs: 5000,        // MediaStatsEvent every 5 s
     mosAlertThreshold: 3.5,       // QualityAlertEvent when MOS drops
     lossAlertThreshold: 5.0,
@@ -109,13 +109,13 @@ final sdk = await BareSDK.start(
 );
 ```
 
-`BareSDK.start()` is required on Android: it injects the app cache dir as
+`EchoSDK.start()` is required on Android: it injects the app cache dir as
 the SDK's `tmp_dir`, switches network monitoring from polling to
 ConnectivityManager callbacks, and manages audio focus around calls. On
 desktop it behaves like the plain constructor.
 
 The native stack is a **process-wide singleton** — constructing a second
-`BareSDK` from an isolate that already has one throws until you call
+`EchoSDK` from an isolate that already has one throws until you call
 `shutdown()`.
 
 ### Background isolates (push wakeups)
@@ -123,10 +123,10 @@ The native stack is a **process-wide singleton** — constructing a second
 An Android headless engine destroys its Dart isolate when its task ends, while
 the process — and the SIP stack inside it, still registered — stays alive. The
 next push runs your start-up code in a *new* isolate against that live stack, so
-`BareSDK.start()` reattaches to it instead of failing:
+`EchoSDK.start()` reattaches to it instead of failing:
 
 ```dart
-final sdk = await BareSDK.start(config: cfg);
+final sdk = await EchoSDK.start(config: cfg);
 
 if (sdk.reattached) {
   // The stack was already up: `cfg` was NOT applied (config only takes effect
@@ -216,7 +216,7 @@ sdk.events.listen((ev) {
 ## 5 — Reconnection & network handover
 
 Registration retries automatically with exponential backoff
-(`BareSDKConfig.regRetry*` or per-account `setRetryPolicy`). On a network
+(`EchoSDKConfig.regRetry*` or per-account `setRetryPolicy`). On a network
 change (Wi-Fi ↔ cellular) the SDK re-binds transports, re-REGISTERs, and
 re-INVITEs active calls; progress arrives as `NetworkEvent` stages.
 
@@ -261,7 +261,7 @@ sdk.setMicGainDb(6);  sdk.setSpeakerGainDb(-3);
 ```
 
 Android capture/playback uses baresip's OpenSLES module (works on every
-supported API level). Opus can be tuned via `BareSDKConfig.opus`
+supported API level). Opus can be tuned via `EchoSDKConfig.opus`
 (`OpusConfig(bitrate: 32000, fec: true, dtx: true, ...)`).
 
 ### Taking over the microphone and speaker
@@ -271,8 +271,8 @@ around when the platform and the SDK's driver disagree — Bluetooth routing tha
 will not follow, CallKit owning the session, a call that comes up one-way:
 
 ```dart
-final sdk = await BareSDK.start(
-  config: const BareSDKConfig(appOwnedAudio: true),
+final sdk = await EchoSDK.start(
+  config: const EchoSDKConfig(appOwnedAudio: true),
 );
 
 // or at runtime, including mid-call:
@@ -287,20 +287,20 @@ sdk.appOwnedAudioErrors.listen((e) {
 
 The plugin ships a working capture/playback engine for both platforms, so most
 apps need nothing further —
-[`AppOwnedAudioEngine.kt`](../../bindings/flutter/android/src/main/kotlin/dev/baresdk/flutter/AppOwnedAudioEngine.kt)
+[`AppOwnedAudioEngine.kt`](../../bindings/flutter/android/src/main/kotlin/dev/EchoSDK/flutter/AppOwnedAudioEngine.kt)
 (`AudioRecord`/`AudioTrack` on `VOICE_COMMUNICATION`) and
-[`BaresdkExternalAudio.m`](../../bindings/flutter/ios/Classes/BaresdkExternalAudio.m)
+[`EchoSDKExternalAudio.m`](../../bindings/flutter/ios/Classes/EchoSDKExternalAudio.m)
 (a `VoiceProcessingIO` AudioUnit).
 
 **The realtime loop is native on purpose.** `push`/`pull` are reachable from
-Dart FFI but deliberately absent from the `BareSDK` API: they run on a
+Dart FFI but deliberately absent from the `EchoSDK` API: they run on a
 10-20 ms deadline, and a GC pause on the capture path is a dropped frame. Dart
 flips the mode and reads the format; Kotlin and Objective-C move the samples.
 
 To write your own loop instead of using the shipped one, call the C directly —
-`baresdk_audio_external_push/pull/format` — from your own audio thread. On
-Android the JNI entry points are already exported from `libbaresdk.so` as
-`dev.baresdk.ExternalAudio`, so no NDK build is needed:
+`echosdk_audio_external_push/pull/format` — from your own audio thread. On
+Android the JNI entry points are already exported from `libechosdk.so` as
+`dev.echosdk.ExternalAudio`, so no NDK build is needed:
 
 ```kotlin
 val fmt = IntArray(3)
@@ -337,7 +337,7 @@ full contract.
 
 The SDK never writes to stdout/stderr. Everything arrives as events:
 `LogEvent` (log lines), `SipTraceEvent` (raw SIP, enable
-`BareSDKConfig.traceSip`), `SdpNegotiationEvent` (enable `traceSdpDiff`),
+`EchoSDKConfig.traceSip`), `SdpNegotiationEvent` (enable `traceSdpDiff`),
 plus `sdk.pcapStart('/path/trace.pcap')` for Wireshark captures.
 
 ## Example app
@@ -359,7 +359,7 @@ stats, quality alerts, handover timeline, in-app log console).
 # Android — builds all ABIs, verifies symbols/alignment, refreshes the
 # plugin's stripped jniLibs copies:
 ANDROID_NDK=$HOME/Android/Sdk/ndk/<ver> \
-BARESDK_BUILD_ROOT=$HOME/.cache/baresdk-build \
+ECHOSDK_BUILD_ROOT=$HOME/.cache/echosdk-build \
   ./scripts/build-android.sh
 
 # iOS (macOS + Xcode only) — builds the dynamic xcframework (device +
@@ -369,16 +369,16 @@ BARESDK_BUILD_ROOT=$HOME/.cache/baresdk-build \
 # Or let CI do both: .github/workflows/build-mobile.yml builds Android on
 # ubuntu and the iOS xcframework on macos, uploading both as artifacts.
 
-# Regenerate FFI bindings after changing include/baresdk.h:
+# Regenerate FFI bindings after changing include/echosdk.h:
 cd bindings/flutter && dart run ffigen --config ffigen.yaml
 ```
 
-`BARESDK_BUILD_ROOT` should point at a native filesystem when the repo
+`ECHOSDK_BUILD_ROOT` should point at a native filesystem when the repo
 lives on NTFS — incremental builds there silently reuse stale objects.
 
 `build-android.sh` refreshes `bindings/flutter/android/src/main/jniLibs/`
 itself, as its last step per ABI (and `build-ios.sh` likewise stages
-`bindings/flutter/ios/Frameworks/baresdk.xcframework`) — there is no second
+`bindings/flutter/ios/Frameworks/EchoSDK.xcframework`) — there is no second
 command to run. Those `.so` files are tracked in git, and **a rebuild
 reaches consumers only once they are committed and pushed**: apps pin a git
 SHA, so an uncommitted rebuild leaves every consumer on the previous library
@@ -389,6 +389,6 @@ refreshed `jniLibs` in the same commit as the C change that motivated it, and
 hand consumers the new SHA.
 
 The desktop smoke test for the binding is
-`bindings/flutter/test/baresdk_smoke_test.dart` (needs
+`bindings/flutter/test/echo_sdk_smoke_test.dart` (needs
 `scripts/build-linux.sh` first); the C-side owned-events gate is
 `test/owned_events_test.c`.

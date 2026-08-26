@@ -3,38 +3,38 @@
 ## Create an account
 
 ```c
-baresdk_account_config_t cfg = {
+echosdk_account_config_t cfg = {
     .uri       = "alice@pbx.example.com",
     .password  = "secret",
-    .transport = BARESDK_TRANSPORT_TLS,
+    .transport = ECHOSDK_TRANSPORT_TLS,
 };
-baresdk_account_handle_t acct;
-int rc = baresdk_account_create(&cfg, &acct);
+echosdk_account_handle_t acct;
+int rc = echosdk_account_create(&cfg, &acct);
 ```
 
-`baresdk_account_create` does **not** register. Call `baresdk_account_register` to start.
+`echosdk_account_create` does **not** register. Call `echosdk_account_register` to start.
 
 ## Register
 
 ```c
-baresdk_account_register(acct);
+echosdk_account_register(acct);
 ```
 
-Fires `BARESDK_EV_REG_STATE` events: `REGISTERING → REGISTERED` or `FAILED`.
+Fires `ECHOSDK_EV_REG_STATE` events: `REGISTERING → REGISTERED` or `FAILED`.
 
-On failure the SDK automatically retries with exponential backoff (configurable via `reg_retry_*` fields in `baresdk_config_t`).
+On failure the SDK automatically retries with exponential backoff (configurable via `reg_retry_*` fields in `echosdk_config_t`).
 
 ## Unregister
 
 ```c
-baresdk_account_unregister(acct);
-// fires BARESDK_EV_REG_STATE with UNREGISTERING → UNREGISTERED
+echosdk_account_unregister(acct);
+// fires ECHOSDK_EV_REG_STATE with UNREGISTERING → UNREGISTERED
 ```
 
 ## Destroy
 
 ```c
-baresdk_account_destroy(acct);
+echosdk_account_destroy(acct);
 // blocks until unregistered and all calls on this account are terminated
 ```
 
@@ -44,14 +44,14 @@ The SDK supports two modes for delivering a push token to the SIP server so it c
 
 ### Mode 1 — RFC 8599 Contact URI params (self-hosted servers)
 
-Set the token at account creation time via `baresdk_account_config_t`:
+Set the token at account creation time via `echosdk_account_config_t`:
 
 ```c
-baresdk_account_config_t cfg = {
+echosdk_account_config_t cfg = {
     .uri            = "alice@pbx.example.com",
     .password       = "secret",
-    .transport      = BARESDK_TRANSPORT_TLS,
-    .push_provider  = BARESDK_PUSH_PROVIDER_APNS,  // or APNS_SANDBOX / FCM
+    .transport      = ECHOSDK_TRANSPORT_TLS,
+    .push_provider  = ECHOSDK_PUSH_PROVIDER_APNS,  // or APNS_SANDBOX / FCM
     .push_token     = "<device-token-hex>",
     .push_param     = "com.example.MyApp",          // bundle ID (APNs) or package name (FCM)
 };
@@ -70,25 +70,25 @@ The server (Kamailio `push_notification` module, drachtio, etc.) reads these par
 PushKit tokens rotate. Update without re-creating the account:
 
 ```c
-baresdk_account_set_push_token(acct, new_token);
+echosdk_account_set_push_token(acct, new_token);
 ```
 
 The SDK re-registers immediately (unless a transaction is in flight or a retry backoff is pending — in those cases the new token is applied on the next natural re-registration). Pass `NULL` to clear push params.
 
-> **APNs environment note:** use `BARESDK_PUSH_PROVIDER_APNS_SANDBOX` for debug/TestFlight builds (PushKit sandbox APNs endpoint) and `BARESDK_PUSH_PROVIDER_APNS` for App Store / production builds. Mismatching the environment causes silent delivery failures at the APNs level — pushes appear to succeed but never arrive.
+> **APNs environment note:** use `ECHOSDK_PUSH_PROVIDER_APNS_SANDBOX` for debug/TestFlight builds (PushKit sandbox APNs endpoint) and `ECHOSDK_PUSH_PROVIDER_APNS` for App Store / production builds. Mismatching the environment causes silent delivery failures at the APNs level — pushes appear to succeed but never arrive.
 
 ### Mode 2 — REGISTER-only custom headers (hosted / vendor servers)
 
 For servers you do not control (Twilio, Plivo, hosted PBXes) where push dispatch is server-managed via non-standard headers:
 
 ```c
-baresdk_account_add_register_header(acct, "X-Push-Token", "<device-token>");
-baresdk_account_add_register_header(acct, "X-Apple-Push-Bundle", "com.example.MyApp");
+echosdk_account_add_register_header(acct, "X-Push-Token", "<device-token>");
+echosdk_account_add_register_header(acct, "X-Apple-Push-Bundle", "com.example.MyApp");
 ```
 
 These headers appear **only on REGISTER** requests — not on INVITE, BYE, REFER, or any other dialog request. This prevents leaking the push token to call peers.
 
-For comparison, `baresdk_account_add_header()` sends the header on **every** outgoing request from this account. Use that for tenant IDs, app version strings, or other metadata that belongs on all requests.
+For comparison, `echosdk_account_add_header()` sends the header on **every** outgoing request from this account. Use that for tenant IDs, app version strings, or other metadata that belongs on all requests.
 
 ---
 
@@ -97,8 +97,8 @@ For comparison, `baresdk_account_add_header()` sends the header on **every** out
 Add headers to **all outgoing requests** from this account:
 
 ```c
-baresdk_account_add_header(acct, "X-Tenant-Id", "42");
-baresdk_account_add_header(acct, "X-App-Version", "2.1.0");
+echosdk_account_add_header(acct, "X-Tenant-Id", "42");
+echosdk_account_add_header(acct, "X-App-Version", "2.1.0");
 ```
 
 ## Messaging — SIP MESSAGE
@@ -108,7 +108,7 @@ not have to be in a call for either direction.
 
 **C**
 ```c
-baresdk_message_send(acct, "bob@pbx.example.com", "on my way", "text/plain");
+echosdk_message_send(acct, "bob@pbx.example.com", "on my way", "text/plain");
 ```
 
 **C++**
@@ -126,18 +126,18 @@ acc.send_message("bob@pbx.example.com", "on my way")
 account.sendMessage('bob@pbx.example.com', 'on my way');
 ```
 
-Incoming messages arrive as `BARESDK_EV_MESSAGE` (`message` in Python,
+Incoming messages arrive as `ECHOSDK_EV_MESSAGE` (`message` in Python,
 `MessageEvent` in Dart) with `from_uri`, `body` and `content_type` — see
-[Events reference](events.md#baresdk_ev_message).
+[Events reference](events.md#echosdk_ev_message).
 
 ## Presence — PUBLISH
 
 Tell the server your status:
 
 ```c
-baresdk_account_publish_presence(acct, BARESDK_PRESENCE_OPEN);   // available
-baresdk_account_publish_presence(acct, BARESDK_PRESENCE_BUSY);   // on a call
-baresdk_account_publish_presence(acct, BARESDK_PRESENCE_CLOSED); // DND / offline
+echosdk_account_publish_presence(acct, ECHOSDK_PRESENCE_OPEN);   // available
+echosdk_account_publish_presence(acct, ECHOSDK_PRESENCE_BUSY);   // on a call
+echosdk_account_publish_presence(acct, ECHOSDK_PRESENCE_CLOSED); // DND / offline
 ```
 
 ## Presence — SUBSCRIBE
@@ -145,10 +145,10 @@ baresdk_account_publish_presence(acct, BARESDK_PRESENCE_CLOSED); // DND / offlin
 Watch another extension's presence (BLF):
 
 ```c
-baresdk_account_subscribe_presence(acct, "bob@pbx.example.com");
-// fires BARESDK_EV_PRESENCE_STATE when bob's state changes
+echosdk_account_subscribe_presence(acct, "bob@pbx.example.com");
+// fires ECHOSDK_EV_PRESENCE_STATE when bob's state changes
 
-baresdk_account_unsubscribe_presence(acct, "bob@pbx.example.com");
+echosdk_account_unsubscribe_presence(acct, "bob@pbx.example.com");
 ```
 
 ## Registration retry control
@@ -159,7 +159,7 @@ The SDK retries failed registrations automatically with exponential backoff. The
 
 ```c
 // Override per-account (takes effect on the next retry)
-baresdk_account_set_retry_policy(
+echosdk_account_set_retry_policy(
     acct,
     2000,    // initial_ms   — first retry delay
     60000,   // max_ms       — delay cap
@@ -168,34 +168,34 @@ baresdk_account_set_retry_policy(
 );
 ```
 
-Per-account policy overrides the global `reg_retry_*` fields in `baresdk_config_t` for that account only.
+Per-account policy overrides the global `reg_retry_*` fields in `echosdk_config_t` for that account only.
 
 ### Cancel a pending retry
 
 ```c
-baresdk_account_cancel_retry(acct);
+echosdk_account_cancel_retry(acct);
 // Stops the backoff timer and resets the attempt counter.
 // An account that was RECONNECTING reports FAILED — the SDK is no longer
-// recovering it — and stays there until baresdk_account_register().
+// recovering it — and stays there until echosdk_account_register().
 ```
 
 ### Force immediate retry
 
 ```c
-baresdk_account_retry_now(acct);
+echosdk_account_retry_now(acct);
 // Cancels the current backoff delay and re-registers immediately.
 // Resets the attempt counter. No-op if not in a retry loop.
 ```
 
 ### Retry events
 
-A registration the SDK will retry is reported as `BARESDK_REG_RECONNECTING`,
-not `BARESDK_REG_FAILED` — the failure itself, and then each scheduled retry
+A registration the SDK will retry is reported as `ECHOSDK_REG_RECONNECTING`,
+not `ECHOSDK_REG_FAILED` — the failure itself, and then each scheduled retry
 with its countdown:
 
 ```c
-case BARESDK_EV_REG_STATE:
-    if (ev->u.reg.state == BARESDK_REG_RECONNECTING) {
+case ECHOSDK_EV_REG_STATE:
+    if (ev->u.reg.state == ECHOSDK_REG_RECONNECTING) {
         if (ev->u.reg.retry_attempt)
             printf("reconnecting: attempt %u in %u ms\n",
                    ev->u.reg.retry_attempt,
@@ -204,7 +204,7 @@ case BARESDK_EV_REG_STATE:
             printf("reconnecting: %s\n",
                    ev->u.reg.error_str ? ev->u.reg.error_str : "");
     }
-    else if (ev->u.reg.state == BARESDK_REG_FAILED) {
+    else if (ev->u.reg.state == ECHOSDK_REG_FAILED) {
         /* The SDK has given up: auth, an exhausted retry budget, or a retry
          * this app cancelled.  This is the one worth showing the user. */
     }
@@ -213,7 +213,7 @@ case BARESDK_EV_REG_STATE:
 `RECONNECTING` also covers the losses that are not a REGISTER failure at all —
 a dead keepalive path, and a network handover — so a status indicator bound to
 the registration state tracks them without also subscribing to
-`BARESDK_EV_NETWORK`.  See [`BARESDK_EV_REG_STATE`](events.md#baresdk_ev_reg_state).
+`ECHOSDK_EV_NETWORK`.  See [`ECHOSDK_EV_REG_STATE`](events.md#echosdk_ev_reg_state).
 
 ---
 
@@ -224,7 +224,7 @@ By default each account uses the global `cfg.audio_codecs` list set at SDK init.
 ### C
 
 ```c
-baresdk_account_config_t cfg = {
+echosdk_account_config_t cfg = {
     .uri      = "alice@pbx.example.com",
     .password = "secret",
 };
@@ -254,7 +254,7 @@ When none are set, the default offer is `opus, PCMU, PCMA`.
 ### Python
 
 ```python
-import baresdk as sdk
+import echo_sdk as sdk
 
 account = sdk.create_account(
     "alice@pbx.example.com", "secret",
@@ -277,15 +277,15 @@ final account = sdk.createAccount(
 ```cpp
 auto acct = sdk.create_account(
     "alice@pbx.example.com", "secret",
-    BARESDK_TRANSPORT_UDP,
-    {BARESDK_CODEC_PCMU, BARESDK_CODEC_PCMA, BARESDK_CODEC_OPUS}
+    ECHOSDK_TRANSPORT_UDP,
+    {ECHOSDK_CODEC_PCMU, ECHOSDK_CODEC_PCMA, ECHOSDK_CODEC_OPUS}
 );
 ```
 
 Or with the full account config struct for string names:
 
 ```cpp
-baresdk_account_config_t acfg{};
+echosdk_account_config_t acfg{};
 acfg.uri      = "alice@pbx.example.com";
 acfg.password = "secret";
 std::strcpy(acfg.audio_codec_names[0], "ulaw");
@@ -299,9 +299,9 @@ auto acct = sdk.create_account(acfg);
 ## 100rel (RFC 3262 PRACK)
 
 ```c
-baresdk_account_set_100rel(acct, BARESDK_100REL_ENABLED);   // support if offered
-baresdk_account_set_100rel(acct, BARESDK_100REL_REQUIRED);  // require
-baresdk_account_set_100rel(acct, BARESDK_100REL_DISABLED);  // never (default)
+echosdk_account_set_100rel(acct, ECHOSDK_100REL_ENABLED);   // support if offered
+echosdk_account_set_100rel(acct, ECHOSDK_100REL_REQUIRED);  // require
+echosdk_account_set_100rel(acct, ECHOSDK_100REL_DISABLED);  // never (default)
 ```
 
-Must be called before the first `baresdk_call_invite` or `baresdk_call_answer`.
+Must be called before the first `echosdk_call_invite` or `echosdk_call_answer`.

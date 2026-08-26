@@ -1,4 +1,4 @@
-package dev.baresdk.baresdk_example
+package dev.echosdk.echo_sdk_example
 
 import io.flutter.embedding.android.FlutterActivity
 

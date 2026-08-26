@@ -1,5 +1,5 @@
 """
-events.py — Python dataclasses mirroring baresdk event payloads.
+events.py — Python dataclasses mirroring EchoSDK event payloads.
 
 The raw C event pointer is decoded into one of these objects and put on
 the per-account queue.  All string fields are decoded from bytes to str.
@@ -20,7 +20,7 @@ class RegStateEvent:
     # act on it.  "failed" is terminal: bad credentials, the retry budget is
     # spent, or the app cancelled the retry.
     state: str           # "unregistered" | "registering" | "registered" | "failed" | "unregistering" | "reconnecting"
-    error: int           # BARESDK_ERR_* or BARESDK_OK
+    error: int           # ECHOSDK_ERR_* or ECHOSDK_OK
     error_str: Optional[str]
     retry_attempt: int
     retry_delay_ms: int
@@ -29,7 +29,7 @@ class RegStateEvent:
 @dataclass
 class IncomingCallEvent:
     type: str = field(init=False, default="incoming_call")
-    call: object         # baresdk.Call (set by Account)
+    call: object         # EchoSDK.Call (set by Account)
     from_uri: str
     display_name: Optional[str]
 
@@ -37,7 +37,7 @@ class IncomingCallEvent:
 @dataclass
 class CallStateEvent:
     type: str = field(init=False, default="call_state")
-    call: object         # baresdk.Call
+    call: object         # EchoSDK.Call
     state: str           # "calling" | "ringing" | "established" | "held" | "ended" | "cancelled" | "failed"
     error: int
     reason: Optional[str]

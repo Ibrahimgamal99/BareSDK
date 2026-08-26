@@ -1,5 +1,5 @@
 /**
- * @file timers.c  Map baresdk_config_t timer/TOS/TLS fields → conf_config()
+ * @file timers.c  Map echosdk_config_t timer/TOS/TLS fields → conf_config()
  *
  * Called from core.c after baresip_init() and before ua_init().
  * Only fields that baresip exposes in struct config are set here.
@@ -8,9 +8,9 @@
  */
 
 #include <string.h>
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
-void bsdk_timers_configure(const baresdk_config_t *cfg)
+void bsdk_timers_configure(const echosdk_config_t *cfg)
 {
 	struct config *c = conf_config();
 

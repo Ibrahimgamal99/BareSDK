@@ -11,11 +11,11 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
-group = 'dev.baresdk.flutter'
+group = 'dev.echosdk.flutter'
 version = '1.0.0'
 
 android {
-    namespace = 'dev.baresdk.flutter'
+    namespace = 'dev.echosdk.flutter'
     // AGP 9 requires compileSdk >= 35; harmless on older AGP.
     compileSdk = 36
 
@@ -32,7 +32,7 @@ android {
         jvmTarget = '17'
     }
 
-    // Prebuilt libbaresdk.so per ABI lives in src/main/jniLibs/<abi>/
+    // Prebuilt libechosdk.so per ABI lives in src/main/jniLibs/<abi>/
     // (populated by scripts/build-android.sh).
     packagingOptions {
         jniLibs {

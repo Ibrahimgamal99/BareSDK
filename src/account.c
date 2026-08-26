@@ -1,14 +1,14 @@
 /**
  * @file account.c  Multi-account registration FSM
  *
- * baresdk_account_t wraps a baresip ua. One UA per account.
+ * echosdk_account_t wraps a baresip ua. One UA per account.
  * Registration retry uses exponential backoff with jitter.
  * All string fields in the account config are deep-copied.
  */
 
 #include <math.h>
 #include <stdlib.h>
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* ── URI parser: "user@host", "user@host:port", or "sip:user@host" ──────── */
 
@@ -83,9 +83,9 @@ static void parse_account_uri(const char *uri,
 
 /* ── Deep-copy helpers for account config ───────────────────────────────── */
 
-void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
-                              const baresdk_account_config_t *src,
-                              struct baresdk_account *acct)
+void bsdk_acct_cfg_deep_copy(echosdk_account_config_t *dst,
+                              const echosdk_account_config_t *src,
+                              struct echosdk_account *acct)
 {
 	*dst = *src;
 	acct->cfg_uri         = bsdk_strdup(src->uri);
@@ -119,7 +119,7 @@ void bsdk_acct_cfg_deep_copy(baresdk_account_config_t *dst,
 	dst->push_param   = acct->cfg_push_param;
 }
 
-void bsdk_acct_cfg_deep_free(struct baresdk_account *acct)
+void bsdk_acct_cfg_deep_free(struct echosdk_account *acct)
 {
 	mem_deref(acct->cfg_uri);          acct->cfg_uri = NULL;
 	mem_deref(acct->cfg_password);     acct->cfg_password = NULL;
@@ -173,18 +173,18 @@ static const char *normalize_codec_name(const char *name)
 #define BSDK_DEFAULT_AUDIO_CODECS "opus/48000/2,PCMU/8000/1,PCMA/8000/1"
 
 /* Build codec list string from enum array: "opus/48000/2,PCMU/8000/1" */
-static void codec_list_str(const baresdk_codec_t *codecs, int count,
+static void codec_list_str(const echosdk_codec_t *codecs, int count,
                              char *buf, size_t sz)
 {
 	buf[0] = '\0';
 	for (int i = 0; i < count && i < 8; i++) {
 		const char *name;
 		switch (codecs[i]) {
-		case BARESDK_CODEC_OPUS: name = "opus/48000/2";  break;
-		case BARESDK_CODEC_PCMU: name = "PCMU/8000/1";   break;
-		case BARESDK_CODEC_PCMA: name = "PCMA/8000/1";   break;
-		case BARESDK_CODEC_G722:    name = "G722/8000/1";    break;
-		case BARESDK_CODEC_G726_32: name = "G726-32/8000/1"; break;
+		case ECHOSDK_CODEC_OPUS: name = "opus/48000/2";  break;
+		case ECHOSDK_CODEC_PCMU: name = "PCMU/8000/1";   break;
+		case ECHOSDK_CODEC_PCMA: name = "PCMA/8000/1";   break;
+		case ECHOSDK_CODEC_G722:    name = "G722/8000/1";    break;
+		case ECHOSDK_CODEC_G726_32: name = "G726-32/8000/1"; break;
 		default:                    name = NULL;              break;
 		}
 		if (!name) continue;
@@ -214,20 +214,20 @@ static void codec_names_list_str(const char names[][32], int count,
 /* Build the RFC 8599 Contact URI params string into buf.
  * Returns length written (>0), 0 if push is disabled/unconfigured,
  * or -1 on overflow. */
-static int build_push_contact_params(const struct baresdk_account *acct,
+static int build_push_contact_params(const struct echosdk_account *acct,
                                       char *buf, size_t buf_sz)
 {
 	const char *provider_str;
 
-	if (acct->cfg.push_provider == BARESDK_PUSH_PROVIDER_NONE)
+	if (acct->cfg.push_provider == ECHOSDK_PUSH_PROVIDER_NONE)
 		return 0;
 	if (!acct->cfg.push_token || !acct->cfg.push_token[0])
 		return 0;
 
 	switch (acct->cfg.push_provider) {
-	case BARESDK_PUSH_PROVIDER_APNS:         provider_str = "apns";         break;
-	case BARESDK_PUSH_PROVIDER_APNS_SANDBOX: provider_str = "apns-sandbox"; break;
-	case BARESDK_PUSH_PROVIDER_FCM:          provider_str = "fcm";          break;
+	case ECHOSDK_PUSH_PROVIDER_APNS:         provider_str = "apns";         break;
+	case ECHOSDK_PUSH_PROVIDER_APNS_SANDBOX: provider_str = "apns-sandbox"; break;
+	case ECHOSDK_PUSH_PROVIDER_FCM:          provider_str = "fcm";          break;
 	default: return 0;
 	}
 
@@ -258,10 +258,10 @@ static int build_push_contact_params(const struct baresdk_account *acct,
 
 /* Configure a baresip account object.
  * acct->parsed_* fields (user, host, port, transport) must be set first. */
-static void configure_baresip_account(struct baresdk_account *acct)
+static void configure_baresip_account(struct echosdk_account *acct)
 {
 	struct account *ba = ua_account(acct->ua);
-	const baresdk_config_t *cfg = &g_bsdk.cfg;
+	const echosdk_config_t *cfg = &g_bsdk.cfg;
 
 	/* Auth — password required; auth_user defaults to uri user part */
 	if (acct->cfg.password)
@@ -309,7 +309,7 @@ static void configure_baresip_account(struct baresdk_account *acct)
 
 	/* Media encryption — account overrides global */
 	{
-		baresdk_media_enc_t enc = acct->cfg.media_enc
+		echosdk_media_enc_t enc = acct->cfg.media_enc
 		                        ? acct->cfg.media_enc : cfg->media_enc;
 		const char *menc = bsdk_mediaenc_str(enc);
 		if (menc)
@@ -383,7 +383,7 @@ static void configure_baresip_account(struct baresdk_account *acct)
 			 * of the restriction that was asked for. Detect that by the
 			 * fallback identity and say so. */
 			if (account_aucodecl(ba) == baresip_aucodecl()) {
-				warning("baresdk/account: codec list \"%s\" matched no "
+				warning("EchoSDK/account: codec list \"%s\" matched no "
 				        "loaded codec — offering all codecs instead\n",
 				        codecs);
 			}
@@ -393,12 +393,12 @@ static void configure_baresip_account(struct baresdk_account *acct)
 	/* DTMF via RTP events */
 	{
 		static const enum dtmfmode dtmf_map[] = {
-			[BARESDK_DTMF_RFC4733]  = DTMFMODE_RTP_EVENT,
-			[BARESDK_DTMF_SIP_INFO] = DTMFMODE_SIP_INFO,
-			[BARESDK_DTMF_AUTO]     = DTMFMODE_AUTO,
+			[ECHOSDK_DTMF_RFC4733]  = DTMFMODE_RTP_EVENT,
+			[ECHOSDK_DTMF_SIP_INFO] = DTMFMODE_SIP_INFO,
+			[ECHOSDK_DTMF_AUTO]     = DTMFMODE_AUTO,
 		};
-		baresdk_dtmf_mode_t m = acct->cfg.dtmf_mode;
-		if ((unsigned)m <= BARESDK_DTMF_AUTO)
+		echosdk_dtmf_mode_t m = acct->cfg.dtmf_mode;
+		if ((unsigned)m <= ECHOSDK_DTMF_AUTO)
 			account_set_dtmfmode(ba, dtmf_map[m]);
 		else
 			account_set_dtmfmode(ba, DTMFMODE_RTP_EVENT);
@@ -424,7 +424,7 @@ static void configure_baresip_account(struct baresdk_account *acct)
  * watchdog and the keepalive probe — and they must agree.
  */
 
-static bool retry_budget_left(const struct baresdk_account *acct)
+static bool retry_budget_left(const struct echosdk_account *acct)
 {
 	uint32_t max_attempts = acct->retry_policy_set
 	        ? acct->retry_max_attempts
@@ -433,23 +433,23 @@ static bool retry_budget_left(const struct baresdk_account *acct)
 	return max_attempts == 0 || acct->retry_attempt < max_attempts;
 }
 
-baresdk_reg_state_t bsdk_account_reg_fail_state(struct baresdk_account *acct,
-                                                baresdk_error_t err)
+echosdk_reg_state_t bsdk_account_reg_fail_state(struct echosdk_account *acct,
+                                                echosdk_error_t err)
 {
 	/* An armed retry settles it: that attempt is going out whatever the
 	 * budget now says, and schedule_retry() already counted it. */
 	bool will_retry = acct->reg_wanted && !acct->destroyed &&
-	        err != BARESDK_ERR_AUTH &&
+	        err != ECHOSDK_ERR_AUTH &&
 	        (tmr_isrunning(&acct->retry_tmr) || retry_budget_left(acct));
 
 	acct->reconnecting = will_retry;
 
-	return will_retry ? BARESDK_REG_RECONNECTING : BARESDK_REG_FAILED;
+	return will_retry ? ECHOSDK_REG_RECONNECTING : ECHOSDK_REG_FAILED;
 }
 
-void bsdk_account_reg_reconnecting(struct baresdk_account *acct)
+void bsdk_account_reg_reconnecting(struct echosdk_account *acct)
 {
-	baresdk_event_t ev = {0};
+	echosdk_event_t ev = {0};
 
 	if (!acct || acct->destroyed || !acct->reg_wanted)
 		return;
@@ -457,19 +457,19 @@ void bsdk_account_reg_reconnecting(struct baresdk_account *acct)
 	/* Only a registration that was up (or on its way up) has anything to
 	 * lose here.  One that is already RECONNECTING keeps the state it has,
 	 * and a terminal FAILED is not turned back into hope by a new link. */
-	if (acct->reg_state != BARESDK_REG_REGISTERED &&
-	    acct->reg_state != BARESDK_REG_REGISTERING)
+	if (acct->reg_state != ECHOSDK_REG_REGISTERED &&
+	    acct->reg_state != ECHOSDK_REG_REGISTERING)
 		return;
 
 	acct->reconnecting = true;
-	acct->reg_state    = BARESDK_REG_RECONNECTING;
+	acct->reg_state    = ECHOSDK_REG_RECONNECTING;
 	/* The binding is stale and the path may be gone; probing it would only
 	 * report the outage we already know about.  The re-REGISTER re-arms. */
 	bsdk_account_keepalive_cancel(acct);
 
-	ev.type          = BARESDK_EV_REG_STATE;
-	ev.u.reg.state   = BARESDK_REG_RECONNECTING;
-	ev.u.reg.error   = BARESDK_OK;
+	ev.type          = ECHOSDK_EV_REG_STATE;
+	ev.u.reg.state   = ECHOSDK_REG_RECONNECTING;
+	ev.u.reg.error   = ECHOSDK_OK;
 	ev.u.reg.account = acct;
 	bsdk_event_post(&ev);
 }
@@ -514,14 +514,14 @@ static uint32_t reg_watch_timeout_ms(void)
 
 static void reg_watch_handler(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 
 	if (acct->destroyed || !acct->ua || !acct->reg_wanted)
 		return;
 
 	/* The consumer already has a terminal answer — nothing owed. */
-	if (acct->reg_state == BARESDK_REG_REGISTERED ||
-	    acct->reg_state == BARESDK_REG_FAILED)
+	if (acct->reg_state == ECHOSDK_REG_REGISTERED ||
+	    acct->reg_state == ECHOSDK_REG_FAILED)
 		return;
 
 	/* A retry is armed, so this REGISTER has already been answered for as
@@ -536,20 +536,20 @@ static void reg_watch_handler(void *arg)
 		return;
 
 	if (ua_isregistered(acct->ua)) {
-		baresdk_event_t ev = {0};
+		echosdk_event_t ev = {0};
 
-		warning("baresdk: account %s is registered but baresip emitted "
+		warning("EchoSDK: account %s is registered but baresip emitted "
 		        "no event; synthesising REGISTERED\n",
 		        acct->cfg_uri ? acct->cfg_uri : "(unknown)");
 
-		acct->reg_state     = BARESDK_REG_REGISTERED;
+		acct->reg_state     = ECHOSDK_REG_REGISTERED;
 		acct->retry_attempt = 0;
 		acct->reconnecting  = false;
 		bsdk_account_keepalive_arm(acct);
 
-		ev.type          = BARESDK_EV_REG_STATE;
-		ev.u.reg.state   = BARESDK_REG_REGISTERED;
-		ev.u.reg.error   = BARESDK_OK;
+		ev.type          = ECHOSDK_EV_REG_STATE;
+		ev.u.reg.state   = ECHOSDK_REG_REGISTERED;
+		ev.u.reg.error   = ECHOSDK_OK;
 		ev.u.reg.account = acct;
 		bsdk_event_post(&ev);
 		return;
@@ -559,22 +559,22 @@ static void reg_watch_handler(void *arg)
 
 	if (reg_watch_timeout_ms() &&
 	    acct->reg_watch_elapsed_ms >= reg_watch_timeout_ms()) {
-		baresdk_event_t ev = {0};
+		echosdk_event_t ev = {0};
 
-		warning("baresdk: account %s got no registration answer in "
+		warning("EchoSDK: account %s got no registration answer in "
 		        "%u ms; reporting timeout\n",
 		        acct->cfg_uri ? acct->cfg_uri : "(unknown)",
 		        acct->reg_watch_elapsed_ms);
 
-		acct->reg_error = BARESDK_ERR_TIMEOUT;
+		acct->reg_error = ECHOSDK_ERR_TIMEOUT;
 		acct->reg_state = bsdk_account_reg_fail_state(acct,
-		                                             BARESDK_ERR_TIMEOUT);
+		                                             ECHOSDK_ERR_TIMEOUT);
 		str_ncpy(acct->reg_error_str, "registration timed out",
 		         sizeof(acct->reg_error_str));
 
-		ev.type            = BARESDK_EV_REG_STATE;
+		ev.type            = ECHOSDK_EV_REG_STATE;
 		ev.u.reg.state     = acct->reg_state;
-		ev.u.reg.error     = BARESDK_ERR_TIMEOUT;
+		ev.u.reg.error     = ECHOSDK_ERR_TIMEOUT;
 		ev.u.reg.error_str = acct->reg_error_str;
 		ev.u.reg.account   = acct;
 		bsdk_event_post(&ev);
@@ -589,7 +589,7 @@ static void reg_watch_handler(void *arg)
 
 /* Arm the watchdog for a registration that was just requested. Call on
  * re_main, immediately after ua_register(). */
-void bsdk_account_watch_registration(struct baresdk_account *acct)
+void bsdk_account_watch_registration(struct echosdk_account *acct)
 {
 	if (!acct || acct->destroyed || !acct->ua)
 		return;
@@ -629,9 +629,9 @@ static bool host_is_ip_literal(const char *host)
 	return host && sa_set_str(&sa, host, 0) == 0;
 }
 
-static bool srv_failover_eligible(const struct baresdk_account *acct)
+static bool srv_failover_eligible(const struct echosdk_account *acct)
 {
-	const baresdk_config_t *cfg = &g_bsdk.cfg;
+	const echosdk_config_t *cfg = &g_bsdk.cfg;
 
 	if (!cfg->dns_srv_failover)
 		return false;
@@ -639,8 +639,8 @@ static bool srv_failover_eligible(const struct baresdk_account *acct)
 		return false;
 	if (acct->cfg.server_url || acct->auto_server_url[0])
 		return false;
-	if (acct->parsed_transport == BARESDK_TRANSPORT_WS ||
-	    acct->parsed_transport == BARESDK_TRANSPORT_WSS)
+	if (acct->parsed_transport == ECHOSDK_TRANSPORT_WS ||
+	    acct->parsed_transport == ECHOSDK_TRANSPORT_WSS)
 		return false;
 	if (acct->cfg.server_port || acct->parsed_port)
 		return false;
@@ -658,7 +658,7 @@ static bool srv_failover_eligible(const struct baresdk_account *acct)
 /* Is this account still in the live list?  The DNS callback can outlive an
  * account the app destroyed while the query was in flight, and the pointer
  * would then dangle. */
-static bool acct_is_live(const struct baresdk_account *acct)
+static bool acct_is_live(const struct echosdk_account *acct)
 {
 	struct le *le;
 	bool found = false;
@@ -677,7 +677,7 @@ static bool acct_is_live(const struct baresdk_account *acct)
 
 static void srv_done_handler(const struct bsdk_dns_result *res, void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 	size_t n, i;
 
 	if (!acct_is_live(acct))
@@ -690,7 +690,7 @@ static void srv_done_handler(const struct bsdk_dns_result *res, void *arg)
 
 	n = bsdk_dns_result_count(res);
 	for (i = 0; i < n && acct->srv_count < BSDK_SRV_MAX_TARGETS; i++) {
-		baresdk_transport_t t;
+		echosdk_transport_t t;
 		char     host[256];
 		uint16_t port = 0;
 
@@ -705,11 +705,11 @@ static void srv_done_handler(const struct bsdk_dns_result *res, void *arg)
 	}
 
 	if (acct->srv_count > 1)
-		info("baresdk: %u SRV targets available for failover\n",
+		info("EchoSDK: %u SRV targets available for failover\n",
 		     acct->srv_count);
 }
 
-void bsdk_account_srv_resolve(struct baresdk_account *acct)
+void bsdk_account_srv_resolve(struct echosdk_account *acct)
 {
 	const char *host;
 
@@ -735,7 +735,7 @@ void bsdk_account_srv_resolve(struct baresdk_account *acct)
  * Point this account's outbound proxy at the next SRV target.
  * No-op unless there is more than one target to move between.
  */
-static void srv_advance(struct baresdk_account *acct)
+static void srv_advance(struct echosdk_account *acct)
 {
 	struct account *ba;
 
@@ -749,19 +749,19 @@ static void srv_advance(struct baresdk_account *acct)
 		return;
 
 	if (account_set_outbound(ba, acct->srv_uri[acct->srv_idx], 0)) {
-		warning("baresdk: SRV failover: could not set outbound %s\n",
+		warning("EchoSDK: SRV failover: could not set outbound %s\n",
 		        acct->srv_uri[acct->srv_idx]);
 		return;
 	}
 
-	info("baresdk: SRV failover: trying proxy %u/%u (%s)\n",
+	info("EchoSDK: SRV failover: trying proxy %u/%u (%s)\n",
 	     acct->srv_idx + 1u, acct->srv_count,
 	     acct->srv_uri[acct->srv_idx]);
 }
 
 static void retry_timer_handler(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 	if (acct->destroyed || !acct->ua)
 		return;
 
@@ -769,7 +769,7 @@ static void retry_timer_handler(void *arg)
 	 * the SRV list instead of hammering one host. */
 	srv_advance(acct);
 
-	info("baresdk: re-registering account (attempt %u)\n",
+	info("EchoSDK: re-registering account (attempt %u)\n",
 	     acct->retry_attempt + 1);
 	ua_register(acct->ua);
 	bsdk_account_watch_registration(acct);
@@ -794,8 +794,8 @@ static void keepalive_handler(void *arg);
 static void keepalive_resp_handler(int err, const struct sip_msg *msg,
                                     void *arg)
 {
-	struct baresdk_account *acct = arg;
-	baresdk_event_t ev = {0};
+	struct echosdk_account *acct = arg;
+	echosdk_event_t ev = {0};
 
 	if (!acct_is_live(acct))
 		return;
@@ -815,22 +815,22 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 		if (acct->ka_failed) {
 			acct->ka_failed = false;
 
-			if (acct->reg_state == BARESDK_REG_RECONNECTING &&
+			if (acct->reg_state == ECHOSDK_REG_RECONNECTING &&
 			    ua_isregistered(acct->ua)) {
-				baresdk_event_t ok = {0};
+				echosdk_event_t ok = {0};
 
-				info("baresdk: keepalive probe answered again; "
+				info("EchoSDK: keepalive probe answered again; "
 				     "path to proxy recovered\n");
 
-				acct->reg_state     = BARESDK_REG_REGISTERED;
-				acct->reg_error     = BARESDK_OK;
+				acct->reg_state     = ECHOSDK_REG_REGISTERED;
+				acct->reg_error     = ECHOSDK_OK;
 				acct->retry_attempt = 0;
 				acct->reconnecting  = false;
 				acct->reg_error_str[0] = '\0';
 
-				ok.type          = BARESDK_EV_REG_STATE;
-				ok.u.reg.state   = BARESDK_REG_REGISTERED;
-				ok.u.reg.error   = BARESDK_OK;
+				ok.type          = ECHOSDK_EV_REG_STATE;
+				ok.u.reg.state   = ECHOSDK_REG_REGISTERED;
+				ok.u.reg.error   = ECHOSDK_OK;
 				ok.u.reg.account = acct;
 				bsdk_event_post(&ok);
 			}
@@ -840,11 +840,11 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 		return;
 	}
 
-	warning("baresdk: keepalive probe failed (%m); path to proxy is "
+	warning("EchoSDK: keepalive probe failed (%m); path to proxy is "
 	        "unreachable\n", err ? err : ETIMEDOUT);
 
 	acct->ka_failed = true;
-	acct->reg_error = BARESDK_ERR_TIMEOUT;
+	acct->reg_error = ECHOSDK_ERR_TIMEOUT;
 
 	/* Unreachable, not refused.  With keepalive_reregister the retry policy
 	 * decides whether this is still recoverable; without it we keep probing,
@@ -852,20 +852,20 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 	 * later answer (above) is what ends it. */
 	if (g_bsdk.cfg.keepalive_reregister && acct->reg_wanted) {
 		acct->reg_state = bsdk_account_reg_fail_state(acct,
-		                                             BARESDK_ERR_TIMEOUT);
+		                                             ECHOSDK_ERR_TIMEOUT);
 	}
 	else {
-		acct->reg_state    = acct->reg_wanted ? BARESDK_REG_RECONNECTING
-		                                      : BARESDK_REG_FAILED;
+		acct->reg_state    = acct->reg_wanted ? ECHOSDK_REG_RECONNECTING
+		                                      : ECHOSDK_REG_FAILED;
 		acct->reconnecting = acct->reg_wanted;
 	}
 
 	str_ncpy(acct->reg_error_str, "keepalive probe timed out",
 	         sizeof(acct->reg_error_str));
 
-	ev.type            = BARESDK_EV_REG_STATE;
+	ev.type            = ECHOSDK_EV_REG_STATE;
 	ev.u.reg.state     = acct->reg_state;
-	ev.u.reg.error     = BARESDK_ERR_TIMEOUT;
+	ev.u.reg.error     = ECHOSDK_ERR_TIMEOUT;
 	ev.u.reg.error_str = acct->reg_error_str;
 	ev.u.reg.account   = acct;
 	bsdk_event_post(&ev);
@@ -883,7 +883,7 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 
 static void keepalive_handler(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 	char uri[320];
 	const char *host;
 
@@ -917,7 +917,7 @@ static void keepalive_handler(void *arg)
 	}
 }
 
-void bsdk_account_keepalive_arm(struct baresdk_account *acct)
+void bsdk_account_keepalive_arm(struct echosdk_account *acct)
 {
 	uint32_t iv;
 
@@ -931,7 +931,7 @@ void bsdk_account_keepalive_arm(struct baresdk_account *acct)
 	tmr_start(&acct->ka_tmr, iv, keepalive_handler, acct);
 }
 
-void bsdk_account_keepalive_cancel(struct baresdk_account *acct)
+void bsdk_account_keepalive_cancel(struct echosdk_account *acct)
 {
 	if (acct)
 		tmr_cancel(&acct->ka_tmr);
@@ -973,9 +973,9 @@ static uint32_t apply_jitter(uint32_t delay, float jitter)
 	return (uint32_t)((int32_t)delay + offset);
 }
 
-void bsdk_account_schedule_retry(struct baresdk_account *acct)
+void bsdk_account_schedule_retry(struct echosdk_account *acct)
 {
-	const baresdk_config_t *cfg = &g_bsdk.cfg;
+	const echosdk_config_t *cfg = &g_bsdk.cfg;
 
 	uint32_t initial_ms   = acct->retry_policy_set ? acct->retry_initial_ms   : cfg->reg_retry_initial_ms;
 	uint32_t max_ms       = acct->retry_policy_set ? acct->retry_max_ms       : cfg->reg_retry_max_ms;
@@ -991,9 +991,9 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 		return;
 
 	if (!retry_budget_left(acct)) {
-		baresdk_event_t done = {0};
+		echosdk_event_t done = {0};
 
-		info("baresdk: max retry attempts reached for account\n");
+		info("EchoSDK: max retry attempts reached for account\n");
 
 		acct->reconnecting = false;
 
@@ -1003,13 +1003,13 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 		 * it.  A caller that already reported FAILED (an exhausted budget is
 		 * visible to bsdk_account_reg_fail_state() too) needs no second
 		 * event. */
-		if (acct->reg_state != BARESDK_REG_RECONNECTING)
+		if (acct->reg_state != ECHOSDK_REG_RECONNECTING)
 			return;
 
-		acct->reg_state = BARESDK_REG_FAILED;
+		acct->reg_state = ECHOSDK_REG_FAILED;
 
-		done.type            = BARESDK_EV_REG_STATE;
-		done.u.reg.state     = BARESDK_REG_FAILED;
+		done.type            = ECHOSDK_EV_REG_STATE;
+		done.u.reg.state     = ECHOSDK_REG_FAILED;
 		done.u.reg.error     = acct->reg_error;
 		done.u.reg.error_str = acct->reg_error_str[0]
 		        ? acct->reg_error_str : NULL;
@@ -1028,7 +1028,7 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 		}
 	}
 
-	/* Jitter is global only: baresdk_account_set_retry_policy() predates it
+	/* Jitter is global only: echosdk_account_set_retry_policy() predates it
 	 * and has no parameter for it, so there is no per-account value to
 	 * prefer here. */
 	delay = apply_jitter(delay, cfg->reg_retry_jitter);
@@ -1039,11 +1039,11 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 	 * attempt and the delay: an attempt is armed, so this is a countdown and
 	 * not a failure the app has to act on. */
 	acct->reconnecting = true;
-	acct->reg_state    = BARESDK_REG_RECONNECTING;
+	acct->reg_state    = ECHOSDK_REG_RECONNECTING;
 
-	baresdk_event_t ev = {0};
-	ev.type                    = BARESDK_EV_REG_STATE;
-	ev.u.reg.state             = BARESDK_REG_RECONNECTING;
+	echosdk_event_t ev = {0};
+	ev.type                    = ECHOSDK_EV_REG_STATE;
+	ev.u.reg.state             = ECHOSDK_REG_RECONNECTING;
 	ev.u.reg.error             = acct->reg_error;
 	ev.u.reg.error_str         = acct->reg_error_str[0]
 	        ? acct->reg_error_str : NULL;
@@ -1059,7 +1059,7 @@ void bsdk_account_schedule_retry(struct baresdk_account *acct)
 
 static void account_destructor(void *data)
 {
-	struct baresdk_account *acct = data;
+	struct echosdk_account *acct = data;
 	tmr_cancel(&acct->retry_tmr);
 	tmr_cancel(&acct->reg_watch_tmr);
 	tmr_cancel(&acct->ka_tmr);
@@ -1079,12 +1079,12 @@ static void account_destructor(void *data)
 
 /* ── bsdk_account_find_by_ua ─────────────────────────────────────────────── */
 
-struct baresdk_account *bsdk_account_find_by_ua(const struct ua *ua)
+struct echosdk_account *bsdk_account_find_by_ua(const struct ua *ua)
 {
 	struct le *le;
 	mtx_lock(&g_bsdk.acct_lock);
 	LIST_FOREACH(&g_bsdk.accounts, le) {
-		struct baresdk_account *acct = le->data;
+		struct echosdk_account *acct = le->data;
 		if (acct->ua == ua) {
 			mtx_unlock(&g_bsdk.acct_lock);
 			return acct;
@@ -1097,8 +1097,8 @@ struct baresdk_account *bsdk_account_find_by_ua(const struct ua *ua)
 /* ── Public API — dispatch wrappers ─────────────────────────────────────── */
 
 typedef struct {
-	baresdk_account_config_t  cfg;
-	baresdk_account_handle_t *out;
+	echosdk_account_config_t  cfg;
+	echosdk_account_handle_t *out;
 	int                       result;
 } create_ctx_t;
 
@@ -1107,7 +1107,7 @@ static void create_fn(void *arg)
 	create_ctx_t *ctx = arg;
 	int err;
 
-	struct baresdk_account *acct = mem_alloc(sizeof(*acct), account_destructor);
+	struct echosdk_account *acct = mem_alloc(sizeof(*acct), account_destructor);
 	if (!acct) { ctx->result = ENOMEM; return; }
 	memset(acct, 0, sizeof(*acct));
 	tmr_init(&acct->retry_tmr);
@@ -1116,11 +1116,11 @@ static void create_fn(void *arg)
 	list_init(&acct->custom_hdrs);
 
 	bsdk_acct_cfg_deep_copy(&acct->cfg, &ctx->cfg, acct);
-	acct->reg_state = BARESDK_REG_UNREGISTERED;
+	acct->reg_state = ECHOSDK_REG_UNREGISTERED;
 
 	if (!acct->cfg.uri) {
 		mem_deref(acct);
-		ctx->result = BARESDK_ERR_INVAL;
+		ctx->result = ECHOSDK_ERR_INVAL;
 		return;
 	}
 
@@ -1131,7 +1131,7 @@ static void create_fn(void *arg)
 	                  &acct->parsed_port);
 
 	/* Determine transport: server_url → account transport → global default */
-	baresdk_transport_t tp = acct->cfg.transport;
+	echosdk_transport_t tp = acct->cfg.transport;
 	char ws_path[256] = ""; /* set only if server_url contains an explicit path */
 	char ws_host[256] = ""; /* WS server authority — pinned in ws_path.c */
 	uint16_t ws_port = 0;
@@ -1155,21 +1155,21 @@ static void create_fn(void *arg)
 		if (!port) {
 			switch (tp) {
 			/* WebSocket defaults, as in bsdk_parse_server_url. */
-			case BARESDK_TRANSPORT_WSS: port = 443; break;
-			case BARESDK_TRANSPORT_WS:  port = 80; break;
-			case BARESDK_TRANSPORT_TLS: port = 5061; break;
-			case BARESDK_TRANSPORT_TCP: port = 5060; break;
-			case BARESDK_TRANSPORT_UDP:
+			case ECHOSDK_TRANSPORT_WSS: port = 443; break;
+			case ECHOSDK_TRANSPORT_WS:  port = 80; break;
+			case ECHOSDK_TRANSPORT_TLS: port = 5061; break;
+			case ECHOSDK_TRANSPORT_TCP: port = 5060; break;
+			case ECHOSDK_TRANSPORT_UDP:
 			default:                     port = 5060; break;
 			}
 		}
 		const char *scheme;
 		switch (tp) {
-		case BARESDK_TRANSPORT_WSS: scheme = "wss"; break;
-		case BARESDK_TRANSPORT_WS:  scheme = "ws";  break;
-		case BARESDK_TRANSPORT_TLS: scheme = "sips"; break;
-		case BARESDK_TRANSPORT_TCP: scheme = "sip";  break;
-		case BARESDK_TRANSPORT_UDP:
+		case ECHOSDK_TRANSPORT_WSS: scheme = "wss"; break;
+		case ECHOSDK_TRANSPORT_WS:  scheme = "ws";  break;
+		case ECHOSDK_TRANSPORT_TLS: scheme = "sips"; break;
+		case ECHOSDK_TRANSPORT_TCP: scheme = "sip";  break;
+		case ECHOSDK_TRANSPORT_UDP:
 		default:                     scheme = "sip"; break;
 		}
 
@@ -1184,7 +1184,7 @@ static void create_fn(void *arg)
 	/* Claim the server + explicit path for __wrap_websock_connect
 	 * (ws_path.c).  Released in account_destructor, so a destroyed account
 	 * stops counting against connection pinning. */
-	if (tp == BARESDK_TRANSPORT_WS || tp == BARESDK_TRANSPORT_WSS) {
+	if (tp == ECHOSDK_TRANSPORT_WS || tp == ECHOSDK_TRANSPORT_WSS) {
 		str_ncpy(acct->ws_host, ws_host, sizeof(acct->ws_host));
 		str_ncpy(acct->ws_pin_path, ws_path, sizeof(acct->ws_pin_path));
 		acct->ws_port = ws_port;
@@ -1223,11 +1223,11 @@ static void create_fn(void *arg)
 	ctx->result = 0;
 }
 
-int baresdk_account_create(const baresdk_account_config_t *cfg,
-                            baresdk_account_handle_t *out)
+int echosdk_account_create(const echosdk_account_config_t *cfg,
+                            echosdk_account_handle_t *out)
 {
 	if (!cfg || !cfg->uri || !out)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 
 	create_ctx_t ctx = { .cfg = *cfg, .out = out, .result = 0 };
 	int err = bsdk_dispatch_sync(create_fn, &ctx);
@@ -1236,7 +1236,7 @@ int baresdk_account_create(const baresdk_account_config_t *cfg,
 
 static void destroy_fn(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 	acct->destroyed = true;
 	tmr_cancel(&acct->retry_tmr);
 	tmr_cancel(&acct->reg_watch_tmr);
@@ -1251,7 +1251,7 @@ static void destroy_fn(void *arg)
 	mem_deref(acct);
 }
 
-void baresdk_account_destroy(baresdk_account_handle_t acct)
+void echosdk_account_destroy(echosdk_account_handle_t acct)
 {
 	if (!acct) return;
 	bsdk_dispatch_sync(destroy_fn, acct);
@@ -1259,24 +1259,24 @@ void baresdk_account_destroy(baresdk_account_handle_t acct)
 
 /* ── Enumeration & state readers ─────────────────────────────────────────── */
 
-void baresdk_account_foreach(baresdk_account_iter_fn fn, void *arg)
+void echosdk_account_foreach(echosdk_account_iter_fn fn, void *arg)
 {
 	if (!fn) return;
 
 	mtx_lock(&g_bsdk.acct_lock);
 	struct le *le;
 	LIST_FOREACH(&g_bsdk.accounts, le) {
-		struct baresdk_account *acct = le->data;
+		struct echosdk_account *acct = le->data;
 		if (!acct->destroyed)
-			fn((baresdk_account_handle_t)acct, arg);
+			fn((echosdk_account_handle_t)acct, arg);
 	}
 	mtx_unlock(&g_bsdk.acct_lock);
 }
 
-int baresdk_account_get_aor(baresdk_account_handle_t acct, char *buf, size_t sz)
+int echosdk_account_get_aor(echosdk_account_handle_t acct, char *buf, size_t sz)
 {
 	if (!acct || !buf || sz == 0)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 
 	/* parsed_user/parsed_host are set once at create time and never
 	 * mutated, so no lock is needed. */
@@ -1285,20 +1285,20 @@ int baresdk_account_get_aor(baresdk_account_handle_t acct, char *buf, size_t sz)
 	                    acct->parsed_user, acct->parsed_host);
 	if (n < 0) {
 		buf[0] = '\0';
-		return BARESDK_ERR_NOMEM;
+		return ECHOSDK_ERR_NOMEM;
 	}
-	return BARESDK_OK;
+	return ECHOSDK_OK;
 }
 
-baresdk_reg_state_t baresdk_account_get_reg_state(baresdk_account_handle_t acct)
+echosdk_reg_state_t echosdk_account_get_reg_state(echosdk_account_handle_t acct)
 {
-	if (!acct) return BARESDK_REG_UNREGISTERED;
+	if (!acct) return ECHOSDK_REG_UNREGISTERED;
 	return acct->reg_state;
 }
 
 static void register_fn(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 	if (acct->ua) {
 		acct->reg_wanted = true;   /* netmon.c re-REGISTERs on handover */
 		/* An explicit register() is a fresh intent, not the tail of a
@@ -1315,35 +1315,35 @@ static void register_fn(void *arg)
 	}
 }
 
-int baresdk_account_register(baresdk_account_handle_t acct)
+int echosdk_account_register(echosdk_account_handle_t acct)
 {
-	if (!acct) return BARESDK_ERR_INVAL;
+	if (!acct) return ECHOSDK_ERR_INVAL;
 	return bsdk_dispatch(register_fn, acct);
 }
 
 static void unregister_fn(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 	if (acct->ua) {
 		acct->reg_wanted   = false;
 		acct->reconnecting = false;
 		acct->ka_failed    = false;
-		acct->reg_state = BARESDK_REG_UNREGISTERING;
+		acct->reg_state = ECHOSDK_REG_UNREGISTERING;
 		tmr_cancel(&acct->reg_watch_tmr);
 		bsdk_account_keepalive_cancel(acct);
 		ua_unregister(acct->ua);
 	}
 }
 
-int baresdk_account_unregister(baresdk_account_handle_t acct)
+int echosdk_account_unregister(echosdk_account_handle_t acct)
 {
-	if (!acct) return BARESDK_ERR_INVAL;
+	if (!acct) return ECHOSDK_ERR_INVAL;
 	return bsdk_dispatch(unregister_fn, acct);
 }
 
 static void keepalive_now_fn(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 
 	/* Cancel the pending tick first: keepalive_handler() re-arms on every
 	 * exit path, so firing it early without this would leave the schedule
@@ -1352,12 +1352,12 @@ static void keepalive_now_fn(void *arg)
 	keepalive_handler(acct);
 }
 
-int baresdk_account_keepalive_now(baresdk_account_handle_t acct)
+int echosdk_account_keepalive_now(echosdk_account_handle_t acct)
 {
 	if (!acct)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 	if (!acct->ua || acct->destroyed || !acct->reg_wanted)
-		return BARESDK_ERR_STATE;
+		return ECHOSDK_ERR_STATE;
 
 	return bsdk_dispatch(keepalive_now_fn, acct);
 }
@@ -1365,7 +1365,7 @@ int baresdk_account_keepalive_now(baresdk_account_handle_t acct)
 /* ── Retry control ───────────────────────────────────────────────────────── */
 
 typedef struct {
-	baresdk_account_handle_t acct;
+	echosdk_account_handle_t acct;
 	uint32_t initial_ms;
 	uint32_t max_ms;
 	float    backoff;
@@ -1375,7 +1375,7 @@ typedef struct {
 static void set_retry_policy_fn(void *arg)
 {
 	retry_policy_ctx_t *ctx = arg;
-	struct baresdk_account *acct = ctx->acct;
+	struct echosdk_account *acct = ctx->acct;
 	acct->retry_policy_set   = true;
 	acct->retry_initial_ms   = ctx->initial_ms;
 	acct->retry_max_ms       = ctx->max_ms;
@@ -1383,18 +1383,18 @@ static void set_retry_policy_fn(void *arg)
 	acct->retry_max_attempts = ctx->max_attempts;
 }
 
-int baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
+int echosdk_account_set_retry_policy(echosdk_account_handle_t acct,
                                       uint32_t initial_ms, uint32_t max_ms,
                                       float backoff, uint32_t max_attempts)
 {
-	if (!acct) return BARESDK_ERR_INVAL;
+	if (!acct) return ECHOSDK_ERR_INVAL;
 	retry_policy_ctx_t ctx = { acct, initial_ms, max_ms, backoff, max_attempts };
 	return bsdk_dispatch_sync(set_retry_policy_fn, &ctx);
 }
 
 static void cancel_retry_fn(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 
 	tmr_cancel(&acct->retry_tmr);
 	tmr_cancel(&acct->reg_watch_tmr);
@@ -1404,14 +1404,14 @@ static void cancel_retry_fn(void *arg)
 	 * registration is now down for good as far as the SDK is concerned.
 	 * Report it, or the app is left rendering "Reconnecting…" against a
 	 * retry it cancelled itself. */
-	if (acct->reg_state == BARESDK_REG_RECONNECTING) {
-		baresdk_event_t ev = {0};
+	if (acct->reg_state == ECHOSDK_REG_RECONNECTING) {
+		echosdk_event_t ev = {0};
 
 		acct->reconnecting = false;
-		acct->reg_state    = BARESDK_REG_FAILED;
+		acct->reg_state    = ECHOSDK_REG_FAILED;
 
-		ev.type            = BARESDK_EV_REG_STATE;
-		ev.u.reg.state     = BARESDK_REG_FAILED;
+		ev.type            = ECHOSDK_EV_REG_STATE;
+		ev.u.reg.state     = ECHOSDK_REG_FAILED;
 		ev.u.reg.error     = acct->reg_error;
 		ev.u.reg.error_str = acct->reg_error_str[0]
 		        ? acct->reg_error_str : NULL;
@@ -1420,15 +1420,15 @@ static void cancel_retry_fn(void *arg)
 	}
 }
 
-int baresdk_account_cancel_retry(baresdk_account_handle_t acct)
+int echosdk_account_cancel_retry(echosdk_account_handle_t acct)
 {
-	if (!acct) return BARESDK_ERR_INVAL;
+	if (!acct) return ECHOSDK_ERR_INVAL;
 	return bsdk_dispatch_sync(cancel_retry_fn, acct);
 }
 
 static void retry_now_fn(void *arg)
 {
-	struct baresdk_account *acct = arg;
+	struct echosdk_account *acct = arg;
 	tmr_cancel(&acct->retry_tmr);
 	acct->retry_attempt = 0;
 	if (!acct->destroyed && acct->ua) {
@@ -1438,16 +1438,16 @@ static void retry_now_fn(void *arg)
 	}
 }
 
-int baresdk_account_retry_now(baresdk_account_handle_t acct)
+int echosdk_account_retry_now(echosdk_account_handle_t acct)
 {
-	if (!acct) return BARESDK_ERR_INVAL;
+	if (!acct) return ECHOSDK_ERR_INVAL;
 	return bsdk_dispatch_sync(retry_now_fn, acct);
 }
 
 /* ── Push token runtime update ──────────────────────────────────────────── */
 
 typedef struct {
-	baresdk_account_handle_t  acct;
+	echosdk_account_handle_t  acct;
 	/* Caller-owned string pointer. Safe because bsdk_dispatch_sync blocks
 	 * the caller until set_push_token_fn returns, so the string cannot be
 	 * freed before bsdk_strdup() copies it. */
@@ -1458,10 +1458,10 @@ typedef struct {
 static void set_push_token_fn(void *arg)
 {
 	push_token_ctx_t *ctx = arg;
-	struct baresdk_account *acct = ctx->acct;
+	struct echosdk_account *acct = ctx->acct;
 
 	if (!acct->ua) {
-		ctx->result = BARESDK_ERR_STATE;
+		ctx->result = ECHOSDK_ERR_STATE;
 		return;
 	}
 
@@ -1472,7 +1472,7 @@ static void set_push_token_fn(void *arg)
 	char pn_params[BSDK_PUSH_PARAMS_BUFSZ];
 	int n = build_push_contact_params(acct, pn_params, sizeof(pn_params));
 	if (n < 0) {
-		ctx->result = BARESDK_ERR_INVAL;  /* token too long */
+		ctx->result = ECHOSDK_ERR_INVAL;  /* token too long */
 		return;
 	}
 
@@ -1481,19 +1481,19 @@ static void set_push_token_fn(void *arg)
 	/* Re-register only when safe: skip if mid-transaction or mid-retry.
 	 * The new cparams are already stored on the UA; the next natural
 	 * ua_register() call will pick them up. */
-	bool reg_in_flight = (acct->reg_state == BARESDK_REG_REGISTERING ||
-	                      acct->reg_state == BARESDK_REG_UNREGISTERING ||
-	                      acct->reg_state == BARESDK_REG_RECONNECTING);
+	bool reg_in_flight = (acct->reg_state == ECHOSDK_REG_REGISTERING ||
+	                      acct->reg_state == ECHOSDK_REG_UNREGISTERING ||
+	                      acct->reg_state == ECHOSDK_REG_RECONNECTING);
 	bool retry_pending = tmr_isrunning(&acct->retry_tmr);
 
 	if (!reg_in_flight && !retry_pending)
 		ua_register(acct->ua);
 }
 
-int baresdk_account_set_push_token(baresdk_account_handle_t acct,
+int echosdk_account_set_push_token(echosdk_account_handle_t acct,
                                     const char *push_token)
 {
-	if (!acct) return BARESDK_ERR_INVAL;
+	if (!acct) return ECHOSDK_ERR_INVAL;
 	push_token_ctx_t ctx = { .acct = acct, .push_token = push_token,
 	                          .result = 0 };
 	int err = bsdk_dispatch_sync(set_push_token_fn, &ctx);

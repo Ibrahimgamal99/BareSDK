@@ -17,7 +17,7 @@
  *
  *      detect → settle → [transports] → [REGISTER] → [re-INVITE] → verify
  *
- * Detection is either pushed by the app (baresdk_network_changed(), driven
+ * Detection is either pushed by the app (echosdk_network_changed(), driven
  * from ConnectivityManager / NWPathMonitor) or pulled by a poll timer.  Both
  * feed the same debounce: an interface coming up produces a burst of address
  * changes, and acting on the first one wastes a full REGISTER round-trip.
@@ -49,7 +49,7 @@
  * (to re-bind the dialog to the new connection — see call_signals_over_ws), and
  * putting working media through an ICE restart for that would cost audio.
  *
- * BARESDK_NET_CALL_ICE_STALE is still emitted, but now only for an ICE call the
+ * ECHOSDK_NET_CALL_ICE_STALE is still emitted, but now only for an ICE call the
  * restart could not be performed for; cfg.net_ice_handover then decides how long
  * to keep trying, as before: BEST_EFFORT runs the normal verify/retry budget,
  * FAIL_FAST gives up after a single attempt so the app gets a prompt
@@ -57,7 +57,7 @@
  * user holding a silent handset for net_verify_ms × net_max_attempts.
  */
 
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* Upper bound on accounts/calls processed per handover. Both lists are
  * snapshotted under their lock and walked afterwards, because migrating a
@@ -94,7 +94,7 @@ struct bsdk_netmon {
 	uint32_t max_attempts;
 	bool     reinvite_calls;
 	bool     hangup_on_fail;
-	baresdk_ice_handover_t ice_handover;
+	echosdk_ice_handover_t ice_handover;
 
 	char     cur_laddr[64];
 };
@@ -103,19 +103,19 @@ static struct bsdk_netmon g_nm;
 
 static void settle_handler(void *arg);
 static void verify_handler(void *arg);
-static void send_migration(struct baresdk_call *lc);
-static uint32_t max_attempts_for(const struct baresdk_call *lc);
+static void send_migration(struct echosdk_call *lc);
+static uint32_t max_attempts_for(const struct echosdk_call *lc);
 
 /* ── Events ──────────────────────────────────────────────────────────────── */
 
-static baresdk_error_t map_err(int err)
+static echosdk_error_t map_err(int err)
 {
 	switch (err) {
-	case 0:        return BARESDK_OK;
-	case ENOMEM:   return BARESDK_ERR_NOMEM;
-	case EINVAL:   return BARESDK_ERR_INVAL;
-	case ETIMEDOUT: return BARESDK_ERR_TIMEOUT;
-	default:       return BARESDK_ERR_TRANSPORT;
+	case 0:        return ECHOSDK_OK;
+	case ENOMEM:   return ECHOSDK_ERR_NOMEM;
+	case EINVAL:   return ECHOSDK_ERR_INVAL;
+	case ETIMEDOUT: return ECHOSDK_ERR_TIMEOUT;
+	default:       return ECHOSDK_ERR_TRANSPORT;
 	}
 }
 
@@ -133,13 +133,13 @@ static baresdk_error_t map_err(int err)
  *
  * Address-routed transports do not have this problem: if the path is unchanged
  * their Contact still resolves. */
-static bool call_signals_over_ws(const struct baresdk_call *lc)
+static bool call_signals_over_ws(const struct echosdk_call *lc)
 {
 	if (!lc || !lc->acct)
 		return false;
 
-	return lc->acct->parsed_transport == BARESDK_TRANSPORT_WS ||
-	       lc->acct->parsed_transport == BARESDK_TRANSPORT_WSS;
+	return lc->acct->parsed_transport == ECHOSDK_TRANSPORT_WS ||
+	       lc->acct->parsed_transport == ECHOSDK_TRANSPORT_WSS;
 }
 
 /* Does this call have ICE?
@@ -149,7 +149,7 @@ static bool call_signals_over_ws(const struct baresdk_call *lc)
  * plain-RTP call when the peer offers no candidates, and that call migrates like
  * any other.  Falls back to the config for a call that has already gone, which
  * is only ever a reporting path. */
-static bool call_uses_ice(const struct baresdk_call *lc)
+static bool call_uses_ice(const struct echosdk_call *lc)
 {
 	if (!lc || !lc->acct)
 		return g_bsdk.cfg.ice_enabled;
@@ -160,16 +160,16 @@ static bool call_uses_ice(const struct baresdk_call *lc)
 	return lc->acct->cfg.ice_enabled || g_bsdk.cfg.ice_enabled;
 }
 
-static void netmon_emit(baresdk_net_event_t what,
-                         struct baresdk_call *lc,
-                         struct baresdk_account *acct,
+static void netmon_emit(echosdk_net_event_t what,
+                         struct echosdk_call *lc,
+                         struct echosdk_account *acct,
                          int err, uint32_t attempt)
 {
-	struct baresdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type                   = BARESDK_EV_NETWORK;
+	qev->ev.type                   = ECHOSDK_EV_NETWORK;
 	qev->ev.u.network.event        = what;
 	qev->ev.u.network.call         = lc;
 	qev->ev.u.network.account      = acct;
@@ -372,33 +372,33 @@ static void update_cur_laddr(void)
 /* ── Snapshots (see BSDK_NET_MAX_SNAP comment) ───────────────────────────── */
 
 struct call_snap {
-	struct baresdk_call **v;
+	struct echosdk_call **v;
 	size_t                max;
 	size_t                n;
 };
 
-static void call_snap_cb(struct baresdk_call *lc, void *arg)
+static void call_snap_cb(struct echosdk_call *lc, void *arg)
 {
 	struct call_snap *s = arg;
 	if (s->n < s->max)
 		s->v[s->n++] = lc;
 }
 
-static size_t snapshot_calls(struct baresdk_call **v, size_t max)
+static size_t snapshot_calls(struct echosdk_call **v, size_t max)
 {
 	struct call_snap s = { .v = v, .max = max, .n = 0 };
 	bsdk_call_foreach(call_snap_cb, &s);
 	return s.n;
 }
 
-static size_t snapshot_accounts(struct baresdk_account **v, size_t max)
+static size_t snapshot_accounts(struct echosdk_account **v, size_t max)
 {
 	struct le *le;
 	size_t n = 0;
 
 	mtx_lock(&g_bsdk.acct_lock);
 	LIST_FOREACH(&g_bsdk.accounts, le) {
-		struct baresdk_account *a = le->data;
+		struct echosdk_account *a = le->data;
 		if (n >= max)
 			break;
 		if (a->destroyed || !a->ua || !a->reg_wanted)
@@ -427,7 +427,7 @@ static size_t snapshot_accounts(struct baresdk_account **v, size_t max)
  */
 static void mark_accounts_reconnecting(void)
 {
-	struct baresdk_account *snap[BSDK_NET_MAX_SNAP];
+	struct echosdk_account *snap[BSDK_NET_MAX_SNAP];
 	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++)
@@ -443,18 +443,18 @@ static void mark_accounts_reconnecting(void)
  * given a retry it never asked for. */
 static void handover_accounts_to_retry(void)
 {
-	struct baresdk_account *snap[BSDK_NET_MAX_SNAP];
+	struct echosdk_account *snap[BSDK_NET_MAX_SNAP];
 	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		if (snap[i]->reg_state == BARESDK_REG_RECONNECTING)
+		if (snap[i]->reg_state == ECHOSDK_REG_RECONNECTING)
 			bsdk_account_schedule_retry(snap[i]);
 	}
 }
 
 /* ── Per-call migration ──────────────────────────────────────────────────── */
 
-static uint32_t rx_packets(const struct baresdk_call *lc)
+static uint32_t rx_packets(const struct echosdk_call *lc)
 {
 	struct audio  *au;
 	struct stream *strm;
@@ -483,13 +483,13 @@ static uint32_t rx_packets(const struct baresdk_call *lc)
  * staleness.  Capping them at one would fail a FAIL_FAST call on the first
  * verify tick without ever sending the single offer it is promised.
  */
-static uint32_t max_attempts_for(const struct baresdk_call *lc)
+static uint32_t max_attempts_for(const struct echosdk_call *lc)
 {
 	/* A call whose ICE was restarted is not offering the wrong candidates any
 	 * more, so the shortcut does not apply to it: it deserves the same retry
 	 * budget as a direct-RTP call, because what it is now waiting on is the
 	 * peer's NAT rebinding, exactly like one. */
-	if (g_nm.ice_handover == BARESDK_ICE_HANDOVER_FAIL_FAST &&
+	if (g_nm.ice_handover == ECHOSDK_ICE_HANDOVER_FAIL_FAST &&
 	    call_uses_ice(lc) && !lc->net_ice_restarted)
 		return 1;
 
@@ -516,10 +516,10 @@ static uint32_t restart_grace_ms(void)
 	     : 3000;   /* ice_shim.c's own restart deadline */
 }
 
-static void fail_migration(struct baresdk_call *lc, int err)
+static void fail_migration(struct echosdk_call *lc, int err)
 {
 	lc->net_mig_state = BSDK_MIG_FAILED;
-	netmon_emit(BARESDK_NET_CALL_MIGRATION_FAILED, lc, lc->acct, err,
+	netmon_emit(ECHOSDK_NET_CALL_MIGRATION_FAILED, lc, lc->acct, err,
 	            lc->net_mig_tries);
 
 	/* Leaving a call up with dead audio is usually worse than ending it,
@@ -530,7 +530,7 @@ static void fail_migration(struct baresdk_call *lc, int err)
 
 static bool migration_pending(void)
 {
-	struct baresdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
 	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
@@ -551,7 +551,7 @@ static void arm_verify(void)
 }
 
 /* Send (or re-send) the re-INVITE that moves this call's media. */
-static void send_migration(struct baresdk_call *lc)
+static void send_migration(struct echosdk_call *lc)
 {
 	int err;
 
@@ -567,7 +567,7 @@ static void send_migration(struct baresdk_call *lc)
 	if (!call_refresh_allowed(lc->bc)) {
 		if (lc->net_mig_state != BSDK_MIG_DEFERRED) {
 			lc->net_mig_state = BSDK_MIG_DEFERRED;
-			netmon_emit(BARESDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
+			netmon_emit(ECHOSDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
 			            lc->net_mig_tries + 1u);
 		}
 		return;
@@ -600,7 +600,7 @@ static void send_migration(struct baresdk_call *lc)
 			lc->net_mig_state     = BSDK_MIG_SENT;
 			lc->net_mig_due       = tmr_jiffies() + restart_grace_ms()
 			                      + verify_tick_ms();
-			netmon_emit(BARESDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
+			netmon_emit(ECHOSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
 			            lc->net_mig_tries);
 			return;
 		}
@@ -612,7 +612,7 @@ static void send_migration(struct baresdk_call *lc)
 		 * before the app has to sit through the retries. */
 		if (err != ENOENT && !lc->net_ice_stale_sent) {
 			lc->net_ice_stale_sent = true;
-			netmon_emit(BARESDK_NET_CALL_ICE_STALE, lc, lc->acct,
+			netmon_emit(ECHOSDK_NET_CALL_ICE_STALE, lc, lc->acct,
 			            err, lc->net_mig_tries);
 		}
 	}
@@ -630,12 +630,12 @@ static void send_migration(struct baresdk_call *lc)
 
 	lc->net_mig_state = BSDK_MIG_SENT;
 	lc->net_mig_due   = tmr_jiffies() + verify_tick_ms();
-	netmon_emit(BARESDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
+	netmon_emit(ECHOSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
 	            lc->net_mig_tries);
 
 	if (!g_nm.verify_ms) {
 		lc->net_mig_state = BSDK_MIG_DONE;
-		netmon_emit(BARESDK_NET_CALL_MIGRATED, lc, lc->acct, 0,
+		netmon_emit(ECHOSDK_NET_CALL_MIGRATED, lc, lc->acct, 0,
 		            lc->net_mig_tries);
 	}
 }
@@ -648,17 +648,17 @@ static void send_migration(struct baresdk_call *lc)
  * stamped with the current generation, otherwise verify_handler() skips it and
  * the call is stranded on its old SDP address with nothing to notice.
  */
-static void wait_for_addr(struct baresdk_call *lc)
+static void wait_for_addr(struct echosdk_call *lc)
 {
 	if (lc->net_mig_state == BSDK_MIG_WAIT_ADDR)
 		return;
 
 	lc->net_mig_state = BSDK_MIG_WAIT_ADDR;
-	netmon_emit(BARESDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
+	netmon_emit(ECHOSDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
 	            lc->net_mig_tries + 1u);
 }
 
-static void start_migration(struct baresdk_call *lc)
+static void start_migration(struct echosdk_call *lc)
 {
 	struct stream   *strm;
 	const struct sa *raddr, *old;
@@ -726,7 +726,7 @@ static void start_migration(struct baresdk_call *lc)
 	 * re-INVITE is owed, and send_migration() needs the first one: it decides
 	 * between an ICE restart and a plain re-offer. */
 	if (old && sa_cmp(&laddr, old, SA_ADDR)) {
-		debug("baresdk/netmon: same path but WS transport was reset —"
+		debug("EchoSDK/netmon: same path but WS transport was reset —"
 		      " re-INVITE to refresh the Contact\n");
 	}
 	else {
@@ -747,11 +747,11 @@ static void start_migration(struct baresdk_call *lc)
  * The app is told, and can redial or show the user something truthful. */
 static void fail_pending_migrations(int err)
 {
-	struct baresdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
 	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		struct baresdk_call *lc = snap[i];
+		struct echosdk_call *lc = snap[i];
 
 		/* Only calls that were live when this round started and have not
 		 * already reached a terminal migration state. */
@@ -770,7 +770,7 @@ static void fail_pending_migrations(int err)
 
 static void migrate_calls(void)
 {
-	struct baresdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
 	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++)
@@ -787,7 +787,7 @@ static void migrate_calls(void)
  */
 static void verify_handler(void *arg)
 {
-	struct baresdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
 	size_t n;
 	(void)arg;
 
@@ -797,7 +797,7 @@ static void verify_handler(void *arg)
 	n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		struct baresdk_call *lc = snap[i];
+		struct echosdk_call *lc = snap[i];
 
 		if (lc->net_mig_gen != g_nm.gen)
 			continue;
@@ -843,7 +843,7 @@ static void verify_handler(void *arg)
 			 * same way, without inspecting RTP or retrying. */
 			if (!g_nm.verify_ms) {
 				lc->net_mig_state = BSDK_MIG_DONE;
-				netmon_emit(BARESDK_NET_CALL_MIGRATED, lc,
+				netmon_emit(ECHOSDK_NET_CALL_MIGRATED, lc,
 				            lc->acct, 0, lc->net_mig_tries);
 				break;
 			}
@@ -851,11 +851,11 @@ static void verify_handler(void *arg)
 			/* A held call carries no RTP, so the counter can never
 			 * advance — the answered re-INVITE is all the confirmation
 			 * available. */
-			if (lc->state == BARESDK_CALL_HELD ||
+			if (lc->state == ECHOSDK_CALL_HELD ||
 			    call_is_onhold(lc->bc) ||
 			    rx_packets(lc) > lc->net_rx_at_mig) {
 				lc->net_mig_state = BSDK_MIG_DONE;
-				netmon_emit(BARESDK_NET_CALL_MIGRATED, lc, lc->acct,
+				netmon_emit(ECHOSDK_NET_CALL_MIGRATED, lc, lc->acct,
 				            0, lc->net_mig_tries);
 			}
 			else if (lc->net_mig_tries >= max_attempts_for(lc))
@@ -872,7 +872,7 @@ static void verify_handler(void *arg)
 	arm_verify();
 }
 
-void bsdk_netmon_call_refreshable(struct baresdk_call *lc)
+void bsdk_netmon_call_refreshable(struct echosdk_call *lc)
 {
 	if (!g_nm.started || !lc)
 		return;
@@ -884,7 +884,7 @@ void bsdk_netmon_call_refreshable(struct baresdk_call *lc)
 	tmr_start(&g_nm.tmr_verify, 1, verify_handler, NULL);
 }
 
-void bsdk_netmon_call_sdp_answer(struct baresdk_call *lc)
+void bsdk_netmon_call_sdp_answer(struct echosdk_call *lc)
 {
 	if (!g_nm.started || !lc)
 		return;
@@ -893,7 +893,7 @@ void bsdk_netmon_call_sdp_answer(struct baresdk_call *lc)
 
 	/* The peer took our new address.  Media has not necessarily resumed —
 	 * that is what the verify tick is still watching for. */
-	netmon_emit(BARESDK_NET_CALL_MIGRATE_ACCEPTED, lc, lc->acct, 0,
+	netmon_emit(ECHOSDK_NET_CALL_MIGRATE_ACCEPTED, lc, lc->acct, 0,
 	            lc->net_mig_tries);
 }
 
@@ -901,11 +901,11 @@ void bsdk_netmon_call_sdp_answer(struct baresdk_call *lc)
 
 static void reregister_accounts(void)
 {
-	struct baresdk_account *snap[BSDK_NET_MAX_SNAP];
+	struct echosdk_account *snap[BSDK_NET_MAX_SNAP];
 	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		struct baresdk_account *a = snap[i];
+		struct echosdk_account *a = snap[i];
 
 		/* Credentials the registrar rejected are still wrong on the new
 		 * network, so this account is not part of the recovery.
@@ -916,8 +916,8 @@ static void reregister_accounts(void)
 		 * while carrying reconnecting = true internally.  Every other
 		 * failure — transport, timeout, 5xx — is exactly what a new network
 		 * might fix, so those do get the fresh attempt below. */
-		if (a->reg_state == BARESDK_REG_FAILED &&
-		    a->reg_error == BARESDK_ERR_AUTH)
+		if (a->reg_state == ECHOSDK_REG_FAILED &&
+		    a->reg_error == ECHOSDK_ERR_AUTH)
 			continue;
 
 		/* A new network deserves a fresh attempt: an account sitting in a
@@ -931,7 +931,7 @@ static void reregister_accounts(void)
 		 * re-bind).  Cleared when it is answered. */
 		a->reconnecting = true;
 
-		netmon_emit(BARESDK_NET_REREGISTERING, NULL, a, 0, 0);
+		netmon_emit(ECHOSDK_NET_REREGISTERING, NULL, a, 0, 0);
 		(void)ua_register(a->ua);
 		bsdk_account_watch_registration(a);
 	}
@@ -962,7 +962,7 @@ static void apply_handover(void)
 		if (!g_nm.down) {
 			g_nm.down = true;
 			g_nm.cur_laddr[0] = '\0';
-			netmon_emit(BARESDK_NET_DOWN, NULL, NULL, 0, 0);
+			netmon_emit(ECHOSDK_NET_DOWN, NULL, NULL, 0, 0);
 			mark_accounts_reconnecting();
 		}
 		/* Backoff for the no-address wait uses its OWN counter.  Sharing
@@ -982,14 +982,14 @@ static void apply_handover(void)
 	if (!use.routable) {
 		if (!g_nm.down) {
 			g_nm.down = true;
-			netmon_emit(BARESDK_NET_DOWN, NULL, NULL, 0, 0);
+			netmon_emit(ECHOSDK_NET_DOWN, NULL, NULL, 0, 0);
 			mark_accounts_reconnecting();
 		}
 	}
 	else if (g_nm.down) {
 		g_nm.down = false;
 		update_cur_laddr();
-		netmon_emit(BARESDK_NET_UP, NULL, NULL, 0, 0);
+		netmon_emit(ECHOSDK_NET_UP, NULL, NULL, 0, 0);
 	}
 
 	/* Cellular and Wi-Fi hand out different resolvers; the old ones are
@@ -1007,7 +1007,7 @@ static void apply_handover(void)
 	err = uag_reset_transp(false, false);
 	if (err) {
 		g_nm.attempt++;
-		netmon_emit(BARESDK_NET_HANDOVER_FAILED, NULL, NULL, err,
+		netmon_emit(ECHOSDK_NET_HANDOVER_FAILED, NULL, NULL, err,
 		            g_nm.attempt);
 		if (g_nm.attempt < g_nm.max_attempts) {
 			tmr_start(&g_nm.tmr_settle, backoff_ms(g_nm.attempt),
@@ -1015,7 +1015,7 @@ static void apply_handover(void)
 		}
 		else {
 			/* Out of attempts.  reset_pending stays true so the next real
-			 * address change or baresdk_network_changed() picks it up, but
+			 * address change or echosdk_network_changed() picks it up, but
 			 * reset the counter — otherwise that next round would inherit an
 			 * exhausted budget and give up immediately.  The app sees
 			 * attempt == max_attempts on the final HANDOVER_FAILED. */
@@ -1057,7 +1057,7 @@ static void apply_handover(void)
 	g_nm.gen++;
 
 	update_cur_laddr();
-	netmon_emit(BARESDK_NET_TRANSPORT_RESET, NULL, NULL, 0, 0);
+	netmon_emit(ECHOSDK_NET_TRANSPORT_RESET, NULL, NULL, 0, 0);
 
 	reregister_accounts();
 
@@ -1103,7 +1103,7 @@ static void netmon_trigger(bool forced)
 		g_nm.announced      = true;
 		g_nm.handover_start = tmr_jiffies();
 		update_cur_laddr();
-		netmon_emit(BARESDK_NET_CHANGE_DETECTED, NULL, NULL, 0, 0);
+		netmon_emit(ECHOSDK_NET_CHANGE_DETECTED, NULL, NULL, 0, 0);
 		mark_accounts_reconnecting();
 	}
 
@@ -1127,7 +1127,7 @@ static void poll_handler(void *arg)
 
 int bsdk_netmon_init(void)
 {
-	const baresdk_config_t *cfg = &g_bsdk.cfg;
+	const echosdk_config_t *cfg = &g_bsdk.cfg;
 
 	memset(&g_nm, 0, sizeof(g_nm));
 	tmr_init(&g_nm.tmr_poll);
@@ -1155,7 +1155,7 @@ int bsdk_netmon_init(void)
 }
 
 /* Two-step teardown.  bsdk_netmon_stop() is called from the app thread at the
- * top of baresdk_shutdown(), before UAs and calls are torn down: the handlers
+ * top of echosdk_shutdown(), before UAs and calls are torn down: the handlers
  * bail on !started, so no timer that fires meanwhile touches a half-freed
  * account or call.  The timers themselves are cancelled from
  * bsdk_netmon_close() once the re loop has stopped and nothing can fire. */
@@ -1180,7 +1180,7 @@ static void changed_fn(void *arg)
 	netmon_trigger(true);
 }
 
-int baresdk_network_changed(void)
+int echosdk_network_changed(void)
 {
 	return bsdk_dispatch(changed_fn, NULL);
 }
@@ -1199,7 +1199,7 @@ static void set_monitor_fn(void *arg)
 		tmr_start(&g_nm.tmr_poll, g_nm.poll_s * 1000, poll_handler, NULL);
 }
 
-int baresdk_network_set_monitor_interval(uint32_t seconds)
+int echosdk_network_set_monitor_interval(uint32_t seconds)
 {
 	monitor_ctx_t ctx = { .seconds = seconds };
 	return bsdk_dispatch_sync(set_monitor_fn, &ctx);
@@ -1218,7 +1218,7 @@ static void set_policy_fn(void *arg)
 	g_nm.hangup_on_fail = ctx->hangup;
 }
 
-int baresdk_network_set_handover_policy(bool reinvite_calls,
+int echosdk_network_set_handover_policy(bool reinvite_calls,
                                          bool hangup_on_failure)
 {
 	policy_ctx_t ctx = { .reinvite = reinvite_calls,
@@ -1239,12 +1239,12 @@ static void local_addr_fn(void *arg)
 	str_ncpy(ctx->buf, g_nm.cur_laddr, ctx->sz);
 }
 
-int baresdk_network_local_addr(char *buf, size_t sz)
+int echosdk_network_local_addr(char *buf, size_t sz)
 {
 	laddr_ctx_t ctx = { .buf = buf, .sz = sz };
 
 	if (!buf || sz == 0)
-		return BARESDK_ERR_INVAL;
+		return ECHOSDK_ERR_INVAL;
 
 	buf[0] = '\0';
 	return bsdk_dispatch_sync(local_addr_fn, &ctx);
@@ -1256,7 +1256,7 @@ static void is_up_fn(void *arg)
 	*out = have_routable_addr();
 }
 
-bool baresdk_network_is_up(void)
+bool echosdk_network_is_up(void)
 {
 	bool up = false;
 

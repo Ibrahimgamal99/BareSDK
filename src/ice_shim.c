@@ -15,7 +15,7 @@
  * module's no-STUN/TURN case arms a 1 ms timer whose handler walks
  * `sess->medial` and calls the gather handler once per media entry, so an
  * empty list means the estab handler is never invoked.  The call then sits in
- * BARESDK_CALL_CALLING forever — no INVITE on the wire, no event, nothing for
+ * ECHOSDK_CALL_CALLING forever — no INVITE on the wire, no event, nothing for
  * the app to react to.  `ua_connect()` returned 0, so the SDK cannot see it
  * either.
  *
@@ -25,7 +25,7 @@
  * same with `ice_gathering_timeout`, default 500 ms; pjsua has
  * PJSUA_ICE_TRANSPORT_INIT_TIMEOUT (30 s) whose own comment calls it "a safety
  * net so the calling thread cannot block indefinitely if the callback never
- * arrives".  This file is that bound for baresdk, as cfg.ice_gathering_timeout_ms.
+ * arrives".  This file is that bound for EchoSDK, as cfg.ice_gathering_timeout_ms.
  *
  * ── How it hooks in ─────────────────────────────────────────────────────────
  *
@@ -94,7 +94,7 @@
  * media encryption that is keyed to them.
  */
 
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* Originals, captured at install time. */
 static mnat_sess_h   *real_sessh;
@@ -279,14 +279,14 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 		s->restarting = false;
 
 		if (err || scode) {
-			warning("baresdk/ice: gathering failed after the "
+			warning("EchoSDK/ice: gathering failed after the "
 			        "deadline had already released the offer "
 			        "(%m, %u %s) — call left alone\n",
 			        err, scode, reason ? reason : "");
 			return;
 		}
 
-		info("baresdk/ice: gathering completed after the deadline; "
+		info("EchoSDK/ice: gathering completed after the deadline; "
 		     "re-offering the full candidate set\n");
 	}
 
@@ -298,7 +298,7 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 	 * interface is better than the old network's candidate list, which is
 	 * what not offering at all would leave in place. */
 	if (s->restarting && (err || scode)) {
-		warning("baresdk/ice: restart gathering failed (%m, %u %s) —"
+		warning("EchoSDK/ice: restart gathering failed (%m, %u %s) —"
 		        " offering the candidates gathered so far\n",
 		        err, scode, reason ? reason : "");
 		err    = 0;
@@ -328,7 +328,7 @@ static void gather_deadline(void *arg)
 	 * the ice module has put into the SDP so far.  Reporting an error
 	 * instead would close the call, which is the outcome the deadline
 	 * exists to avoid. */
-	warning("baresdk/ice: %s gathering did not complete in time; offering "
+	warning("EchoSDK/ice: %s gathering did not complete in time; offering "
 	        "the candidates gathered so far "
 	        "(cfg.ice_gathering_timeout_ms=%u)\n",
 	        s->restarting ? "restart" : "candidate",
@@ -499,7 +499,7 @@ static void ice_connected(const struct sa *raddr1, const struct sa *raddr2,
 		return;
 	s->reoffered = true;
 
-	info("baresdk/ice: selected local candidate %J was never signalled "
+	info("EchoSDK/ice: selected local candidate %J was never signalled "
 	     "(offered %J) — re-offering so the peer accepts our media\n",
 	     laddr, &m->signalled);
 
@@ -649,7 +649,7 @@ static void reassert_selected(struct bsdk_ice_sess *s)
 
 		if (!m->reasserted) {
 			m->reasserted = true;
-			info("baresdk/ice: re-applying the remote address ICE "
+			info("EchoSDK/ice: re-applying the remote address ICE "
 			     "selected (%J) after the SDP exchange reset it to "
 			     "the signalled %J\n",
 			     &m->selected[0], &m->rsig);
@@ -756,7 +756,7 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	                 s->have_srv ? &s->srv : NULL, s->user, s->pass,
 	                 s->sdp, true, ice_estab, s);
 	if (err) {
-		warning("baresdk/ice: restart: replacement session failed"
+		warning("EchoSDK/ice: restart: replacement session failed"
 		        " (%m) — keeping the current ICE state\n", err);
 		return err;
 	}
@@ -790,7 +790,7 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 		e = real_mediah(&m->inner, s->inner, m->sock1, m->sock2,
 		                m->sdpm, ice_connected, m);
 		if (e) {
-			warning("baresdk/ice: restart: media '%s' failed (%m)"
+			warning("EchoSDK/ice: restart: media '%s' failed (%m)"
 			        " — that stream keeps the candidates it had\n",
 			        sdp_media_name(m->sdpm), e);
 		}
@@ -801,7 +801,7 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	         : BSDK_ICE_RESTART_DEADLINE_MS;
 	tmr_start(&s->tmr, deadline, gather_deadline, s);
 
-	info("baresdk/ice: restarting ICE on %j — new credentials, re-gathering,"
+	info("EchoSDK/ice: restarting ICE on %j — new credentials, re-gathering,"
 	     " re-INVITE follows within %u ms\n",
 	     laddr, deadline);
 
@@ -855,7 +855,7 @@ int bsdk_ice_shim_init(void)
 	if (!m)
 		return ENOENT;
 
-	/* baresdk_init after baresdk_shutdown re-runs module_init(), which
+	/* echosdk_init after echosdk_shutdown re-runs module_init(), which
 	 * re-registers the same static struct.  Installing twice would capture
 	 * our own wrappers as the originals and recurse forever. */
 	if (m->sessh == ice_sessh)

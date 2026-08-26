@@ -6,8 +6,8 @@
 # Crypto:  srtp = SDES-SRTP, dtls_srtp = DTLS-SRTP (RFC 5764).
 # NAT:     stun/turn/ice = RFC 5389/5766/8445.
 
-set(BARESDK_DESKTOP_MODULES
-  # Audio codecs — must stay identical to BARESDK_MOBILE_MODULES_BASE so the
+set(ECHOSDK_DESKTOP_MODULES
+  # Audio codecs — must stay identical to ECHOSDK_MOBILE_MODULES_BASE so the
   # default SDP offer (see BSDK_DEFAULT_AUDIO_CODECS in src/account.c) is
   # satisfiable on every platform.
   "opus"
@@ -32,7 +32,7 @@ set(BARESDK_DESKTOP_MODULES
   "presence"
   "uuid"
 )
-if(BARESDK_WITH_WEBRTC_AEC)
-  list(APPEND BARESDK_DESKTOP_MODULES "webrtc_aec")
+if(ECHOSDK_WITH_WEBRTC_AEC)
+  list(APPEND ECHOSDK_DESKTOP_MODULES "webrtc_aec")
 endif()
-list(JOIN BARESDK_DESKTOP_MODULES ";" BARESDK_DESKTOP_MODULES)
+list(JOIN ECHOSDK_DESKTOP_MODULES ";" ECHOSDK_DESKTOP_MODULES)

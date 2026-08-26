@@ -1,39 +1,39 @@
 /**
  * @file presence.c  Presence publish + BLF/MWI consumer
  *
- * Presence publish: baresdk_account_publish_presence() →
+ * Presence publish: echosdk_account_publish_presence() →
  *   ua_presence_status_set() — baresip's presence module sends PUBLISH.
  *
  * MWI: BEVENT_MWI_NOTIFY fires with bevent_get_text() = raw NOTIFY body.
  *   We parse "Messages-Waiting: yes/no" and "Voice-Message: new/old (urgent)"
- *   then post BARESDK_EV_MWI.
+ *   then post ECHOSDK_EV_MWI.
  *
  * Contact/BLF: contact_update_h fires when a subscribed contact's presence
  *   state changes (via NOTIFY from the PBX). We forward it as
- *   BARESDK_EV_PRESENCE_STATE. The presence + contact modules handle the
+ *   ECHOSDK_EV_PRESENCE_STATE. The presence + contact modules handle the
  *   SUBSCRIBE/NOTIFY dialog automatically.
  *
- * 100rel: baresdk_account_set_100rel() maps to account_set_rel100_mode().
+ * 100rel: echosdk_account_set_100rel() maps to account_set_rel100_mode().
  */
 
 #include <string.h>
 #include <stdlib.h>
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* ── Presence publish ────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_account   *acct;
-	baresdk_presence_status_t status;
+	struct echosdk_account   *acct;
+	echosdk_presence_status_t status;
 	int                       result;
 } pub_ctx_t;
 
-static enum presence_status to_baresip_status(baresdk_presence_status_t s)
+static enum presence_status to_baresip_status(echosdk_presence_status_t s)
 {
 	switch (s) {
-	case BARESDK_PRESENCE_OPEN:   return PRESENCE_OPEN;
-	case BARESDK_PRESENCE_CLOSED: return PRESENCE_CLOSED;
-	case BARESDK_PRESENCE_BUSY:   return PRESENCE_BUSY;
+	case ECHOSDK_PRESENCE_OPEN:   return PRESENCE_OPEN;
+	case ECHOSDK_PRESENCE_CLOSED: return PRESENCE_CLOSED;
+	case ECHOSDK_PRESENCE_BUSY:   return PRESENCE_BUSY;
 	default:                      return PRESENCE_UNKNOWN;
 	}
 }
@@ -46,10 +46,10 @@ static void publish_fn(void *arg)
 	ctx->result = 0;
 }
 
-int baresdk_account_publish_presence(baresdk_account_handle_t account,
-                                      baresdk_presence_status_t status)
+int echosdk_account_publish_presence(echosdk_account_handle_t account,
+                                      echosdk_presence_status_t status)
 {
-	if (!account) return BARESDK_ERR_INVAL;
+	if (!account) return ECHOSDK_ERR_INVAL;
 	pub_ctx_t ctx = {.acct = account, .status = status, .result = 0};
 	int err = bsdk_dispatch_sync(publish_fn, &ctx);
 	return err ? err : ctx.result;
@@ -58,8 +58,8 @@ int baresdk_account_publish_presence(baresdk_account_handle_t account,
 /* ── 100rel ──────────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_account *acct;
-	baresdk_100rel_mode_t   mode;
+	struct echosdk_account *acct;
+	echosdk_100rel_mode_t   mode;
 	int                     result;
 } rel100_ctx_t;
 
@@ -72,10 +72,10 @@ static void set_100rel_fn(void *arg)
 	ctx->result = account_set_rel100_mode(ba, (enum rel100_mode)ctx->mode);
 }
 
-int baresdk_account_set_100rel(baresdk_account_handle_t account,
-                                baresdk_100rel_mode_t mode)
+int echosdk_account_set_100rel(echosdk_account_handle_t account,
+                                echosdk_100rel_mode_t mode)
 {
-	if (!account) return BARESDK_ERR_INVAL;
+	if (!account) return ECHOSDK_ERR_INVAL;
 	rel100_ctx_t ctx = {.acct = account, .mode = mode, .result = 0};
 	int err = bsdk_dispatch_sync(set_100rel_fn, &ctx);
 	return err ? err : ctx.result;
@@ -127,14 +127,14 @@ void bsdk_presence_handle_mwi(struct bevent *event)
 	struct ua      *ua   = bevent_get_ua(event);
 	const char     *body = bevent_get_text(event);
 
-	struct baresdk_account *acct = ua ? bsdk_account_find_by_ua(ua) : NULL;
+	struct echosdk_account *acct = ua ? bsdk_account_find_by_ua(ua) : NULL;
 
-	struct baresdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = BARESDK_EV_MWI;
-	baresdk_ev_mwi_t *m = &qev->ev.u.mwi;
+	qev->ev.type = ECHOSDK_EV_MWI;
+	echosdk_ev_mwi_t *m = &qev->ev.u.mwi;
 	m->account = acct;
 
 	if (body) {
@@ -151,13 +151,13 @@ void bsdk_presence_handle_mwi(struct bevent *event)
 
 /* ── Contact/BLF presence update handler ────────────────────────────────── */
 
-static baresdk_presence_status_t from_baresip_status(enum presence_status s)
+static echosdk_presence_status_t from_baresip_status(enum presence_status s)
 {
 	switch (s) {
-	case PRESENCE_OPEN:   return BARESDK_PRESENCE_OPEN;
-	case PRESENCE_CLOSED: return BARESDK_PRESENCE_CLOSED;
-	case PRESENCE_BUSY:   return BARESDK_PRESENCE_BUSY;
-	default:              return BARESDK_PRESENCE_UNKNOWN;
+	case PRESENCE_OPEN:   return ECHOSDK_PRESENCE_OPEN;
+	case PRESENCE_CLOSED: return ECHOSDK_PRESENCE_CLOSED;
+	case PRESENCE_BUSY:   return ECHOSDK_PRESENCE_BUSY;
+	default:              return ECHOSDK_PRESENCE_UNKNOWN;
 	}
 }
 
@@ -168,15 +168,15 @@ static void contact_update_handler(struct contact *c, bool removed, void *arg)
 		return;
 
 	const char *uri = contact_uri(c);
-	baresdk_presence_status_t status =
+	echosdk_presence_status_t status =
 		from_baresip_status(contact_presence(c));
 
-	struct baresdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = BARESDK_EV_PRESENCE_STATE;
-	baresdk_ev_presence_state_t *ps = &qev->ev.u.presence;
+	qev->ev.type = ECHOSDK_EV_PRESENCE_STATE;
+	echosdk_ev_presence_state_t *ps = &qev->ev.u.presence;
 	ps->account    = NULL; /* global — contact not tied to one account */
 	ps->status     = status;
 
@@ -191,7 +191,7 @@ static void contact_update_handler(struct contact *c, bool removed, void *arg)
 /* ── Presence subscribe / unsubscribe ─────────────────────────────────── */
 
 typedef struct {
-	struct baresdk_account *acct;
+	struct echosdk_account *acct;
 	char                   *uri;
 	int                     result;
 } sub_ctx_t;
@@ -219,20 +219,20 @@ static void subscribe_fn(void *arg)
 		contact_set_presence(c, true);
 }
 
-int baresdk_account_subscribe_presence(baresdk_account_handle_t account,
+int echosdk_account_subscribe_presence(echosdk_account_handle_t account,
                                         const char *target_uri)
 {
-	if (!account || !target_uri) return BARESDK_ERR_INVAL;
+	if (!account || !target_uri) return ECHOSDK_ERR_INVAL;
 	sub_ctx_t ctx = {.acct = account, .result = 0};
 	ctx.uri = bsdk_strdup(target_uri);
-	if (!ctx.uri) return BARESDK_ERR_NOMEM;
+	if (!ctx.uri) return ECHOSDK_ERR_NOMEM;
 	int err = bsdk_dispatch_sync(subscribe_fn, &ctx);
 	mem_deref(ctx.uri);
 	return err ? err : ctx.result;
 }
 
 typedef struct {
-	struct baresdk_account *acct;
+	struct echosdk_account *acct;
 	char                   *uri;
 	int                     result;
 } unsub_ctx_t;
@@ -255,13 +255,13 @@ static void unsubscribe_fn(void *arg)
 	}
 }
 
-int baresdk_account_unsubscribe_presence(baresdk_account_handle_t account,
+int echosdk_account_unsubscribe_presence(echosdk_account_handle_t account,
                                           const char *target_uri)
 {
-	if (!account || !target_uri) return BARESDK_ERR_INVAL;
+	if (!account || !target_uri) return ECHOSDK_ERR_INVAL;
 	unsub_ctx_t ctx = {.acct = account, .result = 0};
 	ctx.uri = bsdk_strdup(target_uri);
-	if (!ctx.uri) return BARESDK_ERR_NOMEM;
+	if (!ctx.uri) return ECHOSDK_ERR_NOMEM;
 	int err = bsdk_dispatch_sync(unsubscribe_fn, &ctx);
 	mem_deref(ctx.uri);
 	return err ? err : ctx.result;

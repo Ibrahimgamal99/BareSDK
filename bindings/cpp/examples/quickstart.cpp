@@ -3,7 +3,7 @@
  *                  make or receive one call.
  *
  * Build (Linux):
- *   g++ -std=c++17 quickstart.cpp baresdk.so -I. -o quickstart
+ *   g++ -std=c++17 quickstart.cpp echosdk.so -I. -o quickstart
  *
  * Usage:
  *   ./quickstart account.json                          # receive mode
@@ -12,8 +12,8 @@
  *   ./quickstart alice@pbx.example.com secret bob@...  # legacy CLI mode (dial)
  *
  * Debug:
- *   BARESDK_DEBUG_INIT=1 ./quickstart account.json     # verbose init/shutdown trace
- *   $env:BARESDK_DEBUG_INIT=1; .\quickstart.exe ...    # PowerShell equivalent
+ *   ECHOSDK_DEBUG_INIT=1 ./quickstart account.json     # verbose init/shutdown trace
+ *   $env:ECHOSDK_DEBUG_INIT=1; .\quickstart.exe ...    # PowerShell equivalent
  *
  * Minimal JSON account config (account.json):
  * {
@@ -43,7 +43,7 @@
  *   "rel100":         "enabled"                       // "disabled" | "enabled" | "required"
  */
 
-#include "../baresdk.hpp"
+#include "../echosdk.hpp"
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
@@ -68,7 +68,7 @@
  * Live in-call timer
  *
  * Talk time is kept on a steady_clock here rather than read from
- * baresdk_ev_media_stats_t::call_duration_ms: that figure only advances once
+ * echosdk_ev_media_stats_t::call_duration_ms: that figure only advances once
  * per stats_interval_ms and is not produced at all when stats are disabled, so
  * a clock built on it moves in five-second jumps.  The SDK's figure is the one
  * to report; this one is the one to watch.
@@ -286,7 +286,7 @@ static JsonValue load_json_file(const std::string& path) {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Helper: safely extract a C string from a std::string that must outlive the
- * baresdk_account_config_t that references it.
+ * echosdk_account_config_t that references it.
  * ═══════════════════════════════════════════════════════════════════════════ */
 static const char* cstr_or_null(const std::string& s) {
     return s.empty() ? nullptr : s.c_str();
@@ -309,49 +309,49 @@ struct AccountConfig {
     bool        enabled     = true;
     int         server_port = 0;
 
-    baresdk_transport_t    transport   = BARESDK_TRANSPORT_WSS;
-    baresdk_media_enc_t    media_enc   = BARESDK_MEDIA_ENC_DTLS_SRTP;
+    echosdk_transport_t    transport   = ECHOSDK_TRANSPORT_WSS;
+    echosdk_media_enc_t    media_enc   = ECHOSDK_MEDIA_ENC_DTLS_SRTP;
     bool                   ice_enabled = true;
     bool                   rtcp_mux    = false;
     bool                   rtcp_mux_set = false;
     bool                   verify_tls  = false;
-    baresdk_100rel_mode_t  rel100      = BARESDK_100REL_DISABLED;
-    baresdk_dtmf_mode_t    dtmf_mode   = BARESDK_DTMF_RFC4733;
+    echosdk_100rel_mode_t  rel100      = ECHOSDK_100REL_DISABLED;
+    echosdk_dtmf_mode_t    dtmf_mode   = ECHOSDK_DTMF_RFC4733;
 
     /* ── the C struct; populated by build() ── */
-    baresdk_account_config_t acfg{};
+    echosdk_account_config_t acfg{};
 
     /* ── parse a transport string ── */
-    static baresdk_transport_t parse_transport(const std::string& s) {
-        if (s == "udp") return BARESDK_TRANSPORT_UDP;
-        if (s == "tcp") return BARESDK_TRANSPORT_TCP;
-        if (s == "tls") return BARESDK_TRANSPORT_TLS;
-        if (s == "ws")  return BARESDK_TRANSPORT_WS;
-        if (s == "wss") return BARESDK_TRANSPORT_WSS;
+    static echosdk_transport_t parse_transport(const std::string& s) {
+        if (s == "udp") return ECHOSDK_TRANSPORT_UDP;
+        if (s == "tcp") return ECHOSDK_TRANSPORT_TCP;
+        if (s == "tls") return ECHOSDK_TRANSPORT_TLS;
+        if (s == "ws")  return ECHOSDK_TRANSPORT_WS;
+        if (s == "wss") return ECHOSDK_TRANSPORT_WSS;
         throw std::runtime_error("unknown transport: " + s);
     }
 
     /* ── parse a media_enc string ── */
-    static baresdk_media_enc_t parse_media_enc(const std::string& s) {
-        if (s == "none")      return BARESDK_MEDIA_ENC_NONE;
-        if (s == "sdes")      return BARESDK_MEDIA_ENC_SDES;
-        if (s == "dtls_srtp") return BARESDK_MEDIA_ENC_DTLS_SRTP;
+    static echosdk_media_enc_t parse_media_enc(const std::string& s) {
+        if (s == "none")      return ECHOSDK_MEDIA_ENC_NONE;
+        if (s == "sdes")      return ECHOSDK_MEDIA_ENC_SDES;
+        if (s == "dtls_srtp") return ECHOSDK_MEDIA_ENC_DTLS_SRTP;
         throw std::runtime_error("unknown media_enc: " + s);
     }
 
     /* ── parse a 100rel string ── */
-    static baresdk_100rel_mode_t parse_100rel(const std::string& s) {
-        if (s == "disabled") return BARESDK_100REL_DISABLED;
-        if (s == "enabled")  return BARESDK_100REL_ENABLED;
-        if (s == "required") return BARESDK_100REL_REQUIRED;
+    static echosdk_100rel_mode_t parse_100rel(const std::string& s) {
+        if (s == "disabled") return ECHOSDK_100REL_DISABLED;
+        if (s == "enabled")  return ECHOSDK_100REL_ENABLED;
+        if (s == "required") return ECHOSDK_100REL_REQUIRED;
         throw std::runtime_error("unknown rel100 value: " + s);
     }
 
     /* ── parse a dtmf_mode string ── */
-    static baresdk_dtmf_mode_t parse_dtmf_mode(const std::string& s) {
-        if (s == "rfc4733")  return BARESDK_DTMF_RFC4733;
-        if (s == "sip_info") return BARESDK_DTMF_SIP_INFO;
-        if (s == "auto")     return BARESDK_DTMF_AUTO;
+    static echosdk_dtmf_mode_t parse_dtmf_mode(const std::string& s) {
+        if (s == "rfc4733")  return ECHOSDK_DTMF_RFC4733;
+        if (s == "sip_info") return ECHOSDK_DTMF_SIP_INFO;
+        if (s == "auto")     return ECHOSDK_DTMF_AUTO;
         throw std::runtime_error("unknown dtmf_mode value: " + s);
     }
 
@@ -370,8 +370,8 @@ struct AccountConfig {
 
         server_url   = "wss://" + host + ":443/";
         display_name = (at != std::string::npos) ? u.substr(0, at) : u;
-        transport    = BARESDK_TRANSPORT_WSS;
-        media_enc    = BARESDK_MEDIA_ENC_DTLS_SRTP;
+        transport    = ECHOSDK_TRANSPORT_WSS;
+        media_enc    = ECHOSDK_MEDIA_ENC_DTLS_SRTP;
         ice_enabled  = true;
         stun_server  = "stun:stun.l.google.com:19302";
         verify_tls   = false;
@@ -400,7 +400,7 @@ struct AccountConfig {
 
         {
             std::string t = str("transport");
-            transport = t.empty() ? BARESDK_TRANSPORT_WSS : parse_transport(t);
+            transport = t.empty() ? ECHOSDK_TRANSPORT_WSS : parse_transport(t);
         }
         server_url   = str("server_url");
         server_host  = str("server_host");
@@ -409,7 +409,7 @@ struct AccountConfig {
 
         {
             std::string m = str("media_enc");
-            media_enc = m.empty() ? BARESDK_MEDIA_ENC_DTLS_SRTP : parse_media_enc(m);
+            media_enc = m.empty() ? ECHOSDK_MEDIA_ENC_DTLS_SRTP : parse_media_enc(m);
         }
         ice_enabled  = flag("ice_enabled", true);
         {
@@ -424,12 +424,12 @@ struct AccountConfig {
 
         {
             std::string r = str("rel100");
-            rel100 = r.empty() ? BARESDK_100REL_DISABLED : parse_100rel(r);
+            rel100 = r.empty() ? ECHOSDK_100REL_DISABLED : parse_100rel(r);
         }
 
         {
             std::string d = str("dtmf_mode");
-            dtmf_mode = d.empty() ? BARESDK_DTMF_RFC4733 : parse_dtmf_mode(d);
+            dtmf_mode = d.empty() ? ECHOSDK_DTMF_RFC4733 : parse_dtmf_mode(d);
         }
 
         /* extra_headers object */
@@ -501,21 +501,21 @@ struct AccountConfig {
 
     void dump() const {
         auto tf = [](bool v){ return v ? "true" : "false"; };
-        auto transport_name = [](baresdk_transport_t t) -> const char* {
+        auto transport_name = [](echosdk_transport_t t) -> const char* {
             switch(t) {
-                case BARESDK_TRANSPORT_UDP: return "udp";
-                case BARESDK_TRANSPORT_TCP: return "tcp";
-                case BARESDK_TRANSPORT_TLS: return "tls";
-                case BARESDK_TRANSPORT_WS:  return "ws";
-                case BARESDK_TRANSPORT_WSS: return "wss";
+                case ECHOSDK_TRANSPORT_UDP: return "udp";
+                case ECHOSDK_TRANSPORT_TCP: return "tcp";
+                case ECHOSDK_TRANSPORT_TLS: return "tls";
+                case ECHOSDK_TRANSPORT_WS:  return "ws";
+                case ECHOSDK_TRANSPORT_WSS: return "wss";
                 default: return "?";
             }
         };
-        auto enc_name = [](baresdk_media_enc_t e) -> const char* {
+        auto enc_name = [](echosdk_media_enc_t e) -> const char* {
             switch(e) {
-                case BARESDK_MEDIA_ENC_NONE:      return "none";
-                case BARESDK_MEDIA_ENC_SDES:      return "sdes";
-                case BARESDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
+                case ECHOSDK_MEDIA_ENC_NONE:      return "none";
+                case ECHOSDK_MEDIA_ENC_SDES:      return "sdes";
+                case ECHOSDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
                 default: return "?";
             }
         };
@@ -557,9 +557,9 @@ struct AccountConfig {
  * Media stats printer
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-static void print_stats(const baresdk_ev_media_stats_t& s)
+static void print_stats(const echosdk_ev_media_stats_t& s)
 {
-    const char* method = (s.mos_method == BARESDK_MOS_EMODEL) ? "E-model" : "simplified";
+    const char* method = (s.mos_method == ECHOSDK_MOS_EMODEL) ? "E-model" : "simplified";
     std::cout
     << "┌─ Media Stats ─────────────────────────────────\n"
     << "│  Codec     : " << (s.codec_name ? s.codec_name : "?")
@@ -595,17 +595,17 @@ static void print_stats(const baresdk_ev_media_stats_t& s)
 /* ═══════════════════════════════════════════════════════════════════════════
  * Audio device listing
  * ═══════════════════════════════════════════════════════════════════════════ */
-static void print_devices(baresdk::SDK& sdk)
+static void print_devices(EchoSDK::SDK& sdk)
 {
-    baresdk_audio_device_t devs[32];
-    int n = baresdk_audio_list_input_devices(devs, 32);
+    echosdk_audio_device_t devs[32];
+    int n = echosdk_audio_list_input_devices(devs, 32);
     if (n > 0) {
         std::cout << "Input devices (" << n << "):\n";
         for (int i = 0; i < n; i++)
             std::cout << "  [" << i << "] " << devs[i].name
             << (devs[i].is_default ? "  *default*" : "") << "\n";
     }
-    n = baresdk_audio_list_output_devices(devs, 32);
+    n = echosdk_audio_list_output_devices(devs, 32);
     if (n > 0) {
         std::cout << "Output devices (" << n << "):\n";
         for (int i = 0; i < n; i++)
@@ -692,47 +692,47 @@ int main(int argc, char* argv[])
     bool                    call_established = false;
     bool                    call_done        = false;
     bool                    incoming_call    = false;
-    baresdk::Call           active_call;
+    EchoSDK::Call           active_call;
 
     /* ── SDK setup ────────────────────────────────────────────────────── */
-    baresdk::SDK sdk;
+    EchoSDK::SDK sdk;
     sdk.config().log_level         = 0;  /* debug level for audio troubleshooting */
     sdk.config().stats_interval_ms = 5000;
     sdk.config().trace_sip         = false;
     sdk.config().prefer_ipv6       = false;
     sdk.config().verify_server     = false;
-    sdk.config().audio_codecs[0]   = BARESDK_CODEC_OPUS;
-    sdk.config().audio_codecs[1]   = BARESDK_CODEC_PCMU;
-    sdk.config().audio_codecs[2]   = BARESDK_CODEC_PCMA;
-    sdk.config().audio_codecs[3]   = BARESDK_CODEC_G722;
+    sdk.config().audio_codecs[0]   = ECHOSDK_CODEC_OPUS;
+    sdk.config().audio_codecs[1]   = ECHOSDK_CODEC_PCMU;
+    sdk.config().audio_codecs[2]   = ECHOSDK_CODEC_PCMA;
+    sdk.config().audio_codecs[3]   = ECHOSDK_CODEC_G722;
     sdk.config().audio_codec_count = 4;
 
-    sdk.on_event([&](const baresdk_event_t& ev) {
+    sdk.on_event([&](const echosdk_event_t& ev) {
         switch (ev.type) {
 
-            case BARESDK_EV_REG_STATE:
-                if (ev.u.reg.state == BARESDK_REG_REGISTERED) {
+            case ECHOSDK_EV_REG_STATE:
+                if (ev.u.reg.state == ECHOSDK_REG_REGISTERED) {
                     std::cout << "Registered OK.\n";
                     std::lock_guard<std::mutex> lk(mtx);
                     registered = true;
                     reg_ok     = true;
                     cv.notify_one();
-                } else if (ev.u.reg.state == BARESDK_REG_RECONNECTING) {
+                } else if (ev.u.reg.state == ECHOSDK_REG_RECONNECTING) {
                     /* Transient — the SDK is retrying by itself, so report it
                      * and keep waiting rather than unblocking main(). */
                     const char* detail = ev.u.reg.error_str
                         ? ev.u.reg.error_str
-                        : baresdk_strerror(ev.u.reg.error);
+                        : echosdk_strerror(ev.u.reg.error);
                     std::cout << "Reconnecting: " << detail;
                     if (ev.u.reg.retry_attempt)
                         std::cout << " (attempt " << ev.u.reg.retry_attempt
                                   << " in " << ev.u.reg.retry_delay_ms
                                   << " ms)";
                     std::cout << "\n";
-                } else if (ev.u.reg.state == BARESDK_REG_FAILED) {
+                } else if (ev.u.reg.state == ECHOSDK_REG_FAILED) {
                     const char* detail = ev.u.reg.error_str
                         ? ev.u.reg.error_str
-                        : baresdk_strerror(ev.u.reg.error);
+                        : echosdk_strerror(ev.u.reg.error);
                     std::cerr << "Registration failed: " << detail << "\n";
                     std::lock_guard<std::mutex> lk(mtx);
                     registered = true; /* unblock main */
@@ -740,20 +740,20 @@ int main(int argc, char* argv[])
                 }
                 break;
 
-            case BARESDK_EV_INCOMING_CALL:
+            case ECHOSDK_EV_INCOMING_CALL:
                 std::cout << "\n=== Incoming call from "
                 << (ev.u.incoming.from_uri ? ev.u.incoming.from_uri : "unknown")
                 << " ===\n"
                 << "Press 'a' + Enter to answer, 'r' + Enter to reject\n";
                 {
                     std::lock_guard<std::mutex> lk(mtx);
-                    active_call   = baresdk::Call(ev.u.incoming.call);
+                    active_call   = EchoSDK::Call(ev.u.incoming.call);
                     incoming_call = true;
                     cv.notify_one();
                 }
                 break;
 
-            case BARESDK_EV_CALL_STATE: {
+            case ECHOSDK_EV_CALL_STATE: {
                 static const char* kStateNames[] = {
                     "CALLING","RINGING","ESTABLISHED","HELD","ENDED","CANCELLED","FAILED"
                 };
@@ -763,21 +763,21 @@ int main(int argc, char* argv[])
                     os << "Call state: " << sname << " (" << si << ")";
                     if (ev.u.call_state.reason && ev.u.call_state.reason[0])
                         os << "  reason=\"" << ev.u.call_state.reason << "\"";
-                    if (ev.u.call_state.error != BARESDK_OK)
+                    if (ev.u.call_state.error != ECHOSDK_OK)
                         os << "  error=" << ev.u.call_state.error;
                     os << "\n";
                 });
 
-                if (ev.u.call_state.state == BARESDK_CALL_ESTABLISHED) {
+                if (ev.u.call_state.state == ECHOSDK_CALL_ESTABLISHED) {
                     /* Talk time starts when the far end answers, not when we
                      * dialled — that is the number a user expects to see. */
                     status::start_timer();
                     std::lock_guard<std::mutex> lk(mtx);
                     call_established = true;
                     cv.notify_one();
-                } else if (ev.u.call_state.state == BARESDK_CALL_ENDED  ||
-                    ev.u.call_state.state == BARESDK_CALL_FAILED ||
-                    ev.u.call_state.state == BARESDK_CALL_CANCELLED) {
+                } else if (ev.u.call_state.state == ECHOSDK_CALL_ENDED  ||
+                    ev.u.call_state.state == ECHOSDK_CALL_FAILED ||
+                    ev.u.call_state.state == ECHOSDK_CALL_CANCELLED) {
                     long long talked = status::stop_timer();
                     if (talked >= 0)
                         status::say_line("Call ended after " +
@@ -789,7 +789,7 @@ int main(int argc, char* argv[])
                     break;
             }
 
-            case BARESDK_EV_TRANSFER_REQUEST: {
+            case ECHOSDK_EV_TRANSFER_REQUEST: {
                 std::cout << "=== Transfer request: REFER to "
                 << (ev.u.transfer_req.refer_to_uri ? ev.u.transfer_req.refer_to_uri : "?")
                 << (ev.u.transfer_req.has_replaces ? "  [attended]" : "  [blind]") << "\n";
@@ -797,29 +797,29 @@ int main(int argc, char* argv[])
                  * what happened, and only accept/reject sends one.  Accepting
                  * keeps the new call linked to this one so the SDK reports the
                  * outcome; hanging up and dialling would not. */
-                baresdk_call_handle_t moved = nullptr;
-                if (baresdk_call_transfer_accept(ev.u.transfer_req.call, &moved)
-                    == BARESDK_OK) {
+                echosdk_call_handle_t moved = nullptr;
+                if (echosdk_call_transfer_accept(ev.u.transfer_req.call, &moved)
+                    == ECHOSDK_OK) {
                     std::cout << "    following the transfer\n";
                 }
                 else {
-                    baresdk_call_transfer_reject(ev.u.transfer_req.call,
+                    echosdk_call_transfer_reject(ev.u.transfer_req.call,
                                                  603, "Declined");
                 }
                 break;
             }
 
-            case BARESDK_EV_MEDIA_STATS:
+            case ECHOSDK_EV_MEDIA_STATS:
                 print_stats(ev.u.stats);
                 break;
 
-            case BARESDK_EV_LOG:
+            case ECHOSDK_EV_LOG:
                 if (ev.u.log.message)
                     std::cerr << "[sdk] " << ev.u.log.message;
             break;
 
-            case BARESDK_EV_SIP_TRACE:
-                std::cout << (ev.u.sip_trace.dir == BARESDK_MEDIA_DIR_TX ? ">>>\n" : "<<<\n")
+            case ECHOSDK_EV_SIP_TRACE:
+                std::cout << (ev.u.sip_trace.dir == ECHOSDK_MEDIA_DIR_TX ? ">>>\n" : "<<<\n")
                 << ev.u.sip_trace.raw_message << "\n---\n";
                 break;
 
@@ -832,10 +832,10 @@ int main(int argc, char* argv[])
 
     /* Optional per-account tuning */
     for (const auto& kv : cfg.extra_headers)
-        baresdk_account_add_header(account.handle(), kv.first.c_str(), kv.second.c_str());
+        echosdk_account_add_header(account.handle(), kv.first.c_str(), kv.second.c_str());
 
-    if (cfg.rel100 != BARESDK_100REL_DISABLED)
-        baresdk_account_set_100rel(account.handle(), cfg.rel100);
+    if (cfg.rel100 != ECHOSDK_100REL_DISABLED)
+        echosdk_account_set_100rel(account.handle(), cfg.rel100);
 
     account.register_account();
 

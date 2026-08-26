@@ -1,4 +1,4 @@
-# baresdk
+# EchoSDK
 
 A general-purpose SIP client SDK built on [baresip](https://github.com/baresip/baresip)
 and [libre](https://github.com/baresip/re). It registers against any
@@ -27,13 +27,13 @@ everything app-specific is configuration you pass in.
 
 | Platform | Architecture | TLS backend | Shared lib output |
 |---|---|---|---|
-| Linux | x86_64 | OpenSSL (embedded) | `dist/linux/x86_64/baresdk.so` |
-| macOS | x86_64 + arm64 (universal) | OpenSSL (embedded) | `dist/macos/universal/baresdk.dylib` |
-| Windows | x64 | OpenSSL (embedded via vcpkg) | `dist\windows\x64\baresdk.dll` |
-| Android | arm64-v8a, armeabi-v7a, x86_64 | mbedTLS (embedded) | `dist/android/<ABI>/baresdk.so` |
-| iOS | device + simulator | mbedTLS (embedded) | `dist/ios/baresdk.xcframework` |
+| Linux | x86_64 | OpenSSL (embedded) | `dist/linux/x86_64/echosdk.so` |
+| macOS | x86_64 + arm64 (universal) | OpenSSL (embedded) | `dist/macos/universal/echosdk.dylib` |
+| Windows | x64 | OpenSSL (embedded via vcpkg) | `dist\windows\x64\echosdk.dll` |
+| Android | arm64-v8a, armeabi-v7a, x86_64 | mbedTLS (embedded) | `dist/android/<ABI>/echosdk.so` |
+| iOS | device + simulator | mbedTLS (embedded) | `dist/ios/EchoSDK.xcframework` |
 
-Each platform build script produces both the static archive (`baresdk.a` / `bare.lib`) and the shared library in one step. Shared libraries are **fully self-contained** — consumers need no extra packages at runtime.
+Each platform build script produces both the static archive (`echosdk.a` / `bare.lib`) and the shared library in one step. Shared libraries are **fully self-contained** — consumers need no extra packages at runtime.
 
 ---
 
@@ -41,7 +41,7 @@ Each platform build script produces both the static archive (`baresdk.a` / `bare
 
 | Language | Binding | Location |
 |---|---|---|
-| C / C++ | Header-only RAII wrapper | `bindings/cpp/baresdk.hpp` |
+| C / C++ | Header-only RAII wrapper | `bindings/cpp/echosdk.hpp` |
 | Python | cffi | `bindings/python/` |
 | Flutter / Dart | dart:ffi + ffigen | `bindings/flutter/` |
 

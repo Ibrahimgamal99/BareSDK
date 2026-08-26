@@ -13,7 +13,7 @@
  * bsdk_agc       — RMS-based gain normaliser targeting −20 dBFS.
  * bsdk_aec       — half-duplex echo suppressor: attenuates TX when RX is loud.
  *                  This is NOT acoustic echo cancellation.  For true AEC use
- *                  BARESDK_AEC_WEBRTC (desktop, requires libwebrtc-audio-processing-1).
+ *                  ECHOSDK_AEC_WEBRTC (desktop, requires libwebrtc-audio-processing-1).
  * bsdk_spk_gain  — fixed dB scalar on the RX path (post-jitter, pre-playback).
  *
  * Thread model
@@ -28,7 +28,7 @@
  * always run on the re_main thread via bsdk_dispatch_sync.
  */
 
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 #include <rem_au.h>
 #include <rem_aulevel.h>
 #include <rem_auframe.h>
@@ -400,18 +400,18 @@ static struct aufilt g_spk_gain_filter = {
  * case where that is the right thing, so it is not an app-overridable choice.
  *
  * The veto only holds while that driver is the one in the path.  Once the app
- * takes the device over (baresdk_audio_use_external), our voice-path driver is
+ * takes the device over (echosdk_audio_use_external), our voice-path driver is
  * displaced and its canceller goes with it — so the suppressor becomes
  * available again.  It still does not switch itself on: an app that owns the
  * device is expected to capture through the platform voice path itself, and
  * has to ask for the fallback explicitly. */
-bool bsdk_aec_suppressor_wanted(baresdk_aec_mode_t mode)
+bool bsdk_aec_suppressor_wanted(echosdk_aec_mode_t mode)
 {
-	if (mode != BARESDK_AEC_SUPPRESSOR)
+	if (mode != ECHOSDK_AEC_SUPPRESSOR)
 		return false;
 
 	if (bsdk_platform_has_aec() && !bsdk_audio_external_selected()) {
-		info("baresdk: platform audio driver cancels echo in hardware; "
+		info("EchoSDK: platform audio driver cancels echo in hardware; "
 		     "software suppressor stays off\n");
 		return false;
 	}
@@ -420,7 +420,7 @@ bool bsdk_aec_suppressor_wanted(baresdk_aec_mode_t mode)
 }
 
 void bsdk_audio_processing_init(bool ns, bool agc,
-                                baresdk_aec_mode_t aec_mode,
+                                echosdk_aec_mode_t aec_mode,
                                 float aec_suppression_level,
                                 float mic_db, float spk_db)
 {
@@ -470,12 +470,12 @@ void bsdk_audio_processing_init(bool ns, bool agc,
 	 * mic" is the first question worth answering when a caller reports that
 	 * the far end cannot hear them — on a device, from a log, without a
 	 * debugger. */
-	info("baresdk: TX chain: mic_gain=%s ns=%s agc=%s aec=%s%s\n",
+	info("EchoSDK: TX chain: mic_gain=%s ns=%s agc=%s aec=%s%s\n",
 	     mic_db != 0.0f ? "on" : "unity/bypass",
 	     ns ? "on" : "off",
 	     agc ? "on" : "off",
 	     aec_on ? "suppressor" : "off",
-	     (!aec_on && aec_mode == BARESDK_AEC_SUPPRESSOR)
+	     (!aec_on && aec_mode == ECHOSDK_AEC_SUPPRESSOR)
 	         ? " (platform canceller)" : "");
 }
 

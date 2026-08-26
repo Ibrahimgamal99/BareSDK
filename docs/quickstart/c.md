@@ -21,42 +21,42 @@ sudo dnf install cmake ninja-build gcc gcc-c++ openssl-devel
 ## C (plain API)
 
 ```c
-#include "baresdk.h"
+#include "echosdk.h"
 #include <stdio.h>
 #include <string.h>
 
-static void on_event(const baresdk_event_t *ev, void *ud) {
-    if (ev->type == BARESDK_EV_REG_STATE &&
-        ev->u.reg.state == BARESDK_REG_REGISTERED) {
+static void on_event(const echosdk_event_t *ev, void *ud) {
+    if (ev->type == ECHOSDK_EV_REG_STATE &&
+        ev->u.reg.state == ECHOSDK_REG_REGISTERED) {
         puts("Registered!");
     }
-    if (ev->type == BARESDK_EV_INCOMING_CALL) {
+    if (ev->type == ECHOSDK_EV_INCOMING_CALL) {
         printf("Incoming from %s\n", ev->u.incoming.from_uri);
-        baresdk_call_answer(ev->u.incoming.call);
+        echosdk_call_answer(ev->u.incoming.call);
     }
 }
 
 int main(void) {
-    baresdk_config_t cfg;
-    baresdk_config_init(&cfg);
+    echosdk_config_t cfg;
+    echosdk_config_init(&cfg);
     cfg.log_level  = 1;
     cfg.event_cb   = on_event;
 
-    baresdk_init(&cfg);
+    echosdk_init(&cfg);
 
-    baresdk_account_config_t acfg = {
+    echosdk_account_config_t acfg = {
         .uri      = "alice@pbx.example.com",
         .password = "secret",
-        .transport = BARESDK_TRANSPORT_TLS,
+        .transport = ECHOSDK_TRANSPORT_TLS,
     };
-    baresdk_account_handle_t acct;
-    baresdk_account_create(&acfg, &acct);
-    baresdk_account_register(acct);
+    echosdk_account_handle_t acct;
+    echosdk_account_create(&acfg, &acct);
+    echosdk_account_register(acct);
 
     /* ... wait for events via your own event loop ... */
 
-    baresdk_account_destroy(acct);
-    baresdk_shutdown();
+    echosdk_account_destroy(acct);
+    echosdk_shutdown();
     return 0;
 }
 ```
@@ -68,7 +68,7 @@ bash scripts/build-linux.sh    # or build-macos.sh
 
 # 2. Compile — .so has OpenSSL/zlib/pthreads baked in; no extra -l flags needed
 gcc main.c -I dist/linux/x86_64/include \
-    dist/linux/x86_64/baresdk.so -o demo
+    dist/linux/x86_64/echosdk.so -o demo
 
 # 3. Run
 ./demo
@@ -78,10 +78,10 @@ gcc main.c -I dist/linux/x86_64/include \
 ```powershell
 # 1. Build SDK
 .\scripts\build-windows.ps1
-# Output: dist\windows\x64\baresdk.dll  +  baresdk.lib  +  bare.lib
+# Output: dist\windows\x64\echosdk.dll  +  echosdk.lib  +  bare.lib
 
-# 2. Compile — link against the import library (baresdk.lib), ship baresdk.dll alongside the exe
-cl main.c /I dist\windows\x64\include /link dist\windows\x64\baresdk.lib /out:demo.exe
+# 2. Compile — link against the import library (echosdk.lib), ship echosdk.dll alongside the exe
+cl main.c /I dist\windows\x64\include /link dist\windows\x64\echosdk.lib /out:demo.exe
 ```
 
 ---
@@ -94,13 +94,13 @@ cl main.c /I dist\windows\x64\include /link dist\windows\x64\baresdk.lib /out:de
 ```bash
 bash bindings/cpp/build.sh
 ```
-Builds the SDK if needed, compiles all examples in `bindings/cpp/examples/`, and places the binary and `baresdk.so` together so no `LD_LIBRARY_PATH` is needed.
+Builds the SDK if needed, compiles all examples in `bindings/cpp/examples/`, and places the binary and `echosdk.so` together so no `LD_LIBRARY_PATH` is needed.
 
 **Windows (PowerShell)**
 ```powershell
 cd bindings\cpp
 .\build-examples.ps1
-# Output: build\Release\quickstart.exe  (baresdk.dll copied alongside)
+# Output: build\Release\quickstart.exe  (echosdk.dll copied alongside)
 ```
 
 ### Manual compile
@@ -110,7 +110,7 @@ cd bindings\cpp
 # After running bash scripts/build-linux.sh
 g++ -std=c++17 main.cpp \
     -I dist/linux/x86_64/include -I bindings/cpp \
-    dist/linux/x86_64/baresdk.so \
+    dist/linux/x86_64/echosdk.so \
     -o demo
 ./demo
 ```
@@ -121,32 +121,32 @@ g++ -std=c++17 main.cpp \
 # Use CMake (recommended) or compile directly with cl:
 cl /std:c++17 main.cpp ^
    /I dist\windows\x64\include /I bindings\cpp ^
-   /link dist\windows\x64\baresdk.lib /out:demo.exe
+   /link dist\windows\x64\echosdk.lib /out:demo.exe
 ```
 
 ### Code
 
 ```cpp
-#include "bindings/cpp/baresdk.hpp"
+#include "bindings/cpp/echosdk.hpp"
 #include <iostream>
 
 int main() {
-    baresdk::SDK sdk;
+    EchoSDK::SDK sdk;
     sdk.config().log_level = 1;
 
-    sdk.on_event([](const baresdk_event_t& ev) {
-        if (ev.type == BARESDK_EV_REG_STATE &&
-            ev.u.reg.state == BARESDK_REG_REGISTERED)
+    sdk.on_event([](const echosdk_event_t& ev) {
+        if (ev.type == ECHOSDK_EV_REG_STATE &&
+            ev.u.reg.state == ECHOSDK_REG_REGISTERED)
             std::cout << "Registered!\n";
 
-        if (ev.type == BARESDK_EV_INCOMING_CALL) {
-            baresdk::Call c(ev.u.incoming.call);
+        if (ev.type == ECHOSDK_EV_INCOMING_CALL) {
+            EchoSDK::Call c(ev.u.incoming.call);
             c.answer();
         }
     });
 
     auto acct = sdk.create_account("alice@pbx.example.com", "secret",
-                                   BARESDK_TRANSPORT_TLS);
+                                   ECHOSDK_TRANSPORT_TLS);
     acct.register_account();
 
     std::this_thread::sleep_for(std::chrono::seconds(30));
@@ -158,14 +158,14 @@ int main() {
 
 ## Debugging init issues
 
-If `baresdk_init()` hangs or crashes, set `BARESDK_DEBUG_INIT=1` to see which of the 14 init stages is the culprit:
+If `echosdk_init()` hangs or crashes, set `ECHOSDK_DEBUG_INIT=1` to see which of the 14 init stages is the culprit:
 
 ```bash
-BARESDK_DEBUG_INIT=1 ./demo                  # Linux / macOS
+ECHOSDK_DEBUG_INIT=1 ./demo                  # Linux / macOS
 ```
 
 ```powershell
-$env:BARESDK_DEBUG_INIT=1; .\demo.exe        # Windows
+$env:ECHOSDK_DEBUG_INIT=1; .\demo.exe        # Windows
 ```
 
 See [debugging guide](../guides/debugging.md) for the full set of diagnostic options.

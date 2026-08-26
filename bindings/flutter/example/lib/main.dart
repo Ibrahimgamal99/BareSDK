@@ -1,4 +1,4 @@
-/// baresdk example softphone.
+/// EchoSDK example softphone.
 ///
 /// Three tabs:
 ///  1. Account  — registration over UDP/TCP/TLS/WS/WSS, codec preference,
@@ -10,22 +10,22 @@ library;
 
 import 'dart:async';
 
-import 'package:baresdk/baresdk.dart';
+import 'package:echo_sdk/echo_sdk.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const BareSDKExampleApp());
+  runApp(const EchoSDKExampleApp());
 }
 
-class BareSDKExampleApp extends StatelessWidget {
-  const BareSDKExampleApp({super.key});
+class EchoSDKExampleApp extends StatelessWidget {
+  const EchoSDKExampleApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'baresdk example',
+      title: 'EchoSDK example',
       theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
       home: const PhonePage(),
     );
@@ -43,10 +43,10 @@ class _PhonePageState extends State<PhonePage>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 3, vsync: this);
 
-  BareSDK? _sdk;
+  EchoSDK? _sdk;
   Account? _account;
   Call? _call;
-  StreamSubscription<BareSDKEvent>? _sub;
+  StreamSubscription<EchoSDKEvent>? _sub;
 
   // ── form state ─────────────────────────────────────────────────────────
   final _user = TextEditingController(text: 'alice@pbx.example.com');
@@ -193,8 +193,8 @@ class _PhonePageState extends State<PhonePage>
     }
 
     try {
-      _sdk ??= await BareSDK.start(
-        config: const BareSDKConfig(
+      _sdk ??= await EchoSDK.start(
+        config: const EchoSDKConfig(
           logLevel: 3,
           traceSip: true,
           statsIntervalMs: 2000,
@@ -263,7 +263,7 @@ class _PhonePageState extends State<PhonePage>
 
   // ── event handling ─────────────────────────────────────────────────────
 
-  void _onEvent(BareSDKEvent ev) {
+  void _onEvent(EchoSDKEvent ev) {
     if (!mounted) return;
     switch (ev) {
       case RegStateEvent e:
@@ -416,7 +416,7 @@ class _PhonePageState extends State<PhonePage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('baresdk'),
+        title: const Text('EchoSDK'),
         bottom: TabBar(controller: _tabs, tabs: const [
           Tab(icon: Icon(Icons.account_circle), text: 'Account'),
           Tab(icon: Icon(Icons.call), text: 'Call'),

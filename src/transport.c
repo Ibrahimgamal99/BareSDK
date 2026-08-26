@@ -7,25 +7,25 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
-const char *bsdk_transport_str(baresdk_transport_t t)
+const char *bsdk_transport_str(echosdk_transport_t t)
 {
 	switch (t) {
-	case BARESDK_TRANSPORT_UDP: return "udp";
-	case BARESDK_TRANSPORT_TCP: return "tcp";
-	case BARESDK_TRANSPORT_TLS: return "tls";
-	case BARESDK_TRANSPORT_WS:  return "ws";
-	case BARESDK_TRANSPORT_WSS: return "wss";
+	case ECHOSDK_TRANSPORT_UDP: return "udp";
+	case ECHOSDK_TRANSPORT_TCP: return "tcp";
+	case ECHOSDK_TRANSPORT_TLS: return "tls";
+	case ECHOSDK_TRANSPORT_WS:  return "ws";
+	case ECHOSDK_TRANSPORT_WSS: return "wss";
 	default:                    return "udp";
 	}
 }
 
-const char *bsdk_mediaenc_str(baresdk_media_enc_t enc)
+const char *bsdk_mediaenc_str(echosdk_media_enc_t enc)
 {
 	switch (enc) {
-	case BARESDK_MEDIA_ENC_SDES:      return "srtp";
-	case BARESDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
+	case ECHOSDK_MEDIA_ENC_SDES:      return "srtp";
+	case ECHOSDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
 	default:                          return NULL;
 	}
 }
@@ -50,7 +50,7 @@ const char *bsdk_mediaenc_str(baresdk_media_enc_t enc)
  *   "sip:pbx.example.com;transport=tls"            → TLS, host=pbx.example.com,       5061, ""
  */
 int bsdk_parse_server_url(const char *url,
-                           baresdk_transport_t *out_transport,
+                           echosdk_transport_t *out_transport,
                            char *host, size_t host_sz,
                            uint16_t *port,
                            char *path, size_t path_sz)
@@ -62,7 +62,7 @@ int bsdk_parse_server_url(const char *url,
 	path[0] = '\0';
 	*port   = 0;
 
-	baresdk_transport_t transport;
+	echosdk_transport_t transport;
 	uint16_t default_port;
 	const char *rest;
 
@@ -74,25 +74,25 @@ int bsdk_parse_server_url(const char *url,
 	 * "wss://pbx.example.com/ws" to a port nothing answers on, which presents
 	 * as REGISTER timing out against a server that is plainly reachable. */
 	if (strncmp(url, "wss://", 6) == 0) {
-		transport    = BARESDK_TRANSPORT_WSS;
+		transport    = ECHOSDK_TRANSPORT_WSS;
 		default_port = 443;
 		rest         = url + 6;
 	} else if (strncmp(url, "ws://", 5) == 0) {
-		transport    = BARESDK_TRANSPORT_WS;
+		transport    = ECHOSDK_TRANSPORT_WS;
 		default_port = 80;
 		rest         = url + 5;
 	} else if (strncmp(url, "sips:", 5) == 0) {
-		transport    = BARESDK_TRANSPORT_TLS;
+		transport    = ECHOSDK_TRANSPORT_TLS;
 		default_port = 5061;
 		rest         = url + 5;
 		if (rest[0] == '/' && rest[1] == '/') rest += 2;
 	} else if (strncmp(url, "sip:", 4) == 0) {
-		transport    = BARESDK_TRANSPORT_UDP;
+		transport    = ECHOSDK_TRANSPORT_UDP;
 		default_port = 5060;
 		rest         = url + 4;
 		if (rest[0] == '/' && rest[1] == '/') rest += 2;
 	} else {
-		transport    = BARESDK_TRANSPORT_UDP;
+		transport    = ECHOSDK_TRANSPORT_UDP;
 		default_port = 5060;
 		rest         = url;
 	}
@@ -102,19 +102,19 @@ int bsdk_parse_server_url(const char *url,
 	if (tp) {
 		const char *tv = tp + 11;
 		if (strncasecmp(tv, "wss", 3) == 0) {
-			transport    = BARESDK_TRANSPORT_WSS;
+			transport    = ECHOSDK_TRANSPORT_WSS;
 			default_port = 443;
 		} else if (strncasecmp(tv, "ws", 2) == 0) {
-			transport    = BARESDK_TRANSPORT_WS;
+			transport    = ECHOSDK_TRANSPORT_WS;
 			default_port = 80;
 		} else if (strncasecmp(tv, "tls", 3) == 0) {
-			transport    = BARESDK_TRANSPORT_TLS;
+			transport    = ECHOSDK_TRANSPORT_TLS;
 			default_port = 5061;
 		} else if (strncasecmp(tv, "tcp", 3) == 0) {
-			transport    = BARESDK_TRANSPORT_TCP;
+			transport    = ECHOSDK_TRANSPORT_TCP;
 			default_port = 5060;
 		} else if (strncasecmp(tv, "udp", 3) == 0) {
-			transport    = BARESDK_TRANSPORT_UDP;
+			transport    = ECHOSDK_TRANSPORT_UDP;
 			default_port = 5060;
 		}
 	}
@@ -181,7 +181,7 @@ int bsdk_parse_server_url(const char *url,
  */
 int bsdk_build_outbound(const char *server_url,
                          const char *server_host, uint16_t server_port,
-                         baresdk_transport_t transport,
+                         echosdk_transport_t transport,
                          char *buf, size_t buf_sz)
 {
 	char host[256] = {0};
@@ -196,10 +196,10 @@ int bsdk_build_outbound(const char *server_url,
 		str_ncpy(host, server_host ? server_host : "", sizeof(host));
 		if (!port) {
 			switch (transport) {
-			case BARESDK_TRANSPORT_TLS: port = 5061; break;
+			case ECHOSDK_TRANSPORT_TLS: port = 5061; break;
 			/* WebSocket defaults, as in bsdk_parse_server_url. */
-			case BARESDK_TRANSPORT_WS:  port = 80; break;
-			case BARESDK_TRANSPORT_WSS: port = 443; break;
+			case ECHOSDK_TRANSPORT_WS:  port = 80; break;
+			case ECHOSDK_TRANSPORT_WSS: port = 443; break;
 			default:                    port = 5060; break;
 			}
 		}

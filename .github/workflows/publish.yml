@@ -36,12 +36,12 @@ jobs:
       - name: Generate CFFI header
         # Shared with bindings/python/build.sh so the wheels users install
         # cannot drift from locally built ones.  This step used to be a
-        # near-copy of that pipeline missing -DBARESDK_NO_PACKED_ENUM, which
-        # widened baresdk_aec_mode_t from 1 to 4 bytes in the cffi view and
-        # mis-offset every baresdk_config_t field after cfg.aec_mode.
+        # near-copy of that pipeline missing -DECHOSDK_NO_PACKED_ENUM, which
+        # widened echosdk_aec_mode_t from 1 to 4 bytes in the cffi view and
+        # mis-offset every echosdk_config_t field after cfg.aec_mode.
         run: |
           bash bindings/python/gen_header.sh
-          cp dist/linux/x86_64/baresdk.so bindings/python/baresdk/baresdk.so
+          cp dist/linux/x86_64/echosdk.so bindings/python/echo_sdk/echosdk.so
 
       - name: Build wheel
         run: |
@@ -82,7 +82,7 @@ jobs:
 
       - name: Copy .dll into package
         shell: pwsh
-        run: Copy-Item dist\windows\x64\baresdk.dll bindings\python\baresdk\baresdk.dll -Force
+        run: Copy-Item dist\windows\x64\echosdk.dll bindings\python\echo_sdk\echosdk.dll -Force
 
       - name: Build wheel
         run: |

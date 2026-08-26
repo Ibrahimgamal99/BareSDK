@@ -2,16 +2,16 @@
 
 ## Init/shutdown trace
 
-`baresdk_init()` and `baresdk_shutdown()` walk through ~14 stages. To trace which step a hang or crash occurs at, set the `BARESDK_DEBUG_INIT` env var before launching:
+`echosdk_init()` and `echosdk_shutdown()` walk through ~14 stages. To trace which step a hang or crash occurs at, set the `ECHOSDK_DEBUG_INIT` env var before launching:
 
 ```bash
 # Linux / macOS
-BARESDK_DEBUG_INIT=1 ./your_app
+ECHOSDK_DEBUG_INIT=1 ./your_app
 ```
 
 ```powershell
 # Windows
-$env:BARESDK_DEBUG_INIT=1
+$env:ECHOSDK_DEBUG_INIT=1
 .\your_app.exe
 ```
 
@@ -49,11 +49,11 @@ Enable per-message SIP tracing:
 cfg.trace_sip = true;
 ```
 
-Each `BARESDK_EV_SIP_TRACE` event contains the full SIP message. Log it:
+Each `ECHOSDK_EV_SIP_TRACE` event contains the full SIP message. Log it:
 
 ```c
-case BARESDK_EV_SIP_TRACE: {
-    const char *dir = (ev->u.sip_trace.dir == BARESDK_MEDIA_DIR_TX)
+case ECHOSDK_EV_SIP_TRACE: {
+    const char *dir = (ev->u.sip_trace.dir == ECHOSDK_MEDIA_DIR_TX)
                       ? "SEND" : "RECV";
     printf("[%s %s %s]\n%s\n",
            dir, ev->u.sip_trace.transport,
@@ -81,9 +81,9 @@ case BARESDK_EV_SIP_TRACE: {
 Write packets to a file for Wireshark analysis:
 
 ```c
-baresdk_pcap_start("/tmp/debug.pcap");
+echosdk_pcap_start("/tmp/debug.pcap");
 // ... reproduce issue ...
-baresdk_pcap_stop();
+echosdk_pcap_stop();
 ```
 
 Open in Wireshark:
@@ -120,10 +120,10 @@ Enable SDP diff to see codec and encryption negotiation:
 cfg.trace_sdp_diff = true;
 ```
 
-The `BARESDK_EV_SDP_NEGOTIATION` event shows:
+The `ECHOSDK_EV_SDP_NEGOTIATION` event shows:
 
 ```c
-case BARESDK_EV_SDP_NEGOTIATION: {
+case ECHOSDK_EV_SDP_NEGOTIATION: {
     printf("Codec: %s  Crypto: %s\n",
            ev->u.sdp.negotiated_codec,
            ev->u.sdp.negotiated_crypto);
@@ -147,7 +147,7 @@ cfg.stats_interval_ms = 3000;
 ```
 
 ```c
-case BARESDK_EV_MEDIA_STATS: {
+case ECHOSDK_EV_MEDIA_STATS: {
     printf("MOS-LQ=%.2f loss=%.1f%% jitter=%.1fms RTT=%.1fms\n",
            ev->u.stats.mos_lq, ev->u.stats.loss_pct,
            ev->u.stats.jitter_ms, ev->u.stats.rtt_ms);
@@ -170,7 +170,7 @@ case BARESDK_EV_MEDIA_STATS: {
 
 | Problem | Check |
 |---|---|
-| No REGISTER sent | `baresdk_account_register()` called? Network reachable? |
+| No REGISTER sent | `echosdk_account_register()` called? Network reachable? |
 | 401 Unauthorized | Wrong `uri` or `password`; check `auth_user` override |
 | 403 Forbidden | Account not provisioned on server; check `uri` domain |
 | 408 Timeout | Wrong `server_host`/`server_port`; firewall blocks SIP port |
@@ -189,7 +189,7 @@ attempt 4: wait 16s
 max:      wait 5 min  (reg_retry_max_ms)
 ```
 
-Monitor retries via `retry_attempt` and `retry_delay_ms` in `BARESDK_EV_REG_STATE`.
+Monitor retries via `retry_attempt` and `retry_delay_ms` in `ECHOSDK_EV_REG_STATE`.
 
 ---
 
@@ -197,13 +197,13 @@ Monitor retries via `retry_attempt` and `retry_delay_ms` in `BARESDK_EV_REG_STAT
 
 | Code | Meaning | Action |
 |---|---|---|
-| `BARESDK_ERR_DNS` | Cannot resolve server hostname | Check DNS / network |
-| `BARESDK_ERR_TRANSPORT` | TCP/TLS/WebSocket connection failed | Check firewall, TLS cert |
-| `BARESDK_ERR_AUTH` | SIP authentication failed | Verify credentials |
-| `BARESDK_ERR_TIMEOUT` | No response (timer B/F expired) | Check server reachability |
-| `BARESDK_ERR_SERVER_5XX` | Server error | Check server logs |
-| `BARESDK_ERR_WS_PROTOCOL_REJECTED` | WebSocket upgrade rejected | Check `ws_origin`, server config |
-| `BARESDK_ERR_STATE` | API called in wrong lifecycle state | Check call/account state before calling |
+| `ECHOSDK_ERR_DNS` | Cannot resolve server hostname | Check DNS / network |
+| `ECHOSDK_ERR_TRANSPORT` | TCP/TLS/WebSocket connection failed | Check firewall, TLS cert |
+| `ECHOSDK_ERR_AUTH` | SIP authentication failed | Verify credentials |
+| `ECHOSDK_ERR_TIMEOUT` | No response (timer B/F expired) | Check server reachability |
+| `ECHOSDK_ERR_SERVER_5XX` | Server error | Check server logs |
+| `ECHOSDK_ERR_WS_PROTOCOL_REJECTED` | WebSocket upgrade rejected | Check `ws_origin`, server config |
+| `ECHOSDK_ERR_STATE` | API called in wrong lifecycle state | Check call/account state before calling |
 
 ---
 
@@ -216,8 +216,8 @@ legitimate one. These are the log lines the SDK emits so that does not happen.
 ### The BYE that never left
 
 ```
-baresdk/sipsess: BYE queued
-baresdk/sipsess: BYE could not be sent (…) — the peer will stay on the call
+EchoSDK/sipsess: BYE queued
+EchoSDK/sipsess: BYE could not be sent (…) — the peer will stay on the call
                  until it gives up on its own
 ```
 
@@ -234,7 +234,7 @@ far end stays connected. Read the line at teardown:
 ### In-dialog requests routed away from the WebSocket flow
 
 ```
-baresdk: ws in-dialog route echo:5060 is not the registration flow;
+EchoSDK: ws in-dialog route echo:5060 is not the registration flow;
          routing over pbx.example.com:443 instead (RFC 7118 B.2)
 ```
 
@@ -248,7 +248,7 @@ was accepted. This line means the SDK put it back on the registration flow.
 ### ICE candidates the peer was never told about
 
 ```
-baresdk/ice: selected local candidate <addr> was never signalled (offered <addr>)
+EchoSDK/ice: selected local candidate <addr> was never signalled (offered <addr>)
              — re-offering so the peer accepts our media
 ```
 
@@ -260,7 +260,7 @@ the one on network handover, logged as `restarting ICE on <addr>`.
 ### ICE gathering that never finishes
 
 ```
-baresdk/ice: candidate gathering did not complete in time; offering the
+EchoSDK/ice: candidate gathering did not complete in time; offering the
              candidates gathered so far (cfg.ice_gathering_timeout_ms=2000)
 ```
 
@@ -274,7 +274,7 @@ dial, `restart` for the re-gather of an ICE restart on network handover.
 ### ICE restart on handover
 
 ```
-baresdk/ice: restarting ICE on 100.82.7.19 — new credentials, re-gathering,
+EchoSDK/ice: restarting ICE on 100.82.7.19 — new credentials, re-gathering,
              re-INVITE follows within 2000 ms
 ```
 
@@ -289,8 +289,8 @@ If a call still fails to migrate, look for the reasons a restart could not be
 performed:
 
 ```
-baresdk/ice: restart: replacement session failed (...) — keeping the current ICE state
-baresdk/ice: restart gathering failed (...) — offering the candidates gathered so far
+EchoSDK/ice: restart: replacement session failed (...) — keeping the current ICE state
+EchoSDK/ice: restart gathering failed (...) — offering the candidates gathered so far
 ```
 
 The first falls back to the plain re-INVITE and emits `CALL_ICE_STALE`; the
@@ -331,9 +331,9 @@ A WSS/WebRTC-facing PBX always offers `SAVPF`; set `media_enc` to DTLS-SRTP.
 ## Debug workflow
 
 1. Set `log_level = 2`, `trace_sip = true`, `trace_sdp_diff = true`.
-2. Start pcap capture: `baresdk_pcap_start("debug.pcap")`.
+2. Start pcap capture: `echosdk_pcap_start("debug.pcap")`.
 3. Reproduce the issue.
-4. Stop pcap: `baresdk_pcap_stop()`.
+4. Stop pcap: `echosdk_pcap_stop()`.
 5. Review SIP trace output for message flow.
 6. Open pcap in Wireshark for detailed analysis.
 7. Set `log_level = 3` if more detail is needed.

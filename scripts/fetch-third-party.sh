@@ -13,14 +13,14 @@ DEPS=(
   "baresip|https://github.com/baresip/baresip.git|a9b3749608d129f0017ce940b24b777fa1f2d38b|CMakeLists.txt"
   "opus|https://github.com/xiph/opus.git|f8f99516092f4311a9b0784f190ff982df8eb2e6|CMakeLists.txt"
 )
-if [[ "${BARESDK_TLS:-openssl}" == "mbedtls" ]]; then
+if [[ "${ECHOSDK_TLS:-openssl}" == "mbedtls" ]]; then
   DEPS+=("mbedtls|https://github.com/Mbed-TLS/mbedtls.git|2f2b202f8e72ef01aa0b743ef9df2abb0a3527d9|CMakeLists.txt")
 fi
 # OpenSSL sources are only needed where there is no system OpenSSL to link
 # against — i.e. cross-compiled targets like Android. Desktop builds keep
 # using the platform's own libssl/libcrypto, so they skip this clone.
 # (openssl-3.5.7, an LTS release.)
-if [[ "${BARESDK_OPENSSL_SRC:-0}" == "1" ]]; then
+if [[ "${ECHOSDK_OPENSSL_SRC:-0}" == "1" ]]; then
   DEPS+=("openssl|https://github.com/openssl/openssl.git|8cf17aaeb4599f8af87fefd810b5b5fee90fe69e|Configure")
 fi
 

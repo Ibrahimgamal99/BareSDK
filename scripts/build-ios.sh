@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build baresdk for iOS as a DYNAMIC xcframework (macOS + Xcode required).
+# Build EchoSDK for iOS as a DYNAMIC xcframework (macOS + Xcode required).
 #
 # Output:
-#   dist/ios/baresdk.xcframework    device (arm64) + simulator (arm64, x86_64)
-#   dist/ios/device/baresdk.a       static archive (for non-Flutter consumers)
-#   dist/ios/simulator/baresdk.a    fat static archive (arm64 + x86_64)
+#   dist/ios/EchoSDK.xcframework    device (arm64) + simulator (arm64, x86_64)
+#   dist/ios/device/echosdk.a       static archive (for non-Flutter consumers)
+#   dist/ios/simulator/echosdk.a    fat static archive (arm64 + x86_64)
 #   dist/ios/include/               public headers
 # Also refreshes the Flutter plugin's vendored copy in
 # bindings/flutter/ios/Frameworks/ — no second command to run.
@@ -45,7 +45,7 @@ if ! command -v xcodebuild >/dev/null; then
 fi
 
 # Fetch third-party sources (idempotent), OpenSSL included — see TLS note above.
-BARESDK_TLS=openssl BARESDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
+ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 "${SCRIPT_DIR}/fetch-third-party.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: configure + build the static archive for one single-arch slice
@@ -60,21 +60,21 @@ build_slice() {
     -DCMAKE_OSX_SYSROOT="${SYSROOT}" \
     -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="${MIN_IOS}" \
-    -DBARESDK_TLS=openssl \
-    -DBARESDK_MODULES_PROFILE=mobile
+    -DECHOSDK_TLS=openssl \
+    -DECHOSDK_MODULES_PROFILE=mobile
 
-  cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" --target baresdk \
+  cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" --target echosdk \
     -- CODE_SIGNING_ALLOWED=NO
 
   local LIB
-  LIB="$(find "${BUILD_DIR}" -name "baresdk.a" | head -1)"
+  LIB="$(find "${BUILD_DIR}" -name "echosdk.a" | head -1)"
   mkdir -p "${DIST}/${NAME}"
-  cp "${LIB}" "${DIST}/${NAME}/baresdk.a"
+  cp "${LIB}" "${DIST}/${NAME}/echosdk.a"
 
   # Headers (identical across slices — copy once)
   if [ ! -d "${DIST}/include" ]; then
     mkdir -p "${DIST}/include"
-    cp "${ROOT}/include/baresdk.h" "${DIST}/include/"
+    cp "${ROOT}/include/echosdk.h" "${DIST}/include/"
     local RE_SYSROOT="${BUILD_DIR}/sysroot"
     [ -d "${RE_SYSROOT}/include" ] && cp -r "${RE_SYSROOT}/include/." "${DIST}/include/"
   fi
@@ -96,28 +96,28 @@ link_dylib() {
     -Wl,-all_load "${ARCHIVE}" \
     "${FRAMEWORKS_FOR_LINK[@]}" \
     -lc++ \
-    -install_name @rpath/baresdk.framework/baresdk \
+    -install_name @rpath/EchoSDK.framework/EchoSDK \
     -o "${OUT}"
 }
 
 # ---------------------------------------------------------------------------
-# Helper: assemble baresdk.framework for one slice from a (fat) dylib
+# Helper: assemble EchoSDK.framework for one slice from a (fat) dylib
 # ---------------------------------------------------------------------------
 make_framework() {
   local DYLIB="$1"; local FW_DIR="$2"
   rm -rf "${FW_DIR}"
   mkdir -p "${FW_DIR}"
-  cp "${DYLIB}" "${FW_DIR}/baresdk"
+  cp "${DYLIB}" "${FW_DIR}/EchoSDK"
   cat > "${FW_DIR}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key><string>en</string>
-	<key>CFBundleExecutable</key><string>baresdk</string>
-	<key>CFBundleIdentifier</key><string>dev.baresdk.core</string>
+	<key>CFBundleExecutable</key><string>EchoSDK</string>
+	<key>CFBundleIdentifier</key><string>dev.echosdk.core</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-	<key>CFBundleName</key><string>baresdk</string>
+	<key>CFBundleName</key><string>EchoSDK</string>
 	<key>CFBundlePackageType</key><string>FMWK</string>
 	<key>CFBundleShortVersionString</key><string>1.0.0</string>
 	<key>CFBundleVersion</key><string>1</string>
@@ -134,8 +134,8 @@ PLIST
 echo "=== iOS device (arm64, iphoneos) ==="
 build_slice "device" "iphoneos" "arm64"
 link_dylib iphoneos arm64 "" \
-  "${DIST}/device/baresdk.a" "${DIST}/device/baresdk.dylib"
-make_framework "${DIST}/device/baresdk.dylib" "${DIST}/device/baresdk.framework"
+  "${DIST}/device/echosdk.a" "${DIST}/device/echosdk.dylib"
+make_framework "${DIST}/device/echosdk.dylib" "${DIST}/device/EchoSDK.framework"
 
 # ---------------------------------------------------------------------------
 # Simulator slices: arm64 and x86_64 built thin (one OpenSSL arch per
@@ -146,25 +146,25 @@ make_framework "${DIST}/device/baresdk.dylib" "${DIST}/device/baresdk.framework"
 echo "=== iOS simulator (arm64, iphonesimulator) ==="
 build_slice "sim-arm64" "iphonesimulator" "arm64"
 link_dylib iphonesimulator arm64 "-simulator" \
-  "${DIST}/sim-arm64/baresdk.a" "${DIST}/sim-arm64/baresdk.dylib"
+  "${DIST}/sim-arm64/echosdk.a" "${DIST}/sim-arm64/echosdk.dylib"
 
 echo "=== iOS simulator (x86_64, iphonesimulator) ==="
 build_slice "sim-x86_64" "iphonesimulator" "x86_64"
 link_dylib iphonesimulator x86_64 "-simulator" \
-  "${DIST}/sim-x86_64/baresdk.a" "${DIST}/sim-x86_64/baresdk.dylib"
+  "${DIST}/sim-x86_64/echosdk.a" "${DIST}/sim-x86_64/echosdk.dylib"
 
 mkdir -p "${DIST}/simulator"
 lipo -create \
-  "${DIST}/sim-arm64/baresdk.dylib" \
-  "${DIST}/sim-x86_64/baresdk.dylib" \
-  -output "${DIST}/simulator/baresdk.dylib"
+  "${DIST}/sim-arm64/echosdk.dylib" \
+  "${DIST}/sim-x86_64/echosdk.dylib" \
+  -output "${DIST}/simulator/echosdk.dylib"
 # Fat static archive for non-Flutter consumers, same layout as before.
 lipo -create \
-  "${DIST}/sim-arm64/baresdk.a" \
-  "${DIST}/sim-x86_64/baresdk.a" \
-  -output "${DIST}/simulator/baresdk.a"
-make_framework "${DIST}/simulator/baresdk.dylib" \
-  "${DIST}/simulator/baresdk.framework"
+  "${DIST}/sim-arm64/echosdk.a" \
+  "${DIST}/sim-x86_64/echosdk.a" \
+  -output "${DIST}/simulator/echosdk.a"
+make_framework "${DIST}/simulator/echosdk.dylib" \
+  "${DIST}/simulator/EchoSDK.framework"
 
 # ---------------------------------------------------------------------------
 # Verify before packaging: exported API, the SIP-fix renames, and a real TLS
@@ -172,10 +172,10 @@ make_framework "${DIST}/simulator/baresdk.dylib" \
 # — exactly the regression this script's TLS choice exists to prevent).
 # ---------------------------------------------------------------------------
 for SLICE in device simulator; do
-  BIN="${DIST}/${SLICE}/baresdk.framework/baresdk"
-  EXPORTS=$(xcrun nm -gU "${BIN}" | grep -c ' _baresdk_' || true)
+  BIN="${DIST}/${SLICE}/EchoSDK.framework/EchoSDK"
+  EXPORTS=$(xcrun nm -gU "${BIN}" | grep -c ' _echosdk_' || true)
   if [ "${EXPORTS}" -lt 40 ]; then
-    echo "ERROR: ${SLICE}: only ${EXPORTS} baresdk_* symbols exported" >&2
+    echo "ERROR: ${SLICE}: only ${EXPORTS} echosdk_* symbols exported" >&2
     exit 1
   fi
   # The SIP fixes ride the patched libre sources (cmake/patch-re-sources.cmake):
@@ -199,25 +199,25 @@ done
 # Package as xcframework
 # ---------------------------------------------------------------------------
 echo "=== Creating xcframework ==="
-rm -rf "${DIST}/baresdk.xcframework"
+rm -rf "${DIST}/EchoSDK.xcframework"
 xcodebuild -create-xcframework \
-  -framework "${DIST}/device/baresdk.framework" \
-  -framework "${DIST}/simulator/baresdk.framework" \
-  -output "${DIST}/baresdk.xcframework"
+  -framework "${DIST}/device/EchoSDK.framework" \
+  -framework "${DIST}/simulator/EchoSDK.framework" \
+  -output "${DIST}/EchoSDK.xcframework"
 
 echo ""
-echo "Done. Output: ${DIST}/baresdk.xcframework"
-plutil -p "${DIST}/baresdk.xcframework/Info.plist" | grep -E "(Identifier|Library)" || true
+echo "Done. Output: ${DIST}/EchoSDK.xcframework"
+plutil -p "${DIST}/EchoSDK.xcframework/Info.plist" | grep -E "(Identifier|Library)" || true
 
 # ---------------------------------------------------------------------------
 # Stage into the Flutter plugin, where the podspec vendors it.
 # ---------------------------------------------------------------------------
 PLUGIN_FRAMEWORKS="${ROOT}/bindings/flutter/ios/Frameworks"
 mkdir -p "${PLUGIN_FRAMEWORKS}"
-rm -rf "${PLUGIN_FRAMEWORKS}/baresdk.xcframework"
-cp -R "${DIST}/baresdk.xcframework" "${PLUGIN_FRAMEWORKS}/baresdk.xcframework"
+rm -rf "${PLUGIN_FRAMEWORKS}/EchoSDK.xcframework"
+cp -R "${DIST}/EchoSDK.xcframework" "${PLUGIN_FRAMEWORKS}/EchoSDK.xcframework"
 
 echo ""
 echo "Flutter plugin xcframework refreshed (commit it alongside the C change —"
 echo "apps pin a git SHA, so an uncommitted rebuild never reaches consumers):"
-du -sh "${PLUGIN_FRAMEWORKS}/baresdk.xcframework"
+du -sh "${PLUGIN_FRAMEWORKS}/EchoSDK.xcframework"

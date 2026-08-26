@@ -3,11 +3,11 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /**
- * Reference implementation of baresdk's app-owned audio device on iOS.
+ * Reference implementation of EchoSDK's app-owned audio device on iOS.
  *
  * The SDK stops opening any capture or playback device
- * (`baresdk_audio_use_external(true)`); this class becomes the device, driving
- * `baresdk_audio_external_push()` / `_pull()` from a VoiceProcessingIO render
+ * (`echosdk_audio_use_external(true)`); this class becomes the device, driving
+ * `echosdk_audio_external_push()` / `_pull()` from a VoiceProcessingIO render
  * callback. SIP, ICE, SRTP, codecs and the jitter buffer stay in the SDK.
  *
  * VoiceProcessingIO is not an implementation detail here — it is where iOS's
@@ -30,7 +30,7 @@ NS_ASSUME_NONNULL_BEGIN
  * CallKit app: the core would otherwise open its AudioUnit whenever media
  * started, which can be before CXProvider has activated the session.
  */
-@interface BaresdkAudioEngine : NSObject
+@interface EchoSDKAudioEngine : NSObject
 
 /// Begin watching for call media. The AudioUnit is not created until the
 /// session is also active — see [sessionActivated].

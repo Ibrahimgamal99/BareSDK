@@ -1,15 +1,15 @@
 /**
- * @file trace.c  SIP message trace hook → BARESDK_EV_SIP_TRACE
+ * @file trace.c  SIP message trace hook → ECHOSDK_EV_SIP_TRACE
  *
  * Registers a sip_trace_h with the libre SIP stack via uag_sip().
  * Each raw SIP message is forwarded to:
- *   1. The consumer as BARESDK_EV_SIP_TRACE (via event queue)
+ *   1. The consumer as ECHOSDK_EV_SIP_TRACE (via event queue)
  *   2. bsdk_pcap_write_sip() if pcap recording is active
  *
  * The handler fires on the re_main thread; we enqueue and return immediately.
  */
 
-#include "baresdk_internal.h"
+#include "echosdk_internal.h"
 
 /* ── Transport name helper ───────────────────────────────────────────────── */
 
@@ -49,11 +49,11 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 	if (peer)
 		re_snprintf(remote, sizeof(remote), "%H", sa_print_addr, peer);
 
-	struct baresdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = BARESDK_EV_SIP_TRACE;
+	qev->ev.type = ECHOSDK_EV_SIP_TRACE;
 	qev->ev.u.sip_trace.timestamp_us = tmr_jiffies() * 1000ULL;
 
 	/* Pack strings into buf: transport\0remote_addr\0raw_message\0 */
@@ -75,7 +75,7 @@ static void sip_trace_handler(bool tx, enum sip_transp tp,
 	qev->buf[off + copy_len] = '\0';
 	qev->ev.u.sip_trace.raw_message = qev->buf + off;
 
-	qev->ev.u.sip_trace.dir = tx ? BARESDK_MEDIA_DIR_TX : BARESDK_MEDIA_DIR_RX;
+	qev->ev.u.sip_trace.dir = tx ? ECHOSDK_MEDIA_DIR_TX : ECHOSDK_MEDIA_DIR_RX;
 
 	/* Hand-rolled rather than bsdk_event_post_qev() so a dropped trace is
 	 * silent: tracing is debug output, and warning once per message on a

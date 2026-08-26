@@ -39,7 +39,7 @@
 #include <string.h>
 #include <re.h>
 #include <baresip.h>
-#include "../../src/baresdk_internal.h"
+#include "../../src/echosdk_internal.h"
 
 /* ice_shim.c reads g_bsdk.cfg.ice_gathering_timeout_ms; core.c is not linked
  * in, so own the definition here. */

@@ -1,16 +1,16 @@
-#import "BaresdkExternalAudio.h"
+#import "EchoSDKExternalAudio.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 
 /* The shipped xcframework carries no headers or modulemap (build-ios.sh's
  * make_framework copies only the dylib), so declare what we call. The symbols
- * are exported by the dylib and resolved through -framework baresdk. */
-extern int  baresdk_audio_external_push(const int16_t *pcm, size_t nsamp);
-extern int  baresdk_audio_external_pull(int16_t *pcm, size_t nsamp);
-extern int  baresdk_audio_external_format(uint32_t *srate, uint8_t *ch,
+ * are exported by the dylib and resolved through -framework EchoSDK. */
+extern int  echosdk_audio_external_push(const int16_t *pcm, size_t nsamp);
+extern int  echosdk_audio_external_pull(int16_t *pcm, size_t nsamp);
+extern int  echosdk_audio_external_format(uint32_t *srate, uint8_t *ch,
                                           uint32_t *ptime);
-extern bool baresdk_audio_external_is_active(void);
+extern bool echosdk_audio_external_is_active(void);
 
 /* Poll interval for the format watcher. There is no "media is up" event in the
  * SDK: call state "established" is a SIP state and races the device, and a
@@ -21,7 +21,7 @@ static const NSTimeInterval kWatchInterval = 0.02;
  * internally, so unlike Android there is no resampler to write even at 8 kHz. */
 static const NSTimeInterval kPreferredIOBuffer = 0.02;
 
-@interface BaresdkAudioEngine () {
+@interface EchoSDKAudioEngine () {
 	AudioUnit         _unit;
 	AudioBufferList  *_micList;
 	void             *_micData;
@@ -53,7 +53,7 @@ static OSStatus RenderCB(void *inRefCon,
                          UInt32 inNumberFrames,
                          AudioBufferList *ioData)
 {
-	BaresdkAudioEngine *self = (__bridge BaresdkAudioEngine *)inRefCon;
+	EchoSDKAudioEngine *self = (__bridge EchoSDKAudioEngine *)inRefCon;
 	OSStatus err;
 
 	/* Objective-C ivars are reachable from C in the same @implementation. */
@@ -69,13 +69,13 @@ static OSStatus RenderCB(void *inRefCon,
 	err = AudioUnitRender(unit, ioActionFlags, inTimeStamp, 1,
 	                      inNumberFrames, mic);
 	if (err == noErr) {
-		baresdk_audio_external_push((const int16_t *)mic->mBuffers[0].mData,
+		echosdk_audio_external_push((const int16_t *)mic->mBuffers[0].mData,
 		                            inNumberFrames * ch);
 	}
 
 	/* Playback: always fills, silence when no call is up, so there is nothing
 	 * to branch on and no need to zero ioData ourselves. */
-	baresdk_audio_external_pull((int16_t *)ioData->mBuffers[0].mData,
+	echosdk_audio_external_pull((int16_t *)ioData->mBuffers[0].mData,
 	                            inNumberFrames * ch);
 
 	return noErr;
@@ -83,13 +83,13 @@ static OSStatus RenderCB(void *inRefCon,
 
 #pragma mark -
 
-@implementation BaresdkAudioEngine
+@implementation EchoSDKAudioEngine
 
 - (instancetype)init
 {
 	self = [super init];
 	if (self) {
-		_queue = dispatch_queue_create("dev.baresdk.appaudio",
+		_queue = dispatch_queue_create("dev.echosdk.appaudio",
 		                               DISPATCH_QUEUE_SERIAL);
 		/* Media services can be torn down under us; ignoring this is a hard
 		 * silent-audio bug, because the unit is dead but still "running". */
@@ -207,7 +207,7 @@ static OSStatus RenderCB(void *inRefCon,
 
 	uint32_t srate = 0, ptime = 0;
 	uint8_t ch = 0;
-	int err = baresdk_audio_external_format(&srate, &ch, &ptime);
+	int err = echosdk_audio_external_format(&srate, &ch, &ptime);
 
 	if (err != 0) {
 		/* ENODEV: no call has media — between calls, or the call ended. */
@@ -220,7 +220,7 @@ static OSStatus RenderCB(void *inRefCon,
 		[self setupUnitWithRate:srate channels:ch ptime:ptime];
 	} else if (srate != _srate || ch != _ch || ptime != _ptime) {
 		/* Mid-call codec renegotiation. */
-		NSLog(@"[baresdk] audio format changed %u/%u/%u -> %u/%u/%u",
+		NSLog(@"[EchoSDK] audio format changed %u/%u/%u -> %u/%u/%u",
 		      _srate, _ch, _ptime, srate, ch, ptime);
 		[self teardownUnit];
 		[self setupUnitWithRate:srate channels:ch ptime:ptime];
@@ -336,7 +336,7 @@ static OSStatus RenderCB(void *inRefCon,
 	}
 
 	self.running = YES;
-	NSLog(@"[baresdk] app-owned audio open: %u Hz %u ch ptime=%u ms (VPIO)",
+	NSLog(@"[EchoSDK] app-owned audio open: %u Hz %u ch ptime=%u ms (VPIO)",
 	      srate, ch, ptime);
 }
 
@@ -374,14 +374,14 @@ static OSStatus RenderCB(void *inRefCon,
 	/* Everything audio is gone; the unit handle is dead even though we still
 	 * hold it. Drop it and let the watcher rebuild from scratch. */
 	dispatch_async(self.queue, ^{
-		NSLog(@"[baresdk] media services reset — rebuilding audio unit");
+		NSLog(@"[EchoSDK] media services reset — rebuilding audio unit");
 		[self teardownUnit];
 	});
 }
 
 - (void)reportCode:(NSString *)code message:(NSString *)message
 {
-	NSLog(@"[baresdk] app-owned audio %@: %@", code, message);
+	NSLog(@"[EchoSDK] app-owned audio %@: %@", code, message);
 	self.lastError = [NSString stringWithFormat:@"%@: %@", code, message];
 	void (^handler)(NSString *, NSString *) = self.onError;
 	if (handler) {

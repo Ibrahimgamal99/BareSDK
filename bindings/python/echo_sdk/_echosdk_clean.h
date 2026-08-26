@@ -1,56 +1,56 @@
  
-              const char *baresdk_version(void);
- const char *baresdk_strerror(int err);
+              const char *echosdk_version(void);
+ const char *echosdk_strerror(int err);
 
-typedef struct baresdk_account *baresdk_account_handle_t;
-typedef struct baresdk_call *baresdk_call_handle_t;
-
-typedef enum {
- BARESDK_TRANSPORT_UDP = 0,
- BARESDK_TRANSPORT_TCP,
- BARESDK_TRANSPORT_TLS,
- BARESDK_TRANSPORT_WS,
- BARESDK_TRANSPORT_WSS,
-} baresdk_transport_t;
+typedef struct echosdk_account *echosdk_account_handle_t;
+typedef struct echosdk_call *echosdk_call_handle_t;
 
 typedef enum {
- BARESDK_MEDIA_ENC_NONE = 0,
- BARESDK_MEDIA_ENC_SDES,
- BARESDK_MEDIA_ENC_DTLS_SRTP,
-} baresdk_media_enc_t;
-typedef enum {
- BARESDK_CODEC_OPUS = 0,
- BARESDK_CODEC_PCMU,
- BARESDK_CODEC_PCMA,
- BARESDK_CODEC_G722,
- BARESDK_CODEC_G726_32,
-} baresdk_codec_t;
+ ECHOSDK_TRANSPORT_UDP = 0,
+ ECHOSDK_TRANSPORT_TCP,
+ ECHOSDK_TRANSPORT_TLS,
+ ECHOSDK_TRANSPORT_WS,
+ ECHOSDK_TRANSPORT_WSS,
+} echosdk_transport_t;
 
 typedef enum {
- BARESDK_MOS_EMODEL = 0,
- BARESDK_MOS_SIMPLIFIED,
-} baresdk_mos_method_t;
-typedef uint8_t baresdk_aec_mode_t;
+ ECHOSDK_MEDIA_ENC_NONE = 0,
+ ECHOSDK_MEDIA_ENC_SDES,
+ ECHOSDK_MEDIA_ENC_DTLS_SRTP,
+} echosdk_media_enc_t;
 typedef enum {
- BARESDK_MEDIA_DIR_RX = 0,
- BARESDK_MEDIA_DIR_TX,
-} baresdk_media_dir_t;
+ ECHOSDK_CODEC_OPUS = 0,
+ ECHOSDK_CODEC_PCMU,
+ ECHOSDK_CODEC_PCMA,
+ ECHOSDK_CODEC_G722,
+ ECHOSDK_CODEC_G726_32,
+} echosdk_codec_t;
 
 typedef enum {
- BARESDK_DTMF_RFC4733 = 0,
- BARESDK_DTMF_SIP_INFO = 1,
- BARESDK_DTMF_AUTO = 2,
-} baresdk_dtmf_mode_t;
+ ECHOSDK_MOS_EMODEL = 0,
+ ECHOSDK_MOS_SIMPLIFIED,
+} echosdk_mos_method_t;
+typedef uint8_t echosdk_aec_mode_t;
+typedef enum {
+ ECHOSDK_MEDIA_DIR_RX = 0,
+ ECHOSDK_MEDIA_DIR_TX,
+} echosdk_media_dir_t;
 
 typedef enum {
- BARESDK_JBUF_ADAPTIVE = 0,
- BARESDK_JBUF_FIXED = 1,
-} baresdk_jbuf_type_t;
+ ECHOSDK_DTMF_RFC4733 = 0,
+ ECHOSDK_DTMF_SIP_INFO = 1,
+ ECHOSDK_DTMF_AUTO = 2,
+} echosdk_dtmf_mode_t;
+
+typedef enum {
+ ECHOSDK_JBUF_ADAPTIVE = 0,
+ ECHOSDK_JBUF_FIXED = 1,
+} echosdk_jbuf_type_t;
 typedef enum {
 
- BARESDK_ICE_HANDOVER_BEST_EFFORT = 0,
- BARESDK_ICE_HANDOVER_FAIL_FAST,
-} baresdk_ice_handover_t;
+ ECHOSDK_ICE_HANDOVER_BEST_EFFORT = 0,
+ ECHOSDK_ICE_HANDOVER_FAIL_FAST,
+} echosdk_ice_handover_t;
 
 typedef struct {
  int bitrate;
@@ -59,154 +59,154 @@ typedef struct {
  bool dtx;
  bool fec;
  bool stereo;
-} baresdk_opus_config_t;
+} echosdk_opus_config_t;
 
 typedef enum {
- BARESDK_OK = 0,
- BARESDK_ERR_INVAL = -1,
- BARESDK_ERR_NOMEM = -2,
- BARESDK_ERR_STATE = -3,
- BARESDK_ERR_DNS = -4,
- BARESDK_ERR_TRANSPORT = -5,
- BARESDK_ERR_AUTH = -6,
- BARESDK_ERR_SERVER_5XX = -7,
- BARESDK_ERR_WS_PROTOCOL_REJECTED = -8,
- BARESDK_ERR_TIMEOUT = -9,
- BARESDK_ERR_ALREADY = -10,
-} baresdk_error_t;
+ ECHOSDK_OK = 0,
+ ECHOSDK_ERR_INVAL = -1,
+ ECHOSDK_ERR_NOMEM = -2,
+ ECHOSDK_ERR_STATE = -3,
+ ECHOSDK_ERR_DNS = -4,
+ ECHOSDK_ERR_TRANSPORT = -5,
+ ECHOSDK_ERR_AUTH = -6,
+ ECHOSDK_ERR_SERVER_5XX = -7,
+ ECHOSDK_ERR_WS_PROTOCOL_REJECTED = -8,
+ ECHOSDK_ERR_TIMEOUT = -9,
+ ECHOSDK_ERR_ALREADY = -10,
+} echosdk_error_t;
 
 typedef enum {
- BARESDK_CALL_CALLING = 0,
- BARESDK_CALL_RINGING,
- BARESDK_CALL_ESTABLISHED,
- BARESDK_CALL_HELD,
- BARESDK_CALL_ENDED,
- BARESDK_CALL_CANCELLED,
- BARESDK_CALL_FAILED,
-} baresdk_call_state_t;
+ ECHOSDK_CALL_CALLING = 0,
+ ECHOSDK_CALL_RINGING,
+ ECHOSDK_CALL_ESTABLISHED,
+ ECHOSDK_CALL_HELD,
+ ECHOSDK_CALL_ENDED,
+ ECHOSDK_CALL_CANCELLED,
+ ECHOSDK_CALL_FAILED,
+} echosdk_call_state_t;
 
 typedef enum {
- BARESDK_REG_UNREGISTERED = 0,
- BARESDK_REG_REGISTERING,
- BARESDK_REG_REGISTERED,
+ ECHOSDK_REG_UNREGISTERED = 0,
+ ECHOSDK_REG_REGISTERING,
+ ECHOSDK_REG_REGISTERED,
 
- BARESDK_REG_FAILED,
- BARESDK_REG_UNREGISTERING,
- BARESDK_REG_RECONNECTING,
-} baresdk_reg_state_t;
-
-typedef enum {
- BARESDK_PRESENCE_UNKNOWN = 0,
- BARESDK_PRESENCE_OPEN,
- BARESDK_PRESENCE_CLOSED,
- BARESDK_PRESENCE_BUSY,
-} baresdk_presence_status_t;
+ ECHOSDK_REG_FAILED,
+ ECHOSDK_REG_UNREGISTERING,
+ ECHOSDK_REG_RECONNECTING,
+} echosdk_reg_state_t;
 
 typedef enum {
- BARESDK_100REL_DISABLED = 0,
- BARESDK_100REL_ENABLED = 1,
- BARESDK_100REL_REQUIRED = 2,
-} baresdk_100rel_mode_t;
-typedef enum {
- BARESDK_PUSH_PROVIDER_NONE = 0,
- BARESDK_PUSH_PROVIDER_APNS = 1,
- BARESDK_PUSH_PROVIDER_APNS_SANDBOX = 2,
- BARESDK_PUSH_PROVIDER_FCM = 3,
-} baresdk_push_provider_t;
+ ECHOSDK_PRESENCE_UNKNOWN = 0,
+ ECHOSDK_PRESENCE_OPEN,
+ ECHOSDK_PRESENCE_CLOSED,
+ ECHOSDK_PRESENCE_BUSY,
+} echosdk_presence_status_t;
 
 typedef enum {
- BARESDK_EV_LOG = 0,
- BARESDK_EV_REG_STATE,
- BARESDK_EV_INCOMING_CALL,
- BARESDK_EV_CALL_STATE,
- BARESDK_EV_CALL_DTMF,
- BARESDK_EV_SDP_NEGOTIATION,
- BARESDK_EV_SIP_TRACE,
- BARESDK_EV_MEDIA_STATS,
- BARESDK_EV_REGISTRAR_WARNING,
- BARESDK_EV_TRANSFER_REQUEST,
- BARESDK_EV_MWI,
- BARESDK_EV_MESSAGE,
- BARESDK_EV_PRESENCE_STATE,
- BARESDK_EV_QUALITY_ALERT,
- BARESDK_EV_NETWORK,
-
- BARESDK_EV_TRANSFER_FAILED,
-} baresdk_event_type_t;
+ ECHOSDK_100REL_DISABLED = 0,
+ ECHOSDK_100REL_ENABLED = 1,
+ ECHOSDK_100REL_REQUIRED = 2,
+} echosdk_100rel_mode_t;
 typedef enum {
- BARESDK_NET_CHANGE_DETECTED = 0,
- BARESDK_NET_DOWN,
- BARESDK_NET_UP,
- BARESDK_NET_TRANSPORT_RESET,
- BARESDK_NET_REREGISTERING,
- BARESDK_NET_CALL_MIGRATING,
- BARESDK_NET_CALL_MIGRATE_ACCEPTED,
- BARESDK_NET_CALL_MIGRATED,
- BARESDK_NET_CALL_MIGRATION_FAILED,
- BARESDK_NET_CALL_DEFERRED,
- BARESDK_NET_HANDOVER_FAILED,
- BARESDK_NET_CALL_ICE_STALE,
-} baresdk_net_event_t;
+ ECHOSDK_PUSH_PROVIDER_NONE = 0,
+ ECHOSDK_PUSH_PROVIDER_APNS = 1,
+ ECHOSDK_PUSH_PROVIDER_APNS_SANDBOX = 2,
+ ECHOSDK_PUSH_PROVIDER_FCM = 3,
+} echosdk_push_provider_t;
+
+typedef enum {
+ ECHOSDK_EV_LOG = 0,
+ ECHOSDK_EV_REG_STATE,
+ ECHOSDK_EV_INCOMING_CALL,
+ ECHOSDK_EV_CALL_STATE,
+ ECHOSDK_EV_CALL_DTMF,
+ ECHOSDK_EV_SDP_NEGOTIATION,
+ ECHOSDK_EV_SIP_TRACE,
+ ECHOSDK_EV_MEDIA_STATS,
+ ECHOSDK_EV_REGISTRAR_WARNING,
+ ECHOSDK_EV_TRANSFER_REQUEST,
+ ECHOSDK_EV_MWI,
+ ECHOSDK_EV_MESSAGE,
+ ECHOSDK_EV_PRESENCE_STATE,
+ ECHOSDK_EV_QUALITY_ALERT,
+ ECHOSDK_EV_NETWORK,
+
+ ECHOSDK_EV_TRANSFER_FAILED,
+} echosdk_event_type_t;
+typedef enum {
+ ECHOSDK_NET_CHANGE_DETECTED = 0,
+ ECHOSDK_NET_DOWN,
+ ECHOSDK_NET_UP,
+ ECHOSDK_NET_TRANSPORT_RESET,
+ ECHOSDK_NET_REREGISTERING,
+ ECHOSDK_NET_CALL_MIGRATING,
+ ECHOSDK_NET_CALL_MIGRATE_ACCEPTED,
+ ECHOSDK_NET_CALL_MIGRATED,
+ ECHOSDK_NET_CALL_MIGRATION_FAILED,
+ ECHOSDK_NET_CALL_DEFERRED,
+ ECHOSDK_NET_HANDOVER_FAILED,
+ ECHOSDK_NET_CALL_ICE_STALE,
+} echosdk_net_event_t;
 typedef struct {
- baresdk_net_event_t event;
- baresdk_call_handle_t call;
- baresdk_account_handle_t account;
+ echosdk_net_event_t event;
+ echosdk_call_handle_t call;
+ echosdk_account_handle_t account;
  const char *local_addr;
  uint32_t attempt;
  uint32_t max_attempts;
  uint32_t elapsed_ms;
  bool ice;
- baresdk_error_t error;
-} baresdk_ev_network_t;
+ echosdk_error_t error;
+} echosdk_ev_network_t;
 typedef struct {
- baresdk_account_handle_t account;
- baresdk_reg_state_t state;
- baresdk_error_t error;
+ echosdk_account_handle_t account;
+ echosdk_reg_state_t state;
+ echosdk_error_t error;
  uint32_t retry_attempt;
  uint32_t retry_delay_ms;
  const char *error_str;
-} baresdk_ev_reg_state_t;
+} echosdk_ev_reg_state_t;
 
 typedef struct {
- baresdk_account_handle_t account;
- baresdk_call_handle_t call;
+ echosdk_account_handle_t account;
+ echosdk_call_handle_t call;
  const char *from_uri;
  const char *display_name;
-} baresdk_ev_incoming_call_t;
+} echosdk_ev_incoming_call_t;
 
 typedef struct {
- baresdk_account_handle_t account;
- baresdk_call_handle_t call;
- baresdk_call_state_t state;
- baresdk_error_t error;
+ echosdk_account_handle_t account;
+ echosdk_call_handle_t call;
+ echosdk_call_state_t state;
+ echosdk_error_t error;
  const char *reason;
-} baresdk_ev_call_state_t;
+} echosdk_ev_call_state_t;
 
 typedef struct {
- baresdk_call_handle_t call;
+ echosdk_call_handle_t call;
  char digit;
-} baresdk_ev_call_dtmf_t;
+} echosdk_ev_call_dtmf_t;
 
 typedef struct {
- baresdk_call_handle_t call;
+ echosdk_call_handle_t call;
  const char *local_sdp;
  const char *remote_sdp;
  const char *negotiated_codec;
  const char *negotiated_crypto;
  const char * const *rejected_codecs;
  const char * const *warnings;
-} baresdk_ev_sdp_negotiation_t;
+} echosdk_ev_sdp_negotiation_t;
 
 typedef struct {
- baresdk_media_dir_t dir;
+ echosdk_media_dir_t dir;
  const char *transport;
  const char *remote_addr;
  const char *raw_message;
  uint64_t timestamp_us;
-} baresdk_ev_sip_trace_t;
+} echosdk_ev_sip_trace_t;
 
 typedef struct {
- baresdk_call_handle_t call;
+ echosdk_call_handle_t call;
  uint32_t packets_sent;
  uint32_t packets_received;
  uint32_t packets_lost;
@@ -236,7 +236,7 @@ typedef struct {
  float mos_cq;
  float mos_lq_rx;
  float mos_cq_rx;
- baresdk_mos_method_t mos_method;
+ echosdk_mos_method_t mos_method;
  const char *codec_name;
  uint32_t codec_clock_rate;
  uint32_t codec_sample_rate;
@@ -254,92 +254,92 @@ typedef struct {
  uint32_t stats_tick;
  uint64_t call_duration_ms;
  bool is_final;
-} baresdk_ev_media_stats_t;
+} echosdk_ev_media_stats_t;
 
 typedef struct {
  const char *message;
-} baresdk_ev_log_t;
+} echosdk_ev_log_t;
 
 typedef struct {
  const char *message;
-} baresdk_ev_registrar_warning_t;
+} echosdk_ev_registrar_warning_t;
 typedef struct {
- baresdk_account_handle_t account;
- baresdk_call_handle_t call;
+ echosdk_account_handle_t account;
+ echosdk_call_handle_t call;
  const char *refer_to_uri;
  bool has_replaces;
  bool auto_followed;
-} baresdk_ev_transfer_req_t;
+} echosdk_ev_transfer_req_t;
 typedef struct {
- baresdk_account_handle_t account;
- baresdk_call_handle_t call;
+ echosdk_account_handle_t account;
+ echosdk_call_handle_t call;
  const char *reason;
-} baresdk_ev_transfer_failed_t;
+} echosdk_ev_transfer_failed_t;
 typedef struct {
- baresdk_account_handle_t account;
+ echosdk_account_handle_t account;
  bool messages_waiting;
  uint32_t new_voice;
  uint32_t old_voice;
  uint32_t new_urgent;
  uint32_t old_urgent;
  const char *raw_body;
-} baresdk_ev_mwi_t;
+} echosdk_ev_mwi_t;
 typedef struct {
- baresdk_account_handle_t account;
+ echosdk_account_handle_t account;
  const char *from_uri;
  const char *body;
  const char *content_type;
-} baresdk_ev_message_t;
+} echosdk_ev_message_t;
 typedef struct {
- baresdk_account_handle_t account;
+ echosdk_account_handle_t account;
  const char *target_uri;
- baresdk_presence_status_t status;
-} baresdk_ev_presence_state_t;
+ echosdk_presence_status_t status;
+} echosdk_ev_presence_state_t;
 
 typedef enum {
- BARESDK_QUALITY_MOS = 0,
- BARESDK_QUALITY_LOSS,
- BARESDK_QUALITY_JITTER,
- BARESDK_QUALITY_RTT,
- BARESDK_QUALITY_MEDIA_STALL,
-} baresdk_quality_issue_t;
+ ECHOSDK_QUALITY_MOS = 0,
+ ECHOSDK_QUALITY_LOSS,
+ ECHOSDK_QUALITY_JITTER,
+ ECHOSDK_QUALITY_RTT,
+ ECHOSDK_QUALITY_MEDIA_STALL,
+} echosdk_quality_issue_t;
 
 typedef struct {
- baresdk_call_handle_t call;
- baresdk_quality_issue_t issue;
+ echosdk_call_handle_t call;
+ echosdk_quality_issue_t issue;
  float value;
  float threshold;
  bool recovering;
-} baresdk_ev_quality_alert_t;
+} echosdk_ev_quality_alert_t;
 
 typedef struct {
- baresdk_event_type_t type;
+ echosdk_event_type_t type;
  union {
-  baresdk_ev_log_t log;
-  baresdk_ev_reg_state_t reg;
-  baresdk_ev_incoming_call_t incoming;
-  baresdk_ev_call_state_t call_state;
-  baresdk_ev_call_dtmf_t dtmf;
-  baresdk_ev_sdp_negotiation_t sdp;
-  baresdk_ev_sip_trace_t sip_trace;
-  baresdk_ev_media_stats_t stats;
-  baresdk_ev_registrar_warning_t reg_warn;
-  baresdk_ev_transfer_req_t transfer_req;
-  baresdk_ev_transfer_failed_t transfer_failed;
-  baresdk_ev_mwi_t mwi;
-  baresdk_ev_message_t msg;
-  baresdk_ev_presence_state_t presence;
-  baresdk_ev_quality_alert_t quality_alert;
-  baresdk_ev_network_t network;
+  echosdk_ev_log_t log;
+  echosdk_ev_reg_state_t reg;
+  echosdk_ev_incoming_call_t incoming;
+  echosdk_ev_call_state_t call_state;
+  echosdk_ev_call_dtmf_t dtmf;
+  echosdk_ev_sdp_negotiation_t sdp;
+  echosdk_ev_sip_trace_t sip_trace;
+  echosdk_ev_media_stats_t stats;
+  echosdk_ev_registrar_warning_t reg_warn;
+  echosdk_ev_transfer_req_t transfer_req;
+  echosdk_ev_transfer_failed_t transfer_failed;
+  echosdk_ev_mwi_t mwi;
+  echosdk_ev_message_t msg;
+  echosdk_ev_presence_state_t presence;
+  echosdk_ev_quality_alert_t quality_alert;
+  echosdk_ev_network_t network;
  } u;
-} baresdk_event_t;
-typedef void (*baresdk_event_cb_t)(const baresdk_event_t *ev, void *userdata);
+} echosdk_event_t;
+typedef void (*echosdk_event_cb_t)(const echosdk_event_t *ev, void *userdata);
 
- void baresdk_event_release(const baresdk_event_t *ev);
+ void echosdk_event_release(const echosdk_event_t *ev);
 
-typedef void (*baresdk_media_tap_cb_t)(
- baresdk_call_handle_t call,
- baresdk_media_dir_t direction,
+typedef void (*echosdk_media_tap_cb_t)(
+ echosdk_call_handle_t call,
+ echosdk_media_dir_t direction,
  const int16_t *pcm,
  size_t samples,
  uint32_t sample_rate,
@@ -351,7 +351,7 @@ typedef struct {
 
  uint32_t version;
  size_t struct_size;
- baresdk_transport_t transport;
+ echosdk_transport_t transport;
  const char *local_ip;
  uint16_t local_port;
  const char *bind_interface;
@@ -378,20 +378,20 @@ typedef struct {
  const char *turn_pass;
  bool ice_enabled;
  bool rtcp_mux;
- baresdk_media_enc_t media_enc;
- baresdk_codec_t audio_codecs[8];
+ echosdk_media_enc_t media_enc;
+ echosdk_codec_t audio_codecs[8];
  int audio_codec_count;
  uint8_t dscp_sip;
  uint8_t dscp_rtp;
  bool enable_video;
- baresdk_aec_mode_t aec_mode;
+ echosdk_aec_mode_t aec_mode;
  bool ns;
  bool agc;
  float aec_suppression_level;
  float mic_gain_db;
  float speaker_gain_db;
- baresdk_opus_config_t opus;
- baresdk_jbuf_type_t jbuf_type;
+ echosdk_opus_config_t opus;
+ echosdk_jbuf_type_t jbuf_type;
  uint32_t jitter_buffer_min_ms;
  uint32_t jitter_buffer_max_ms;
  uint32_t reg_expires;
@@ -411,7 +411,7 @@ typedef struct {
  uint32_t session_expires_s;
  uint32_t session_min_se_s;
  uint32_t stats_interval_ms;
- baresdk_mos_method_t mos_method;
+ echosdk_mos_method_t mos_method;
 
  float mos_alert_threshold;
  float loss_alert_threshold;
@@ -421,7 +421,7 @@ typedef struct {
  bool trace_sdp_diff;
  const char *pcap_path;
  int log_level;
- baresdk_event_cb_t event_cb;
+ echosdk_event_cb_t event_cb;
  void *event_userdata;
  uint32_t net_monitor_interval_s;
  uint32_t net_settle_ms;
@@ -447,17 +447,17 @@ typedef struct {
  bool keepalive_reregister;
  bool dns_srv_failover;
 
- baresdk_ice_handover_t net_ice_handover;
+ echosdk_ice_handover_t net_ice_handover;
  uint32_t ice_gathering_timeout_ms;
 
-} baresdk_config_t;
+} echosdk_config_t;
 
 typedef struct {
  const char *uri;
 
  const char *password;
 
- baresdk_transport_t transport;
+ echosdk_transport_t transport;
 
  const char *server_host;
  uint16_t server_port;
@@ -467,7 +467,7 @@ typedef struct {
  const char *auth_user;
  const char *display_name;
 
- baresdk_media_enc_t media_enc;
+ echosdk_media_enc_t media_enc;
  bool ice_enabled;
  bool rtcp_mux;
  bool rtcp_mux_set;
@@ -479,149 +479,149 @@ typedef struct {
  const char *outbound;
  const char *outbound_proxy;
  bool verify_tls;
- baresdk_push_provider_t push_provider;
+ echosdk_push_provider_t push_provider;
 
  const char *push_token;
 
  const char *push_param;
- baresdk_codec_t audio_codecs[8];
+ echosdk_codec_t audio_codecs[8];
  int audio_codec_count;
  char audio_codec_names[8][32];
  int audio_codec_name_count;
- baresdk_dtmf_mode_t dtmf_mode;
+ echosdk_dtmf_mode_t dtmf_mode;
 
-} baresdk_account_config_t;
- void baresdk_config_init(baresdk_config_t *cfg);
- int baresdk_init(const baresdk_config_t *cfg);
- bool baresdk_is_initialized(void);
- int baresdk_set_event_handler(baresdk_event_cb_t cb,
+} echosdk_account_config_t;
+ void echosdk_config_init(echosdk_config_t *cfg);
+ int echosdk_init(const echosdk_config_t *cfg);
+ bool echosdk_is_initialized(void);
+ int echosdk_set_event_handler(echosdk_event_cb_t cb,
                                              void *userdata,
                                              bool deliver_owned_events);
 
- void baresdk_shutdown(void);
+ void echosdk_shutdown(void);
 
- int baresdk_account_create(const baresdk_account_config_t *cfg,
-                             baresdk_account_handle_t *out);
- void baresdk_account_destroy(baresdk_account_handle_t acct);
+ int echosdk_account_create(const echosdk_account_config_t *cfg,
+                             echosdk_account_handle_t *out);
+ void echosdk_account_destroy(echosdk_account_handle_t acct);
 
- int baresdk_account_register(baresdk_account_handle_t acct);
- int baresdk_account_unregister(baresdk_account_handle_t acct);
- int baresdk_account_set_retry_policy(baresdk_account_handle_t acct,
+ int echosdk_account_register(echosdk_account_handle_t acct);
+ int echosdk_account_unregister(echosdk_account_handle_t acct);
+ int echosdk_account_set_retry_policy(echosdk_account_handle_t acct,
                                                      uint32_t initial_ms,
                                                      uint32_t max_ms,
                                                      float backoff,
                                                      uint32_t max_attempts);
- int baresdk_account_cancel_retry(baresdk_account_handle_t acct);
+ int echosdk_account_cancel_retry(echosdk_account_handle_t acct);
 
- int baresdk_account_retry_now(baresdk_account_handle_t acct);
- int baresdk_account_set_push_token(baresdk_account_handle_t acct,
+ int echosdk_account_retry_now(echosdk_account_handle_t acct);
+ int echosdk_account_set_push_token(echosdk_account_handle_t acct,
                                                    const char *push_token);
- int baresdk_account_add_register_header(
-        baresdk_account_handle_t acct,
+ int echosdk_account_add_register_header(
+        echosdk_account_handle_t acct,
         const char *name, const char *value);
- int baresdk_account_add_header(baresdk_account_handle_t acct,
+ int echosdk_account_add_header(echosdk_account_handle_t acct,
                                 const char *name, const char *value);
 
- int baresdk_account_subscribe_presence(baresdk_account_handle_t acct,
+ int echosdk_account_subscribe_presence(echosdk_account_handle_t acct,
                                         const char *target_uri);
- int baresdk_account_unsubscribe_presence(baresdk_account_handle_t acct,
+ int echosdk_account_unsubscribe_presence(echosdk_account_handle_t acct,
                                           const char *target_uri);
-typedef void (*baresdk_account_iter_fn)(baresdk_account_handle_t acct, void *arg);
- void baresdk_account_foreach(baresdk_account_iter_fn fn, void *arg);
- int baresdk_account_get_aor(baresdk_account_handle_t acct,
+typedef void (*echosdk_account_iter_fn)(echosdk_account_handle_t acct, void *arg);
+ void echosdk_account_foreach(echosdk_account_iter_fn fn, void *arg);
+ int echosdk_account_get_aor(echosdk_account_handle_t acct,
                                             char *buf, size_t sz);
- baresdk_reg_state_t baresdk_account_get_reg_state(
-        baresdk_account_handle_t acct);
+ echosdk_reg_state_t echosdk_account_get_reg_state(
+        echosdk_account_handle_t acct);
 
- int baresdk_call_invite(baresdk_account_handle_t acct,
+ int echosdk_call_invite(echosdk_account_handle_t acct,
                          const char *uri,
-                         baresdk_call_handle_t *out);
- int baresdk_call_answer(baresdk_call_handle_t call);
- int baresdk_call_hangup(baresdk_call_handle_t call);
- int baresdk_call_reject(baresdk_call_handle_t call,
+                         echosdk_call_handle_t *out);
+ int echosdk_call_answer(echosdk_call_handle_t call);
+ int echosdk_call_hangup(echosdk_call_handle_t call);
+ int echosdk_call_reject(echosdk_call_handle_t call,
                                         uint16_t scode, const char *reason);
- int baresdk_call_hold(baresdk_call_handle_t call);
- int baresdk_call_resume(baresdk_call_handle_t call);
- bool baresdk_call_is_held(baresdk_call_handle_t call);
- int baresdk_call_send_dtmf(baresdk_call_handle_t call, char digit);
- int baresdk_call_transfer(baresdk_call_handle_t call, const char *uri);
- int baresdk_call_add_header(baresdk_call_handle_t call,
+ int echosdk_call_hold(echosdk_call_handle_t call);
+ int echosdk_call_resume(echosdk_call_handle_t call);
+ bool echosdk_call_is_held(echosdk_call_handle_t call);
+ int echosdk_call_send_dtmf(echosdk_call_handle_t call, char digit);
+ int echosdk_call_transfer(echosdk_call_handle_t call, const char *uri);
+ int echosdk_call_add_header(echosdk_call_handle_t call,
                              const char *name, const char *value);
- int baresdk_call_transfer_accept(baresdk_call_handle_t call,
-                                                 baresdk_call_handle_t *out);
- int baresdk_call_transfer_reject(baresdk_call_handle_t call,
+ int echosdk_call_transfer_accept(echosdk_call_handle_t call,
+                                                 echosdk_call_handle_t *out);
+ int echosdk_call_transfer_reject(echosdk_call_handle_t call,
                                                  uint16_t scode,
                                                  const char *reason);
 
- int baresdk_call_attended_transfer(baresdk_call_handle_t call_a,
-                                    baresdk_call_handle_t call_b);
-typedef void (*baresdk_call_iter_fn)(baresdk_call_handle_t call, void *arg);
- void baresdk_call_foreach(baresdk_call_iter_fn fn, void *arg);
- baresdk_account_handle_t baresdk_call_get_account(
-        baresdk_call_handle_t call);
- baresdk_call_state_t baresdk_call_get_state(
-        baresdk_call_handle_t call);
- int baresdk_message_send(baresdk_account_handle_t account,
+ int echosdk_call_attended_transfer(echosdk_call_handle_t call_a,
+                                    echosdk_call_handle_t call_b);
+typedef void (*echosdk_call_iter_fn)(echosdk_call_handle_t call, void *arg);
+ void echosdk_call_foreach(echosdk_call_iter_fn fn, void *arg);
+ echosdk_account_handle_t echosdk_call_get_account(
+        echosdk_call_handle_t call);
+ echosdk_call_state_t echosdk_call_get_state(
+        echosdk_call_handle_t call);
+ int echosdk_message_send(echosdk_account_handle_t account,
                           const char *to_uri,
                           const char *body,
                           const char *content_type);
 
- int baresdk_account_publish_presence(baresdk_account_handle_t account,
-                                      baresdk_presence_status_t status);
+ int echosdk_account_publish_presence(echosdk_account_handle_t account,
+                                      echosdk_presence_status_t status);
 
- int baresdk_account_set_100rel(baresdk_account_handle_t account,
-                                baresdk_100rel_mode_t mode);
- int baresdk_audio_use_external(bool enable);
- int baresdk_audio_external_push(const int16_t *pcm, size_t nsamp);
- int baresdk_audio_external_pull(int16_t *pcm, size_t nsamp);
- int baresdk_audio_external_format(uint32_t *srate, uint8_t *ch,
+ int echosdk_account_set_100rel(echosdk_account_handle_t account,
+                                echosdk_100rel_mode_t mode);
+ int echosdk_audio_use_external(bool enable);
+ int echosdk_audio_external_push(const int16_t *pcm, size_t nsamp);
+ int echosdk_audio_external_pull(int16_t *pcm, size_t nsamp);
+ int echosdk_audio_external_format(uint32_t *srate, uint8_t *ch,
                                                   uint32_t *ptime);
- bool baresdk_audio_external_is_active(void);
+ bool echosdk_audio_external_is_active(void);
 
 typedef struct {
  char name[128];
  char description[256];
  bool is_default;
-} baresdk_audio_device_t;
+} echosdk_audio_device_t;
 
- int baresdk_audio_list_input_devices(baresdk_audio_device_t *devices,
+ int echosdk_audio_list_input_devices(echosdk_audio_device_t *devices,
                                                      int max_count);
- int baresdk_audio_list_output_devices(baresdk_audio_device_t *devices,
+ int echosdk_audio_list_output_devices(echosdk_audio_device_t *devices,
                                                       int max_count);
- void baresdk_set_aec(bool enable);
- int baresdk_set_aec_mode(baresdk_aec_mode_t mode);
+ void echosdk_set_aec(bool enable);
+ int echosdk_set_aec_mode(echosdk_aec_mode_t mode);
 
- void baresdk_set_aec_suppression_level(float level);
- void baresdk_set_ns(bool enable);
- void baresdk_set_agc(bool enable);
+ void echosdk_set_aec_suppression_level(float level);
+ void echosdk_set_ns(bool enable);
+ void echosdk_set_agc(bool enable);
 
- void baresdk_set_mic_gain_db(float db);
+ void echosdk_set_mic_gain_db(float db);
 
- void baresdk_set_speaker_gain_db(float db);
- int baresdk_call_set_dscp_rtp(baresdk_call_handle_t call,
+ void echosdk_set_speaker_gain_db(float db);
+ int echosdk_call_set_dscp_rtp(echosdk_call_handle_t call,
                                               uint8_t dscp);
- void baresdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
- void baresdk_set_jitter_buffer_type(baresdk_jbuf_type_t type);
- int baresdk_call_set_rtp_timeout(baresdk_call_handle_t call,
+ void echosdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms);
+ void echosdk_set_jitter_buffer_type(echosdk_jbuf_type_t type);
+ int echosdk_call_set_rtp_timeout(echosdk_call_handle_t call,
                                                  uint32_t seconds);
- int baresdk_call_set_bitrate(baresdk_call_handle_t call,
+ int echosdk_call_set_bitrate(echosdk_call_handle_t call,
                                              uint32_t bitrate_bps);
- void baresdk_set_adaptive_bitrate(bool enabled,
+ void echosdk_set_adaptive_bitrate(bool enabled,
                                                   uint32_t min_bps,
                                                   uint32_t max_bps);
- int baresdk_account_keepalive_now(
-                                        baresdk_account_handle_t account);
- int baresdk_audio_mute(baresdk_call_handle_t call, bool mute);
- bool baresdk_audio_is_muted(baresdk_call_handle_t call);
- int baresdk_audio_mute_rx(baresdk_call_handle_t call, bool mute);
- int baresdk_audio_set_input_device(const char *name);
- int baresdk_audio_set_output_device(const char *name);
- int baresdk_call_set_media_tap(baresdk_call_handle_t call,
-                                baresdk_media_tap_cb_t cb,
+ int echosdk_account_keepalive_now(
+                                        echosdk_account_handle_t account);
+ int echosdk_audio_mute(echosdk_call_handle_t call, bool mute);
+ bool echosdk_audio_is_muted(echosdk_call_handle_t call);
+ int echosdk_audio_mute_rx(echosdk_call_handle_t call, bool mute);
+ int echosdk_audio_set_input_device(const char *name);
+ int echosdk_audio_set_output_device(const char *name);
+ int echosdk_call_set_media_tap(echosdk_call_handle_t call,
+                                echosdk_media_tap_cb_t cb,
                                 void *userdata);
- int baresdk_call_record_start(baresdk_call_handle_t call,
+ int echosdk_call_record_start(echosdk_call_handle_t call,
                                               const char *path);
- int baresdk_call_record_stop(baresdk_call_handle_t call);
+ int echosdk_call_record_stop(echosdk_call_handle_t call);
 typedef struct {
  char peer_uri[256];
  char peer_display_name[128];
@@ -637,20 +637,20 @@ typedef struct {
  uint64_t duration_ms;
  uint32_t setup_duration_ms;
  uint32_t line_number;
- baresdk_transport_t transport;
- baresdk_call_state_t state;
-} baresdk_call_info_t;
- int baresdk_call_get_info(baresdk_call_handle_t call,
-                                          baresdk_call_info_t *out);
- int baresdk_call_get_stats(baresdk_call_handle_t call,
-                            baresdk_ev_media_stats_t *out);
- int baresdk_network_changed(void);
+ echosdk_transport_t transport;
+ echosdk_call_state_t state;
+} echosdk_call_info_t;
+ int echosdk_call_get_info(echosdk_call_handle_t call,
+                                          echosdk_call_info_t *out);
+ int echosdk_call_get_stats(echosdk_call_handle_t call,
+                            echosdk_ev_media_stats_t *out);
+ int echosdk_network_changed(void);
 
- int baresdk_network_set_monitor_interval(uint32_t seconds);
- int baresdk_network_set_handover_policy(bool reinvite_calls,
+ int echosdk_network_set_monitor_interval(uint32_t seconds);
+ int echosdk_network_set_handover_policy(bool reinvite_calls,
                                                         bool hangup_on_failure);
- int baresdk_network_local_addr(char *buf, size_t sz);
- bool baresdk_network_is_up(void);
+ int echosdk_network_local_addr(char *buf, size_t sz);
+ bool echosdk_network_is_up(void);
 
- int baresdk_pcap_start(const char *path);
- int baresdk_pcap_stop(void);
+ int echosdk_pcap_start(const char *path);
+ int echosdk_pcap_stop(void);
