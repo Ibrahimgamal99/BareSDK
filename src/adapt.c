@@ -237,6 +237,7 @@ static void stall_tick(struct echosdk_call *lc,
 	 * as a fresh start rather than a stall. */
 	if (lc->state == ECHOSDK_CALL_HELD || lc->local_hold ||
 	    call_is_onhold(lc->bc) ||
+	    lc->net_mig_state == BSDK_MIG_STALLED ||
 	    lc->net_mig_state == BSDK_MIG_WAIT_ADDR ||
 	    lc->net_mig_state == BSDK_MIG_DEFERRED ||
 	    lc->net_mig_state == BSDK_MIG_SENT) {
@@ -263,6 +264,14 @@ static void stall_tick(struct echosdk_call *lc,
 		bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MEDIA_STALL,
 		                        (float)elapsed,
 		                        (float)g_bsdk.cfg.media_stall_ms, false);
+
+		/* Reporting it is not the same as doing something about it.  The
+		 * repair is netmon's — the route may have moved under the call
+		 * (a NAT rebinding, a multi-WAN router changing which egress
+		 * address our flow uses), none of which raises a local address
+		 * change for netmon to notice on its own.  It is bounded and
+		 * rate-limited there, and it declines calls it cannot help. */
+		bsdk_netmon_call_stalled(lc);
 	}
 }
 

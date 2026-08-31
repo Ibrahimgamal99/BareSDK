@@ -1,0 +1,3 @@
+	/* RFC 4145 */
+	err = sdp_session_set_lattr(sdp, true, "setup",
+				    offerer ? "actpass" : "active");

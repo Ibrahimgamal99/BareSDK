@@ -411,11 +411,37 @@ static float session_mos_avg(const struct echosdk_call *lc,
 
 /* ── Quality alert helper ────────────────────────────────────────────────── */
 
+static const char *quality_issue_str(echosdk_quality_issue_t issue)
+{
+	switch (issue) {
+	case ECHOSDK_QUALITY_MOS:         return "mos";
+	case ECHOSDK_QUALITY_LOSS:        return "loss";
+	case ECHOSDK_QUALITY_JITTER:      return "jitter";
+	case ECHOSDK_QUALITY_RTT:         return "rtt";
+	case ECHOSDK_QUALITY_MEDIA_STALL: return "media-stall";
+	default:                          return "?";
+	}
+}
+
 void bsdk_post_quality_alert(struct echosdk_call *lc,
                              echosdk_quality_issue_t issue,
                              float value, float threshold, bool recovering)
 {
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct echosdk_queued_event *qev;
+
+	/* Logged as well as posted.  An alert only reaches the app as an event,
+	 * and an app is free to route it somewhere that is not the log — this
+	 * example app puts it in a snackbar and a Diagnostics list, neither of
+	 * which survives into a device log.  MEDIA_STALL on a call with no audio
+	 * is then the one thing a capture of a broken call most needs and least
+	 * often has: chasing a silent 36 s call on 2026-08-31 meant proving from
+	 * SDP and ICE state that media never came up, while the SDK had known it
+	 * for 32 of those seconds. */
+	info("EchoSDK: quality %s %s: %.1f (threshold %.1f)\n",
+	     quality_issue_str(issue), recovering ? "recovered" : "alert",
+	     value, threshold);
+
+	qev = bsdk_qev_alloc();
 	if (!qev) return;
 	qev->ev.type = ECHOSDK_EV_QUALITY_ALERT;
 	echosdk_ev_quality_alert_t *a = &qev->ev.u.quality_alert;

@@ -192,6 +192,13 @@ struct echosdk_account {
 
 /* ── Call ──────────────────────────────────────────────────────────────── */
 
+/* How many local addresses one repair round rotates through.
+ *
+ * A phone has two that can carry a call (Wi-Fi and cellular) and the loop is
+ * bounded by the attempt budget long before this, so the array only has to be
+ * big enough that a dual-stack host does not run out mid-rotation. */
+#define BSDK_NET_MAX_CAND 4
+
 struct echosdk_call {
 	struct le                  le;
 	struct call               *bc;          /* baresip call (weak ref) */
@@ -276,6 +283,19 @@ struct echosdk_call {
 	bool                       net_ice_restarted;  /* ICE was restarted this gen */
 	bool                       net_mig_path_moved; /* the local address changed
 	                                                * (vs. a WS-only refresh) */
+	/* Repair driven by a media stall rather than a network change.  Same
+	 * machinery, different clock and budget: the address has usually not
+	 * moved at all, so the "same path — nothing to do" shortcut has to be
+	 * skipped and the ICE restart taken anyway. */
+	bool                       net_mig_stall;
+	uint64_t                   net_stall_repair_at; /* jiffies of the last
+	                                                 * stall repair, 0=never */
+	uint8_t                    net_stall_rounds;    /* stall repairs this call */
+	/* Local addresses this repair has already offered from, so a retry
+	 * moves to the next one instead of re-offering the path that just
+	 * failed to carry media.  See next_laddr(). */
+	struct sa                  net_mig_tried[BSDK_NET_MAX_CAND];
+	uint8_t                    net_mig_ntried;
 	/* ── Degraded-link adaptation (adapt.c; re_main thread only) ────── */
 	uint32_t                   adapt_bitrate;     /* applied bps; 0 = negotiated */
 	uint32_t                   adapt_clean_ticks; /* consecutive low-loss ticks */
@@ -292,6 +312,7 @@ struct echosdk_call {
 /* Per-call migration state machine (struct echosdk_call.net_mig_state). */
 enum bsdk_mig_state {
 	BSDK_MIG_IDLE = 0,   /* nothing to do                                  */
+	BSDK_MIG_STALLED,    /* stall repair asked for, not yet started        */
 	BSDK_MIG_WAIT_ADDR,  /* new source address not discoverable yet        */
 	BSDK_MIG_DEFERRED,   /* re-INVITE not allowed yet (early/pending xact) */
 	BSDK_MIG_SENT,       /* re-INVITE sent, waiting for RTP on new path    */
@@ -532,6 +553,11 @@ void bsdk_netmon_call_refreshable(struct echosdk_call *lc);
 /* Called from event.c when the peer answers our SDP offer, so a migration
  * in flight can report "accepted — waiting for audio". */
 void bsdk_netmon_call_sdp_answer(struct echosdk_call *lc);
+/* Called from adapt.c when inbound RTP has stopped on an established call.
+ * Runs the handover repair for that one call: re-check the route, restart ICE
+ * (or re-offer), and verify that media came back.  Bounded and rate-limited —
+ * see the comment on the implementation. */
+void bsdk_netmon_call_stalled(struct echosdk_call *lc);
 
 /* ── dns.c ─────────────────────────────────────────────────────────────── */
 

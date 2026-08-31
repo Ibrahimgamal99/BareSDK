@@ -72,6 +72,36 @@
 #define BSDK_NET_VERIFY_MS   4000
 #define BSDK_NET_MAX_ATTEMPT 6
 
+/* ── Stall repair ─────────────────────────────────────────────────────────
+ *
+ * A handover is announced: an address appears or disappears and the repair
+ * starts from a known cause.  A stall is the opposite — media stops with the
+ * network looking exactly as it did a second ago.  Neither the peer's NAT
+ * rebinding nor a multi-WAN router moving our flow to its other egress
+ * address shows up as a local address change, and both leave the call up,
+ * signalling healthy, with dead audio.  adapt.c already measures it; these
+ * bounds decide what to do about it.
+ *
+ * The clock is tighter than a handover's.  By the time we are called the call
+ * has already been silent for cfg.media_stall_ms (4 s by default), so a
+ * 4 s verify on top would put the first verdict 8 s in — past the point where
+ * the user has given up on the call.
+ *
+ * The budget is smaller for the same reason, and because the attempts are no
+ * longer interchangeable: each one offers from a different local address
+ * (next_laddr), so three attempts is the whole rotation on a phone plus one.
+ *
+ * The cooldown is what keeps a genuinely dead call from being re-INVITEd for
+ * ever: stall detection re-arms once a repair leaves the SENT state, so
+ * without it a call whose media never returns would enter a new repair every
+ * media_stall_ms.  ROUNDS is the harder stop — after that many episodes the
+ * problem is not one we can offer our way out of, and the MEDIA_STALL alert
+ * is left to speak for itself. */
+#define BSDK_NET_STALL_VERIFY_MS   1500
+#define BSDK_NET_STALL_COOLDOWN_MS 10000
+#define BSDK_NET_STALL_ATTEMPTS        3
+#define BSDK_NET_STALL_ROUNDS          3
+
 struct bsdk_netmon {
 	struct tmr tmr_poll;    /* periodic interface scan                     */
 	struct tmr tmr_settle;  /* debounce / retry of the handover itself     */
@@ -485,6 +515,15 @@ static uint32_t rx_packets(const struct echosdk_call *lc)
  */
 static uint32_t max_attempts_for(const struct echosdk_call *lc)
 {
+	/* A stall repair rotates local addresses rather than waiting out the
+	 * same one, so its budget is a rotation, not a patience setting.  Taken
+	 * before the FAIL_FAST shortcut below: that one is about offering stale
+	 * ICE candidates after a handover, which is not what happened here. */
+	if (lc->net_mig_stall) {
+		return g_nm.max_attempts < BSDK_NET_STALL_ATTEMPTS
+		     ? g_nm.max_attempts : BSDK_NET_STALL_ATTEMPTS;
+	}
+
 	/* A call whose ICE was restarted is not offering the wrong candidates any
 	 * more, so the shortcut does not apply to it: it deserves the same retry
 	 * budget as a direct-RTP call, because what it is now waiting on is the
@@ -500,6 +539,115 @@ static uint32_t verify_tick_ms(void)
 {
 	uint32_t ms = g_nm.verify_ms ? g_nm.verify_ms : 2000;
 	return ms < 500 ? 500 : ms;
+}
+
+/* The verify clock for one call.
+ *
+ * cfg.net_verify_ms == 0 means "do not check media, take the answered offer as
+ * confirmation", and that decision belongs to the app for a stall repair
+ * exactly as it does for a handover — so the stall clock only applies where
+ * verification is on at all. */
+static uint32_t verify_tick_for(const struct echosdk_call *lc)
+{
+	if (!g_nm.verify_ms || !lc || !lc->net_mig_stall)
+		return verify_tick_ms();
+
+	return BSDK_NET_STALL_VERIFY_MS < verify_tick_ms()
+	     ? BSDK_NET_STALL_VERIFY_MS : verify_tick_ms();
+}
+
+/* ── Local-address rotation ───────────────────────────────────────────────
+ *
+ * start_migration() asks the routing table which source address reaches the
+ * peer, which is the right first answer and the wrong second one: ask it again
+ * after a failed attempt and it says the same thing, so the retry re-offers
+ * the path that just failed to carry media.  These three keep a per-repair
+ * record of what has been offered and hand out the next untried address.
+ *
+ * What this does NOT do is move the media path by itself.  The RTP sockets are
+ * wildcard-bound and follow the kernel's default route, so offering the
+ * cellular address while the default route is Wi-Fi changes the SDP and not
+ * where the packets leave from.  It is worth doing anyway — the address the
+ * peer accepts media *from* is exactly what fails in the captures — but a real
+ * second path needs the socket bound to the network
+ * (android_setsocknetwork / SO_BINDTODEVICE), which is not done here. */
+static bool laddr_tried(const struct echosdk_call *lc, const struct sa *sa)
+{
+	for (unsigned i = 0; i < lc->net_mig_ntried; i++) {
+		if (sa_cmp(&lc->net_mig_tried[i], sa, SA_ADDR))
+			return true;
+	}
+	return false;
+}
+
+static void laddr_remember(struct echosdk_call *lc, const struct sa *sa)
+{
+	if (!sa_isset(sa, SA_ADDR) || laddr_tried(lc, sa))
+		return;
+	if (lc->net_mig_ntried >= BSDK_NET_MAX_CAND)
+		return;
+
+	sa_cpy(&lc->net_mig_tried[lc->net_mig_ntried++], sa);
+}
+
+struct laddr_pick {
+	const struct echosdk_call *lc;
+	struct sa                  pick;
+	int                        af;
+	bool                       found;
+};
+
+static bool laddr_pick_handler(const char *ifname, const struct sa *sa,
+                               void *arg)
+{
+	struct laddr_pick *p = arg;
+	(void)ifname;
+
+	if (sa_af(sa) != p->af || sa_is_loopback(sa) || sa_is_linklocal(sa))
+		return false;
+	if (laddr_tried(p->lc, sa))
+		return false;
+
+	sa_cpy(&p->pick, sa);
+	p->found = true;
+	return true;   /* stop the walk */
+}
+
+/* Has the address in hand had its chances, or is it still the best answer?
+ *
+ * The routing table's answer is the right one while the route it describes is
+ * real, so a handover gives it two attempts before looking elsewhere: the
+ * ordinary reason media has not returned yet is the peer's NAT rebinding, and
+ * moving addresses under that spends the attempt that would have worked.  A
+ * stall repair rotates a step sooner — nothing about the route changed, so the
+ * routing table's answer is precisely the one that has already failed. */
+static bool rotate_laddr(const struct echosdk_call *lc)
+{
+	return lc->net_mig_tries >= (lc->net_mig_stall ? 1u : 2u);
+}
+
+/* The next address to offer from, or false when there is only ever one.
+ *
+ * Once every interface has had a turn the record is cleared and the rotation
+ * starts again, so a two-interface phone alternates for as long as the budget
+ * lasts instead of settling on whichever one it tried last. */
+static bool next_laddr(struct echosdk_call *lc, int af, struct sa *out)
+{
+	struct laddr_pick p = { .lc = lc, .af = af, .found = false };
+
+	sa_init(&p.pick, AF_UNSPEC);
+	net_laddr_apply(baresip_network(), laddr_pick_handler, &p);
+
+	if (!p.found) {
+		lc->net_mig_ntried = 0;
+		net_laddr_apply(baresip_network(), laddr_pick_handler, &p);
+	}
+
+	if (!p.found)
+		return false;
+
+	sa_cpy(out, &p.pick);
+	return true;
 }
 
 /* How long an ICE restart may take to put its re-INVITE on the wire.
@@ -528,26 +676,45 @@ static void fail_migration(struct echosdk_call *lc, int err)
 		ua_hangup(lc->acct->ua, lc->bc, 0, NULL);
 }
 
-static bool migration_pending(void)
+/* Is any call still owed a verdict — and how soon does the soonest one need
+ * one?  A stall repair is judged on a shorter clock than a handover, and the
+ * verify timer is shared, so the interval is whatever the most impatient
+ * pending call asks for. */
+static bool migration_pending(uint32_t *tick_ms)
 {
 	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
 	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
+	uint32_t tick = verify_tick_ms();
+	bool pending = false;
 
 	for (size_t i = 0; i < n; i++) {
-		if (snap[i]->net_mig_gen != g_nm.gen)
+		struct echosdk_call *lc = snap[i];
+
+		if (lc->net_mig_gen != g_nm.gen)
 			continue;
-		if (snap[i]->net_mig_state == BSDK_MIG_WAIT_ADDR ||
-		    snap[i]->net_mig_state == BSDK_MIG_DEFERRED ||
-		    snap[i]->net_mig_state == BSDK_MIG_SENT)
-			return true;
+		if (lc->net_mig_state != BSDK_MIG_STALLED &&
+		    lc->net_mig_state != BSDK_MIG_WAIT_ADDR &&
+		    lc->net_mig_state != BSDK_MIG_DEFERRED &&
+		    lc->net_mig_state != BSDK_MIG_SENT)
+			continue;
+
+		pending = true;
+		if (verify_tick_for(lc) < tick)
+			tick = verify_tick_for(lc);
 	}
-	return false;
+
+	if (tick_ms)
+		*tick_ms = tick;
+
+	return pending;
 }
 
 static void arm_verify(void)
 {
-	if (migration_pending())
-		tmr_start(&g_nm.tmr_verify, verify_tick_ms(), verify_handler, NULL);
+	uint32_t tick = verify_tick_ms();
+
+	if (migration_pending(&tick))
+		tmr_start(&g_nm.tmr_verify, tick, verify_handler, NULL);
 }
 
 /* Send (or re-send) the re-INVITE that moves this call's media. */
@@ -576,6 +743,10 @@ static void send_migration(struct echosdk_call *lc)
 	lc->net_rx_at_mig = rx_packets(lc);
 	lc->net_mig_tries++;
 
+	/* This address has now had its turn, whether or not it works out — a
+	 * retry moves on to the next one.  See next_laddr(). */
+	laddr_remember(lc, &lc->net_mig_laddr);
+
 	/* An ICE call cannot be migrated by rewriting the session address alone:
 	 * ice.c owns the *media* address (it writes the selected candidate there,
 	 * and a media-level `c=` line overrides the session one per RFC 4566
@@ -599,7 +770,7 @@ static void send_migration(struct echosdk_call *lc)
 			lc->net_ice_restarted = true;
 			lc->net_mig_state     = BSDK_MIG_SENT;
 			lc->net_mig_due       = tmr_jiffies() + restart_grace_ms()
-			                      + verify_tick_ms();
+			                      + verify_tick_for(lc);
 			netmon_emit(ECHOSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
 			            lc->net_mig_tries);
 			return;
@@ -629,7 +800,7 @@ static void send_migration(struct echosdk_call *lc)
 	}
 
 	lc->net_mig_state = BSDK_MIG_SENT;
-	lc->net_mig_due   = tmr_jiffies() + verify_tick_ms();
+	lc->net_mig_due   = tmr_jiffies() + verify_tick_for(lc);
 	netmon_emit(ECHOSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
 	            lc->net_mig_tries);
 
@@ -639,6 +810,33 @@ static void send_migration(struct echosdk_call *lc)
 		            lc->net_mig_tries);
 	}
 }
+
+/* Re-offer after an attempt that did not bring media back.
+ *
+ * The difference from send_migration() is where it offers from: the address
+ * just used has been given its chance and did not carry RTP, so the next
+ * attempt takes the next local address rather than the same one.  When there
+ * is only one address to choose from this is exactly the old behaviour. */
+static void retry_migration(struct echosdk_call *lc)
+{
+	struct sa next;
+
+	laddr_remember(lc, &lc->net_mig_laddr);
+
+	if (rotate_laddr(lc) && sa_isset(&lc->net_mig_laddr, SA_ADDR) &&
+	    next_laddr(lc, sa_af(&lc->net_mig_laddr), &next) &&
+	    !sa_cmp(&next, &lc->net_mig_laddr, SA_ADDR)) {
+
+		info("EchoSDK/netmon: no media on %j after %u ms —"
+		     " re-offering from %j\n",
+		     &lc->net_mig_laddr, verify_tick_for(lc), &next);
+
+		sa_cpy(&lc->net_mig_laddr, &next);
+	}
+
+	send_migration(lc);
+}
+
 
 /**
  * Park a call whose new source address cannot be determined yet.
@@ -682,6 +880,11 @@ static void start_migration(struct echosdk_call *lc)
 		lc->net_ice_stale_sent = false;
 		lc->net_ice_restarted  = false;
 		lc->net_mig_path_moved = false;
+		/* A network change supersedes any stall repair in progress: the
+		 * cause is known now, and the handover's clock and budget are
+		 * the right ones for it. */
+		lc->net_mig_stall      = false;
+		lc->net_mig_ntried     = 0;
 		/* Clock the audio outage from the moment the network changed, not
 		 * from the re-INVITE — the gap the user hears starts earlier. */
 		lc->net_mig_start = g_nm.handover_start ? g_nm.handover_start
@@ -712,8 +915,23 @@ static void start_migration(struct echosdk_call *lc)
 		return;
 	}
 
+	/* A retry offers from somewhere else.  The routing table is asked first
+	 * and answers the same thing every time, so without this the second
+	 * attempt re-offers the address whose media just died. */
+	if (rotate_laddr(lc) && laddr_tried(lc, &laddr)) {
+		struct sa next;
+
+		if (next_laddr(lc, sa_af(&laddr), &next) &&
+		    !sa_cmp(&next, &laddr, SA_ADDR)) {
+			info("EchoSDK/netmon: %j did not carry media —"
+			     " offering from %j instead\n", &laddr, &next);
+			sa_cpy(&laddr, &next);
+		}
+	}
+
 	old = call_laddr(lc->bc);
-	if (old && sa_cmp(&laddr, old, SA_ADDR) && !call_signals_over_ws(lc)) {
+	if (old && sa_cmp(&laddr, old, SA_ADDR) && !call_signals_over_ws(lc) &&
+	    !lc->net_mig_stall) {
 		lc->net_mig_state = BSDK_MIG_IDLE;   /* same path — no re-INVITE */
 		return;
 	}
@@ -725,7 +943,16 @@ static void start_migration(struct echosdk_call *lc)
 	 * Whether the media path moved is a different question from whether a
 	 * re-INVITE is owed, and send_migration() needs the first one: it decides
 	 * between an ICE restart and a plain re-offer. */
-	if (old && sa_cmp(&laddr, old, SA_ADDR)) {
+	if (lc->net_mig_stall) {
+		/* Media died without the address moving, so "did the path move?"
+		 * is the wrong question here — the path is precisely what has to
+		 * be rebuilt.  Claiming it moved is what routes this through the
+		 * ICE restart in send_migration(), which is the only offer that
+		 * re-gathers and mints new credentials; a plain re-offer under
+		 * the old ones is the thing the captures show a peer ignoring. */
+		lc->net_mig_path_moved = true;
+	}
+	else if (old && sa_cmp(&laddr, old, SA_ADDR)) {
 		debug("EchoSDK/netmon: same path but WS transport was reset —"
 		      " re-INVITE to refresh the Contact\n");
 	}
@@ -809,6 +1036,14 @@ static void verify_handler(void *arg)
 
 		switch (lc->net_mig_state) {
 
+		case BSDK_MIG_STALLED:
+			/* Asked for from the stats tick (bsdk_netmon_call_stalled).
+			 * The work happens here so the offer is never built inside
+			 * another handler's stack — the same reason
+			 * bsdk_netmon_call_refreshable() bounces off this timer. */
+			start_migration(lc);
+			break;
+
 		case BSDK_MIG_WAIT_ADDR:
 			/* Re-run discovery, not send_migration(): net_mig_laddr was
 			 * never resolved, so there is nothing valid to offer yet.
@@ -861,7 +1096,7 @@ static void verify_handler(void *arg)
 			else if (lc->net_mig_tries >= max_attempts_for(lc))
 				fail_migration(lc, ETIMEDOUT);
 			else
-				send_migration(lc);   /* re-offer on the new path */
+				retry_migration(lc);
 			break;
 
 		default:
@@ -871,6 +1106,87 @@ static void verify_handler(void *arg)
 
 	arm_verify();
 }
+
+/**
+ * Inbound RTP has stopped on an established call.
+ *
+ * adapt.c raises ECHOSDK_QUALITY_MEDIA_STALL when the receive counter has not
+ * moved for cfg.media_stall_ms; this is the repair that used to be missing
+ * behind that alert.  Everything the handover path does applies — ask the
+ * routing table which source address reaches the peer, restart ICE (new
+ * credentials, fresh gather) or re-offer, then check whether RTP came back —
+ * with two differences that matter:
+ *
+ *   - The address has usually not moved.  A handover stops right there
+ *     ("same path — no re-INVITE"); a stall repair must not, because the path
+ *     is what broke.  start_migration() reads net_mig_stall for both that and
+ *     the decision to take the ICE restart anyway.
+ *   - Nothing announced it, so nothing will announce the next one either.
+ *     The cooldown and the round cap are what stop a call whose media is
+ *     never coming back from being re-INVITEd for the rest of its life.
+ *
+ * Called from the stats tick, on re_main.  The offer is not built here: the
+ * call is marked and the shared verify timer picks it up, so nothing
+ * re-enters baresip from inside another handler.
+ */
+void bsdk_netmon_call_stalled(struct echosdk_call *lc)
+{
+	uint64_t now;
+
+	if (!g_nm.started || !lc || !lc->bc)
+		return;
+
+	/* A repair (or a handover) is already running for this call. */
+	if (lc->net_mig_gen == g_nm.gen &&
+	    (lc->net_mig_state == BSDK_MIG_STALLED ||
+	     lc->net_mig_state == BSDK_MIG_WAIT_ADDR ||
+	     lc->net_mig_state == BSDK_MIG_DEFERRED ||
+	     lc->net_mig_state == BSDK_MIG_SENT))
+		return;
+
+	/* A held call carries no RTP by design.  adapt.c does not report a
+	 * stall for one, but hold can be entered between the two. */
+	if (lc->state == ECHOSDK_CALL_HELD || lc->local_hold ||
+	    call_is_onhold(lc->bc))
+		return;
+
+	now = tmr_jiffies();
+
+	if (lc->net_stall_repair_at &&
+	    now - lc->net_stall_repair_at < BSDK_NET_STALL_COOLDOWN_MS)
+		return;
+
+	if (lc->net_stall_rounds >= BSDK_NET_STALL_ROUNDS) {
+		debug("EchoSDK/netmon: media stalled again after %u repairs —"
+		      " leaving it to the app\n", lc->net_stall_rounds);
+		return;
+	}
+
+	lc->net_stall_repair_at = now;
+	lc->net_stall_rounds++;
+
+	/* Claim the call for a repair round of its own.  Same fields a handover
+	 * generation stamps, so start_migration() finds them already set and
+	 * does not reset the counters underneath us. */
+	lc->net_mig_gen        = g_nm.gen;
+	lc->net_mig_tries      = 0;
+	lc->net_mig_due        = 0;
+	lc->net_ice_stale_sent = false;
+	lc->net_ice_restarted  = false;
+	lc->net_mig_path_moved = false;
+	lc->net_mig_ntried     = 0;
+	lc->net_mig_stall      = true;
+	lc->net_mig_start      = now;
+	lc->net_mig_state      = BSDK_MIG_STALLED;
+	sa_init(&lc->net_mig_laddr, AF_UNSPEC);
+
+	info("EchoSDK/netmon: media stalled on an established call —"
+	     " repairing (round %u/%u)\n",
+	     lc->net_stall_rounds, (unsigned)BSDK_NET_STALL_ROUNDS);
+
+	tmr_start(&g_nm.tmr_verify, 1, verify_handler, NULL);
+}
+
 
 void bsdk_netmon_call_refreshable(struct echosdk_call *lc)
 {

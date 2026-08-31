@@ -14,6 +14,8 @@ import 'package:echo_sdk/echo_sdk.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'account_store.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const EchoSDKExampleApp());
@@ -83,6 +85,19 @@ class _PhonePageState extends State<PhonePage>
   final List<String> _codecPrefs = ['opus', 'ulaw', 'alaw'];
   final Set<String> _enabledCodecs = {'opus', 'ulaw'};
 
+  // ── persistence ────────────────────────────────────────────────────────
+  final _store = AccountStore();
+
+  /// Whether a successful register writes the form back to disk. Off means
+  /// the next launch starts blank — and switching it off also wipes what is
+  /// already stored, since leaving a password behind after the user opted out
+  /// is the one thing the switch is there to prevent.
+  bool _rememberAccount = true;
+
+  /// Blocks the Account tab until the stored profile has been read, so the
+  /// user cannot start typing into fields that are about to be overwritten.
+  bool _profileLoaded = false;
+
   // ── live state ─────────────────────────────────────────────────────────
   RegState _regState = RegState.unregistered;
   String _regDetail = '';
@@ -106,6 +121,98 @@ class _PhonePageState extends State<PhonePage>
   final List<String> _alerts = [];
   final List<String> _handover = [];
   final List<String> _log = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreProfile();
+  }
+
+  // ── persistence ────────────────────────────────────────────────────────
+
+  /// Repopulate the Account tab from the last saved profile.
+  ///
+  /// Nothing saved (first launch, or the user cleared it) leaves the form at
+  /// its built-in defaults — so this only ever writes fields it actually has.
+  Future<void> _restoreProfile() async {
+    final remember = await _store.loadRemember();
+    final p = remember ? await _store.load() : null;
+    if (!mounted) return;
+    setState(() {
+      _profileLoaded = true;
+      _rememberAccount = remember;
+      if (p == null) return;
+      _user.text = p.uri;
+      _pass.text = p.password;
+      _serverUrl.text = p.serverUrl;
+      _stunServer.text = p.stunServer;
+      _turnServer.text = p.turnServer;
+      _turnUser.text = p.turnUser;
+      _turnPass.text = p.turnPass;
+      _transport = p.transport;
+      _mediaEnc = p.mediaEnc;
+      _ice = p.ice;
+      _verifyTls = p.verifyTls;
+      if (p.codecPrefs.isNotEmpty) {
+        _codecPrefs
+          ..clear()
+          ..addAll(p.codecPrefs);
+      }
+      _enabledCodecs
+        ..clear()
+        ..addAll(p.enabledCodecs);
+    });
+    _logLine('account profile restored for ${p == null ? '(none)' : p.uri}');
+  }
+
+  /// Snapshot the form as it stands.
+  AccountProfile _currentProfile() => AccountProfile(
+        uri: _user.text,
+        password: _pass.text,
+        transport: _transport,
+        serverUrl: _serverUrl.text,
+        mediaEnc: _mediaEnc,
+        ice: _ice,
+        stunServer: _stunServer.text,
+        turnServer: _turnServer.text,
+        turnUser: _turnUser.text,
+        turnPass: _turnPass.text,
+        verifyTls: _verifyTls,
+        codecPrefs: List.of(_codecPrefs),
+        enabledCodecs: _codecPrefs.where(_enabledCodecs.contains).toList(),
+      );
+
+  /// Persist the form. Awaited nowhere on the call path — a slow keystore
+  /// write must not delay the REGISTER — but failures are logged, because a
+  /// profile that silently fails to save is worse than one that never tried.
+  Future<void> _saveProfile() async {
+    if (!_rememberAccount) return;
+    try {
+      await _store.save(_currentProfile());
+    } catch (e) {
+      _logLine('saving account profile failed: $e');
+    }
+  }
+
+  /// Drop the stored profile, leaving the form as it is on screen.
+  Future<void> _forgetProfile() async {
+    await _store.clear();
+    if (mounted) _snack('Saved account cleared');
+  }
+
+  /// Flip the remember switch, and act on it immediately in both directions.
+  Future<void> _setRememberAccount(bool remember) async {
+    setState(() => _rememberAccount = remember);
+    await _store.saveRemember(remember);
+    // Turning it off has to erase what is already on disk, not just stop
+    // future writes — otherwise the password the user just opted out of
+    // storing stays stored.
+    if (remember) {
+      await _saveProfile();
+    } else {
+      await _forgetProfile();
+    }
+  }
 
   @override
   void dispose() {
@@ -248,6 +355,10 @@ class _PhonePageState extends State<PhonePage>
 
     account.register();
     setState(() => _regState = RegState.registering);
+
+    // Save on register rather than on every keystroke: it is the point where
+    // the user has declared this set of fields to be the one they meant.
+    unawaited(_saveProfile());
   }
 
   void _unregister() {
@@ -323,7 +434,14 @@ class _PhonePageState extends State<PhonePage>
         // private address the phone cannot route to, every packet is counted
         // as sent and then dropped by the local router — which looks identical
         // to a working transmitter from in here.
-        _logLine('level mic ${e.stats.micLevelDbov.toStringAsFixed(1)} dBov / '
+        // The mute state belongs on this line. baresip applies TX mute in
+        // ausrc_read_handler(), before the aubuf and so before the filter the
+        // level is measured in — so a muted call reports mic -127.0 dBov,
+        // which is byte-for-byte what a starved or dead capture path reports.
+        // Without the flag here the two are indistinguishable in a log, and
+        // that ambiguity has already cost one debugging session.
+        _logLine('level mic ${e.stats.micLevelDbov.toStringAsFixed(1)} dBov'
+            '${_muted ? " (MUTED)" : ""} / '
             'spk ${e.stats.audioLevelDbov.toStringAsFixed(1)} dBov  '
             'tx ${e.stats.packetsSent} rx ${e.stats.packetsReceived}  '
             'peer ${e.stats.remoteAddr}');
@@ -334,6 +452,10 @@ class _PhonePageState extends State<PhonePage>
                 '(${e.value.toStringAsFixed(1)})'
             : '${e.issue.name} ${e.value.toStringAsFixed(1)} crossed '
                 '${e.threshold.toStringAsFixed(1)}';
+        // Also to the log. A snackbar and a Diagnostics list are both gone
+        // by the time anyone reads a device log, and mediaStall on a call
+        // with no audio is exactly what a capture of a broken call needs.
+        _logLine('quality $msg');
         setState(() {
           _alerts.insert(0, '${_ts()} $msg');
           if (_alerts.length > 50) _alerts.removeLast();
@@ -474,6 +596,12 @@ class _PhonePageState extends State<PhonePage>
     final registered = _regState == RegState.registered ||
         _regState == RegState.registering ||
         _regState == RegState.reconnecting;
+    // The stored profile arrives one frame or two after the first build.
+    // Showing the empty form in the meantime invites the user to start typing
+    // into fields that _restoreProfile is about to overwrite.
+    if (!_profileLoaded) {
+      return const Center(child: CircularProgressIndicator());
+    }
     return ListView(padding: const EdgeInsets.all(16), children: [
       _statusBanner(),
       const SizedBox(height: 16),
@@ -604,7 +732,16 @@ class _PhonePageState extends State<PhonePage>
           ],
         ),
       ),
-      const SizedBox(height: 16),
+      const SizedBox(height: 8),
+      SwitchListTile(
+        title: const Text('Remember this account'),
+        subtitle: const Text('Settings are restored on the next launch; the '
+            'SIP and TURN passwords go to the device keystore'),
+        isThreeLine: true,
+        value: _rememberAccount,
+        onChanged: _setRememberAccount,
+      ),
+      const SizedBox(height: 8),
       FilledButton.icon(
         icon: Icon(registered ? Icons.logout : Icons.login),
         label: Text(registered ? 'Unregister' : 'Register'),

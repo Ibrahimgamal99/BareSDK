@@ -179,4 +179,166 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 ]=]
 "websock_connect rename (WS URI pinning hook)")
 
+
+# ---------------------------------------------------------------------------
+# N. sipreg/reg.c — a WebSocket registration's Contact must not carry the local
+#    address (RFC 7118 s5.2.1)
+#
+# The registrar keys an AOR binding on the Contact URI.  With the local IP in
+# it, a device that moves between Wi-Fi and cellular registers a *new* binding
+# instead of replacing its own, and the abandoned one — a WebSocket that no
+# longer exists — stays in the AOR until it expires.  Inbound calls are then
+# delivered to a dead contact on the way to the live one.  Measured on-device
+# (2026-08-31): "[2 bindings]" for the whole session, and 6.2 s from INVITE to
+# alerting on that extension against 0.33 s on a single-binding one.
+#
+# The fix is the host RFC 7118 prescribes: a stable per-instance name in the
+# ".invalid" domain, taken from the instance-id baresip already advertises in
+# the contact params.  The full rationale is in the hunk.
+# ---------------------------------------------------------------------------
+echosdk_patch("${SOURCE_DIR}/src/sipreg/reg.c"
+[=[
+static int send_handler(enum sip_transp tp, struct sa *src,
+			const struct sa *dst, struct mbuf *mb,
+			struct mbuf **contp, void *arg)
+{
+	struct sipreg *reg = arg;
+	int err;
+
+	(void)contp;
+	(void)dst;
+
+	reg->tp = tp;
+	if (reg->srcport && tp != SIP_TRANSP_UDP)
+		sa_set_port(src, reg->srcport);
+
+	reg->laddr = *src;
+	err = mbuf_printf(mb, "Contact: <sip:%s@%J%s%s%s>;expires=%u%s%s",
+			  reg->cuser, &reg->laddr, sip_transp_param(reg->tp),
+			  reg->cparams ? ";" : "",
+			  reg->cparams ? reg->cparams : "",
+			  reg->expires,
+			  reg->params ? ";" : "",
+			  reg->params ? reg->params : "");
+
+	if (reg->regid > 0)
+		err |= mbuf_printf(mb, ";reg-id=%d", reg->regid);
+
+	err |= mbuf_printf(mb, "\r\n");
+	return err;
+}
+]=]
+[=[
+/* EchoSDK-patched: the Contact host for a WebSocket registration.
+ *
+ * RFC 7118 s5.2.1 asks a WebSocket client to register a Contact whose host is
+ * a random name in the ".invalid" domain, stable for the life of the instance.
+ * baresip's uuid module already mints such an identifier and persists it
+ * across restarts, and advertises it as `+sip.instance="<urn:uuid:...>"`, so
+ * take it from there: no second source of truth, and nothing new to keep
+ * alive across a restart.
+ *
+ * Both parameter strings are searched because the two are not interchangeable
+ * and callers differ: baresip passes the instance in the header params (which
+ * land after `;expires=`), while a caller using
+ * sipreg_set_contact_params() puts them inside the URI. */
+static int echosdk_ws_contact_host(char *buf, size_t sz,
+				   const struct sipreg *reg)
+{
+	const char *srcv[2];
+	struct pl uuid;
+	size_t i;
+
+	if (!buf || !sz || !reg)
+		return EINVAL;
+
+	srcv[0] = reg->params;
+	srcv[1] = reg->cparams;
+
+	for (i=0; i<RE_ARRAY_SIZE(srcv); i++) {
+
+		if (!srcv[i])
+			continue;
+
+		if (re_regex(srcv[i], str_len(srcv[i]),
+			     "urn:uuid:[0-9a-f]8", &uuid))
+			continue;
+
+		if (re_snprintf(buf, sz, "%r.invalid", &uuid) < 0)
+			return ENOMEM;
+
+		return 0;
+	}
+
+	return ENOENT;
+}
+
+
+static int send_handler(enum sip_transp tp, struct sa *src,
+			const struct sa *dst, struct mbuf *mb,
+			struct mbuf **contp, void *arg)
+{
+	struct sipreg *reg = arg;
+	char host[64];
+	int err;
+
+	(void)contp;
+	(void)dst;
+
+	reg->tp = tp;
+	if (reg->srcport && tp != SIP_TRANSP_UDP)
+		sa_set_port(src, reg->srcport);
+
+	reg->laddr = *src;
+
+	/* EchoSDK-patched: keep the local address out of a WebSocket Contact.
+	 *
+	 * Over WS the address is meaningless — the server answers down the
+	 * connection the REGISTER arrived on — but it is not harmless, because
+	 * it is what the registrar keys the binding on.  A device that moves
+	 * between Wi-Fi and cellular re-registers under a *different* Contact
+	 * URI, so the AOR collects one binding per address the device has ever
+	 * used, every one of them alive until it expires (an hour, by default)
+	 * and every one pointing at a WebSocket that is gone.  The registrar
+	 * then has to try them on the way to the live one.  Measured on-device
+	 * (2026-08-31): an AOR stuck at "[2 bindings]" all session, where a call
+	 * to that extension took 6.2 s to alert it against 0.33 s for an
+	 * extension with a single binding.
+	 *
+	 * With the per-instance host, a re-registration from anywhere replaces
+	 * the same binding.  If the instance-id cannot be read we keep the old
+	 * behaviour: a duplicate binding is a delay, while an unroutable Contact
+	 * would be a registration that never receives a call at all. */
+	if ((tp == SIP_TRANSP_WS || tp == SIP_TRANSP_WSS) &&
+	    0 == echosdk_ws_contact_host(host, sizeof(host), reg)) {
+
+		err = mbuf_printf(mb,
+				  "Contact: <sip:%s@%s%s%s%s>;expires=%u%s%s",
+				  reg->cuser, host, sip_transp_param(reg->tp),
+				  reg->cparams ? ";" : "",
+				  reg->cparams ? reg->cparams : "",
+				  reg->expires,
+				  reg->params ? ";" : "",
+				  reg->params ? reg->params : "");
+	}
+	else {
+		err = mbuf_printf(mb, "Contact: <sip:%s@%J%s%s%s>;expires=%u%s%s",
+				  reg->cuser, &reg->laddr,
+				  sip_transp_param(reg->tp),
+				  reg->cparams ? ";" : "",
+				  reg->cparams ? reg->cparams : "",
+				  reg->expires,
+				  reg->params ? ";" : "",
+				  reg->params ? reg->params : "");
+	}
+
+	if (reg->regid > 0)
+		err |= mbuf_printf(mb, ";reg-id=%d", reg->regid);
+
+	err |= mbuf_printf(mb, "\r\n");
+	return err;
+}
+]=]
+"WebSocket REGISTER Contact: per-instance host, not the local address")
+
 message(STATUS "patch-re-sources: libre patching complete")

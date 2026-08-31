@@ -121,20 +121,54 @@ static struct list s_sessl = LIST_INIT;
 
 /* How long the candidate re-offer waits for a media-encryption handshake.
  *
- * The re-offer is a re-INVITE, and a re-INVITE mid-DTLS is what breaks the
- * handshake it interrupts: dtls_srtp starts the association exactly once
- * (media_start() latches `started`), so an offer/answer that perturbs it
- * leaves `menc_secure` unset for good.  stream_is_ready() then stays false,
- * audio_update() is never called, and the call sits established with no
- * audio in either direction — the failure reassert_selected() documents,
- * reached by a second route.
+ * The re-offer is a re-INVITE, and a re-INVITE mid-DTLS perturbs the handshake
+ * it interrupts, so the offer waits for the handshake rather than racing it.
  *
- * So the re-offer waits for the handshake instead of racing it.  The wait is
- * bounded: a handshake that is never going to finish must not also cost the
- * peer the candidate it was never told about, so the offer goes out anyway
- * when the deadline expires. */
-#define BSDK_ICE_REOFFER_SECURE_DEADLINE_MS 4000
-#define BSDK_ICE_REOFFER_POLL_MS             100
+ * It used to give up waiting after 300 ms and send anyway, on the reasoning
+ * that a strict peer (Asterisk: "DTLS packet from <ip:port> dropped. Source
+ * not in ICE active candidate list.") can never complete a handshake it is
+ * dropping, so waiting on one is a deadlock and the offer is its only cure.
+ * Both halves of that turned out to be wrong, measured across 22 calls
+ * on-device (2026-08-31, inbound over WSS behind a NAT with two egress
+ * addresses):
+ *
+ *   - The peer is not that strict.  It learns our address from the
+ *     connectivity check itself (RFC 8445 s7.3.1.3, peer-reflexive), and the
+ *     one call in the capture that reached `Secure` before this deadline
+ *     expired went on to carry audio from an address that had never been
+ *     signalled.  The re-offer was never the thing that made media flow.
+ *
+ *   - Sending it does not cure a strict peer either.  A re-offer under the
+ *     same ice-ufrag/ice-pwd is not an ICE restart, so nothing on the peer
+ *     re-runs its checks for the new candidate (RFC 8445 s9); what the peer
+ *     did do was answer with `a=connection:new` and reset its own DTLS.  All
+ *     9 calls that released the offer this way died — every subsequent
+ *     handshake attempt drew no response at all — against 10 of 11 that never
+ *     released one coming up with audio.
+ *
+ * So the deadline no longer releases the offer: it abandons it.  Holding
+ * costs nothing (the poll releases the moment the handshake lands, which on a
+ * healthy call is inside 50 ms), and the deadline exists only to stop polling
+ * for a handshake that is not coming.  It spans dtls_srtp's own restart ladder
+ * — 1200 ms plus four 2500 ms attempts, cmake/patches/dtls_srtp-state.new —
+ * so a call that recovers late still gets its address across.
+ *
+ * A peer that genuinely filters on the signalled address needs an ICE restart
+ * (fresh credentials, fresh gather — bsdk_ice_restart() already does exactly
+ * that for handover), not a plain re-offer.  Nothing in the captures needs it:
+ * every inbound call reached `Secure` or reached nothing, and the DTLS role
+ * change (cmake/patches/dtls_srtp-setup.new) removes the address dependency
+ * from the handshake in the first place. */
+#define BSDK_ICE_REOFFER_SECURE_DEADLINE_MS 12000
+#define BSDK_ICE_REOFFER_POLL_MS               50
+
+/* How many peer-initiated ICE restarts to answer with one of our own.
+ *
+ * A restart re-offers, and a peer that restarts in response to every offer it
+ * receives would otherwise trade re-INVITEs with us for the life of the call.
+ * Two is enough to cover the real sequence (peer restarts once, in the answer
+ * to our candidate re-offer) with one spare. */
+#define BSDK_ICE_MAX_REMOTE_RESTARTS           2
 
 /**
  * Our stand-in for the ice module's session object.
@@ -157,6 +191,9 @@ struct bsdk_ice_sess {
 	bool              released; /* the offer has been handed to baresip */
 	bool              reoffered;/* a candidate re-offer has been requested */
 	bool              restarting;/* a restart gather is outstanding */
+	struct tmr        tmr_rrestart;/* deferred answer to a peer ICE restart */
+	unsigned          rrestarts;/* peer restarts answered with our own */
+	bool              primed;   /* early connectivity checks kicked off */
 	struct sdp_session *sdp;    /* borrowed; the call's SDP session */
 	struct list       medial;   /* struct bsdk_ice_media */
 
@@ -191,7 +228,9 @@ struct bsdk_ice_media {
 	struct sa              signalled; /* laddr at offer/answer time */
 	struct sa              selected[2]; /* raddr ICE nominated: RTP, RTCP */
 	struct sa              rsig;      /* peer's signalled raddr back then */
+	char                  *rufrag;    /* peer's ice-ufrag, as last decoded */
 	bool                   sel_set;   /* selected[] has been filled in */
+	bool                   held;      /* connh deferred until the answer */
 	bool                   reasserted;/* logged the first re-assert */
 };
 
@@ -203,6 +242,7 @@ static void media_destructor(void *data)
 	mem_deref(m->inner);
 	mem_deref(m->sock1);
 	mem_deref(m->sock2);
+	mem_deref(m->rufrag);
 }
 
 static void sess_destructor(void *data)
@@ -210,9 +250,10 @@ static void sess_destructor(void *data)
 	struct bsdk_ice_sess *s = data;
 	struct le *le, *tmp;
 
-	/* Timers first: both close over `s`. */
+	/* Timers first: all three close over `s`. */
 	tmr_cancel(&s->tmr);
 	tmr_cancel(&s->tmr_reoffer);
+	tmr_cancel(&s->tmr_rrestart);
 	list_unlink(&s->le);
 
 	/* The media wrappers belong to baresip's streams, which may outlive us:
@@ -270,6 +311,170 @@ static void rebase_signalled(struct bsdk_ice_sess *s)
 		if (laddr && sa_isset(laddr, SA_ADDR))
 			m->signalled = *laddr;
 	}
+}
+
+
+/* ── Peer ICE credentials ────────────────────────────────────────────────── */
+
+/* Not a trigger: `a=connection:new`.
+ *
+ * RFC 4145 §4 reads like one — the peer is asking for a new connection for the
+ * stream — and Asterisk does send it when it tears down and re-creates its RTP
+ * instance, sometimes without changing its ice-ufrag, which is a restart a
+ * credential comparison cannot see.  Tried on-device on 2026-08-31 and reverted
+ * the same hour: Asterisk attaches it to essentially every DTLS answer it
+ * writes, including the answers to our own restarts.  Restarting on it produced
+ * a storm — two restarts inside 70 ms, each provoking another answer carrying
+ * it again — and the call it was meant to rescue still came up silent.
+ *
+ * A credential change stays the only signal used here, because it is the only
+ * one that distinguishes "the peer threw our validated pair away" from "the
+ * peer is answering an offer".
+ *
+ * Track the peer's ICE credentials and report a restart.
+ *
+ * A new ufrag from the peer is an RFC 8445 §9 ICE restart: it has discarded the
+ * credentials under which our nominated pair was validated, along with the
+ * permission that pair represented to accept media from our address.  Nothing
+ * in baresip or libre notices.  ice.c's update handler runs `ice_start()` with
+ * `sess->started` already true, which refreshes local addresses and returns
+ * without calling icem_conncheck_start(), while libre's ufrag_decode() simply
+ * overwrites `icem->rufrag` — so the new credentials land under a check list
+ * that is already Completed, and no further check is ever sent.
+ *
+ * Observed on-device (2026-08-31): Asterisk answered a candidate re-offer with
+ * `a=connection:new`, a fresh fingerprint and a fresh ice-ufrag, having
+ * restarted both its DTLS association and its ICE session.  Our side restarted
+ * neither.  It therefore had no validated pair covering our source address,
+ * kept dropping our DTLS, and the call ran 36 s with tx 0 / rx 0 before the
+ * peer gave up and sent BYE.
+ *
+ * Reading it back from the SDP rather than tracking it through ice_attrh()
+ * keeps this independent of which attributes baresip chooses to route through
+ * the media-NAT: sdp_media_session_rattr() checks the media level and falls
+ * back to the session level, covering a peer that puts one ufrag on the
+ * session for every stream.
+ */
+static bool remote_ufrag_sync(struct bsdk_ice_sess *s)
+{
+	struct le *le;
+	bool restarted = false;
+
+	if (!s || !s->sdp)
+		return false;
+
+	LIST_FOREACH(&s->medial, le) {
+		struct bsdk_ice_media *m = le->data;
+		const char *ru;
+		bool baselined;
+
+		if (!m->sdpm)
+			continue;
+
+		ru = sdp_media_session_rattr(m->sdpm, s->sdp, ice_attr_ufrag);
+		if (!str_isset(ru))
+			continue;
+
+		/* Nothing to compare against on the first SDP for this stream,
+		 * so the first pass only takes the baseline. */
+		baselined = str_isset(m->rufrag);
+
+		if (baselined && str_cmp(m->rufrag, ru)) {
+			info("EchoSDK/ice: peer restarted ICE on '%s'"
+			     " (ice-ufrag %s -> %s)\n",
+			     sdp_media_name(m->sdpm), m->rufrag, ru);
+			restarted = true;
+		}
+
+		m->rufrag = mem_deref(m->rufrag);
+		(void)str_dup(&m->rufrag, ru);
+	}
+
+	return restarted;
+}
+
+
+/* Answer the peer's restart with ours, off the SDP-handling call stack.
+ *
+ * Deferred through a timer because this runs from the media-NAT update handler,
+ * which baresip calls from inside call_apply_sdp() while it is still applying
+ * the SDP that carried the peer's new credentials.  bsdk_ice_restart() replaces
+ * the ICE session under that call and arms an offer; doing it from underneath
+ * the SDP the offer is built from is asking for trouble. */
+static void rrestart_handler(void *arg)
+{
+	struct bsdk_ice_sess *s = arg;
+	int err = bsdk_ice_restart(s->arg, NULL);
+
+	if (err && err != EALREADY) {
+		warning("EchoSDK/ice: could not answer the peer's ICE restart"
+		        " (%m) — this call may have no audio\n", err);
+	}
+}
+
+
+/**
+ * Start connectivity checks as soon as both candidate sets are known.
+ *
+ * On an inbound call every input ICE needs is present while the phone is still
+ * ringing: the peer's candidates arrived in the offer, ours are what the
+ * gather this handler reports just produced.  baresip still waits — the only
+ * path to icem_conncheck_start() is the media-NAT update handler, and
+ * call_apply_sdp() only calls that from call_answer().  So the checks, and the
+ * DTLS handshake gated behind them, run *after* the user answers, and every
+ * millisecond lands on the caller's ear.
+ *
+ * Measured on-device (2026-08-31, inbound over WSS on cellular): gathering
+ * finished 89 ms after the INVITE, the phone then rang for 3.1 s with nothing
+ * happening, and after the 200 OK the checks took 2.33 s and the handshake a
+ * further 3.11 s — 5.9 s of dead air on an answered call.  On WiFi, where the
+ * PBX's private candidate happened to be routable, the same sequence took
+ * 83 ms; the cost is entirely the doomed pairs and the retransmits, which is
+ * exactly the work that can be done while ringing.
+ *
+ * So run the update handler here.  `sess->started` is false, so ice.c takes
+ * its not-yet-started branch and starts the checks.  The answer-time call then
+ * takes the started branch, whose refresh_laddr() writes the address ICE
+ * settled on into the answer — which is also why an inbound call that
+ * concludes during ringing needs no candidate re-offer at all: see
+ * ice_connected().
+ *
+ * Only for the answerer.  As the offerer we have no remote candidates yet, and
+ * the ice module would decline anyway (verify_peer_ice); the peer's ice-ufrag
+ * is what distinguishes the two.
+ */
+static void prime_conncheck(struct bsdk_ice_sess *s)
+{
+	struct le *le;
+	bool have_remote = false;
+
+	if (!s || s->primed || !real_updateh || !s->inner || !s->sdp)
+		return;
+
+	LIST_FOREACH(&s->medial, le) {
+		struct bsdk_ice_media *m = le->data;
+
+		if (m->sdpm &&
+		    str_isset(sdp_media_session_rattr(m->sdpm, s->sdp,
+		                                      ice_attr_ufrag))) {
+			have_remote = true;
+			break;
+		}
+	}
+
+	if (!have_remote)
+		return;
+
+	s->primed = true;
+
+	info("EchoSDK/ice: peer candidates are already known — running the"
+	     " connectivity checks now, before the call is answered\n");
+
+	(void)real_updateh(s->inner);
+
+	/* Baseline the credentials these checks are running against, so the
+	 * answer-time update is not mistaken for a peer restart. */
+	(void)remote_ufrag_sync(s);
 }
 
 
@@ -332,6 +537,12 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 
 	s->released = true;
 	s->estabh(err, scode, reason, s->arg);
+
+	/* After estabh, not before: for an inbound call that handler is what
+	 * delivers CALL_EVENT_INCOMING, and the checks belong to the ringing it
+	 * starts, not ahead of it. */
+	if (!err && !scode)
+		prime_conncheck(s);
 }
 
 /* ── Deadline — runs on re_main ──────────────────────────────────────────── */
@@ -388,6 +599,7 @@ static int ice_sessh(struct mnat_sess **sessp, const struct mnat *mnat,
 
 	tmr_init(&s->tmr);
 	tmr_init(&s->tmr_reoffer);
+	tmr_init(&s->tmr_rrestart);
 	list_init(&s->medial);
 	s->estabh = estabh;
 	s->arg    = arg;
@@ -509,13 +721,15 @@ static void reoffer_deadline(void *arg)
 			return;
 		}
 
-		/* The handshake is not coming back.  Releasing the offer is the
-		 * lesser evil: it cannot damage an association that never
-		 * established, and it is the peer's only chance to learn the
-		 * address our media actually comes from. */
+		/* The handshake is not coming back, and this offer is not what
+		 * would bring it back — see BSDK_ICE_REOFFER_SECURE_DEADLINE_MS
+		 * for the 9 calls that died proving it.  Drop it: a re-INVITE
+		 * now only resets what little state the peer has left. */
+		tmr_cancel(&s->tmr_reoffer);
 		warning("EchoSDK/ice: media encryption still not secure after "
-		        "%u ms — releasing the candidate re-offer anyway\n",
+		        "%u ms — dropping the candidate re-offer\n",
 		        BSDK_ICE_REOFFER_SECURE_DEADLINE_MS);
+		return;
 	}
 
 	reoffer_release(s);
@@ -552,6 +766,17 @@ static void reoffer_deadline(void *arg)
  * ICE settled on is not the one we signalled, ask baresip to re-offer.  By the
  * time this runs, ice.c has already written the new candidates into the SDP,
  * so the re-INVITE carries them.
+ *
+ * Two things have since narrowed what this is for, and neither makes it free:
+ * a peer learns our real address from the connectivity check itself, so it is
+ * rarely waiting to be told; and a re-offer that goes out mid-handshake is the
+ * single strongest predictor of a silent call in any capture we have.  So the
+ * offer is held for the handshake and dropped if the handshake never lands
+ * (BSDK_ICE_REOFFER_SECURE_DEADLINE_MS), and the disagreement it answers is
+ * itself now much rarer: the SDK no longer gathers on interfaces the media
+ * does not use (cmake/patches/ice-ifsel.new), and an inbound call no longer
+ * depends on the peer accepting a handshake we started
+ * (cmake/patches/dtls_srtp-setup.new).
  */
 static void ice_connected(const struct sa *raddr1, const struct sa *raddr2,
                           void *arg)
@@ -580,6 +805,33 @@ static void ice_connected(const struct sa *raddr1, const struct sa *raddr2,
 		if (rsig)
 			sa_cpy(&m->rsig, rsig);
 		m->sel_set = true;
+	}
+
+	/* Nothing below may run before the answer has gone out.
+	 *
+	 * With prime_conncheck() an inbound call's checks conclude while the
+	 * phone is still ringing, and baresip's connected handler is what starts
+	 * the media encryption: dtls_srtp would send its ClientHello seconds
+	 * before the peer has our answer, and therefore before it has our
+	 * fingerprint, our setup role or our ice-ufrag.  It would be dropped,
+	 * and the handshake watchdog would spend its restart budget on a call
+	 * nobody had answered yet — arriving at "giving up (this call has no
+	 * audio)" before the first word.
+	 *
+	 * So hold the pair.  ice_updateh() delivers it through
+	 * reassert_selected() when call_answer() applies the SDP, which is the
+	 * same call stack that writes the 200 OK.  The re-offer below is held
+	 * for the same reason and needs nothing further: the answer carries the
+	 * address ICE settled on, because ice.c's update handler calls
+	 * refresh_laddr() for a session that has already started. */
+	if (s->arg && CALL_STATE_INCOMING == call_state((struct call *)s->arg)) {
+		if (m->sel_set)
+			m->held = true;
+		info("EchoSDK/ice: '%s' concluded on %J while the call was"
+		     " still ringing — holding media setup until the answer"
+		     " goes out\n",
+		     sdp_media_name(m->sdpm), raddr1);
+		return;
 	}
 
 	/* baresip first: it starts the media encryption, and a re-offer must not
@@ -749,6 +1001,25 @@ static void reassert_selected(struct bsdk_ice_sess *s)
 		if (!m->sel_set || !m->connh)
 			continue;
 
+		/* A pair held by ice_connected() has never been delivered at
+		 * all, so it is released unconditionally — this is the delivery
+		 * baresip would have had during ringing, only deferred until the
+		 * answer was out.  The re-assert guard below must not stand in
+		 * front of it: refusing here would mean the connected handler is
+		 * never called, and a call that started media nowhere is a worse
+		 * outcome than one that started it at a stale address. */
+		if (m->held) {
+			m->held = false;
+			info("EchoSDK/ice: answer is out — starting media on "
+			     "the pair ICE nominated during ringing (%J)\n",
+			     &m->selected[0]);
+			m->connh(&m->selected[0],
+			         sa_isset(&m->selected[1], SA_ALL)
+			                 ? &m->selected[1] : NULL,
+			         m->arg);
+			continue;
+		}
+
 		/* Only when the peer is still asking for the same place.  A peer
 		 * that signals a *different* address has genuinely moved its
 		 * media — a transfer, a re-bridge onto another media server —
@@ -900,6 +1171,7 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 		int e;
 
 		m->sel_set    = false;
+		m->held       = false;
 		m->reasserted = false;
 
 		e = real_mediah(&m->inner, s->inner, m->sock1, m->sock2,
@@ -916,9 +1188,20 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	         : BSDK_ICE_RESTART_DEADLINE_MS;
 	tmr_start(&s->tmr, deadline, gather_deadline, s);
 
-	info("EchoSDK/ice: restarting ICE on %j — new credentials, re-gathering,"
-	     " re-INVITE follows within %u ms\n",
-	     laddr, deadline);
+	/* No laddr is not a missing one: rrestart_handler() answers a peer's ICE
+	 * restart without moving addresses, and passes NULL to say so.  Printing
+	 * an unset sa there produced a line that read like a bug ("restarting
+	 * ICE on  —"), so say which case this is. */
+	if (laddr && sa_isset(laddr, SA_ADDR)) {
+		info("EchoSDK/ice: restarting ICE on %j — new credentials,"
+		     " re-gathering, re-INVITE follows within %u ms\n",
+		     laddr, deadline);
+	}
+	else {
+		info("EchoSDK/ice: restarting ICE, keeping the current local"
+		     " address — new credentials, re-gathering, re-INVITE"
+		     " follows within %u ms\n", deadline);
+	}
 
 	return 0;
 }
@@ -945,6 +1228,49 @@ static int ice_updateh(struct mnat_sess *sess)
 		return EINVAL;
 
 	err = real_updateh(s->inner);
+
+	/* A peer that restarted ICE has thrown away the pair we nominated, so
+	 * re-asserting that pair's remote address would pin the stream to a
+	 * place the peer no longer accepts media from.  Drop it and restart ICE
+	 * ourselves: fresh credentials, a fresh gather and a fresh offer, which
+	 * is what gives the peer a candidate list it can validate us against.
+	 *
+	 * Only when the media encryption has not come up: a restart that leaves
+	 * a secure, flowing stream alone is not worth a re-INVITE, and
+	 * reassert_selected() is still the right thing for it.  A plain-RTP call
+	 * reads as "not awaiting secure" and is likewise left alone — nothing
+	 * gates its media on a handshake, and symmetric-RTP latching follows the
+	 * peer without help from us. */
+	if (remote_ufrag_sync(s) && sess_awaiting_secure(s)) {
+		struct le *le;
+
+		LIST_FOREACH(&s->medial, le) {
+			struct bsdk_ice_media *m = le->data;
+			m->sel_set = false;
+		}
+
+		/* Not while one is already under way.  Two SDP exchanges can
+		 * carry a credential change 70 ms apart — the answer to our
+		 * restart's own re-offer is one — and bsdk_ice_restart() would
+		 * answer the second with EALREADY.  Counting that as a restart
+		 * spends the budget on a call that never happened, and the
+		 * genuine restart later in the call then finds none left. */
+		if (s->restarting || tmr_isrunning(&s->tmr_rrestart)) {
+			info("EchoSDK/ice: an ICE restart is already under way"
+			     " — not starting another\n");
+		}
+		else if (s->rrestarts < BSDK_ICE_MAX_REMOTE_RESTARTS) {
+			++s->rrestarts;
+			tmr_start(&s->tmr_rrestart, 0, rrestart_handler, s);
+		}
+		else {
+			warning("EchoSDK/ice: peer has restarted ICE %u times"
+			        " and the media encryption is still not up —"
+			        " not restarting again\n", s->rrestarts);
+		}
+
+		return err;
+	}
 
 	reassert_selected(s);
 

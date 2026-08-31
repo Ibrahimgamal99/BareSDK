@@ -1,7 +1,33 @@
 	setup = sdp_media_session_rattr(st->sdpm, st->sess->sdp, "setup");
 	if (setup) {
 		enum setup rsetup = setup_decode(setup);
-		bool active = rsetup != SETUP_ACTIVE;  /* EchoSDK-patched */
+		bool active;
+
+		/* EchoSDK-patched: keep the role we take and the role we
+		 * advertise in step, now that the answerer advertises `passive`
+		 * (session_alloc).
+		 *
+		 * As the offerer we advertised `actpass` and the answer decides,
+		 * which is upstream's rule.  As the answerer the decision is ours
+		 * and it is `passive`, so only an offer that says `passive` can
+		 * push us into the client role — and when it does, the answer has
+		 * to say `active` or the peer listens for a handshake that is
+		 * never coming.  This runs before the answer is encoded on the
+		 * path where the offer is already decoded; where it is not, the
+		 * attribute session_alloc() wrote stands and this corrects the
+		 * next offer/answer instead. */
+		if (st->sess->offerer)
+			active = rsetup != SETUP_ACTIVE;
+		else {
+			active = (rsetup == SETUP_PASSIVE);
+
+			err = sdp_session_set_lattr(st->sess->sdp, true,
+						    "setup",
+						    active ? "active"
+							   : "passive");
+			if (err)
+				return err;
+		}
 
 		/* EchoSDK-patched: a re-negotiation that reverses the DTLS role
 		 * has to restart the association.  media_start() latches

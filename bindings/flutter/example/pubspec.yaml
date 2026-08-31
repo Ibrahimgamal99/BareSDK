@@ -1,4 +1,4 @@
-name: echo_sdk_example
+name: echo_sdk_app
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -33,6 +33,10 @@ dependencies:
   echo_sdk:
     path: ../
   permission_handler: ^11.3.0
+  # Account tab persistence: the form itself in shared_preferences, the SIP
+  # and TURN passwords in the platform keystore. See lib/account_store.dart.
+  shared_preferences: ^2.5.0
+  flutter_secure_storage: ^9.2.0
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.

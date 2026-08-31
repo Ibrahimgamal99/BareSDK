@@ -1,4 +1,4 @@
-# echo_sdk_example
+# echo_sdk_app
 
 A new Flutter project.
 

@@ -17,7 +17,7 @@
 ///     --dart-define=SIP_CALLEE=9999
 ///
 /// Grant the mic first, or the capture path reports mic-permission:
-///   adb shell pm grant dev.echosdk.echo_sdk_example android.permission.RECORD_AUDIO
+///   adb shell pm grant dev.echosdk.echo_sdk android.permission.RECORD_AUDIO
 ///
 /// SIP_CALLEE must answer and return audio; a silent callee fails step 5 by
 /// design, since "connected but silent" is precisely what this test exists to

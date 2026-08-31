@@ -19,7 +19,13 @@
 #                        Point at a native filesystem (e.g. ~/.cache) when the
 #                        repo lives on NTFS — incremental builds there silently
 #                        reuse stale objects.
-#   ECHOSDK_INCREMENTAL  Set to 1 to keep existing build dirs (default: clean)
+#   ECHOSDK_INCREMENTAL  Set to 1 to keep existing build dirs (default: clean).
+#                        Only echosdk_core is BUILD_ALWAYS, so an incremental
+#                        build picks up src/ and platform/ changes but NOT a
+#                        change under third_party/ (a libre or baresip patch):
+#                        those ExternalProjects are stamped and skipped, and the
+#                        result silently ships the previous objects.  After
+#                        touching cmake/patches/, build clean.  CI always does.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

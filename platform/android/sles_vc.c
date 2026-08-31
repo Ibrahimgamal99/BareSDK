@@ -31,7 +31,31 @@
 #include <rem.h>
 #include "../../src/echosdk_internal.h"
 
-#define N_QUEUE_BUFFERS 2
+/* Queue depth per direction, in PTIME slices.
+ *
+ * Capture gets four.  Two is the minimum that works at all — one buffer in
+ * flight, one for AudioFlinger to write into — which leaves no headroom for a
+ * scheduling hiccup longer than one PTIME, and at PTIME=10 with an 8 kHz
+ * capture that is a 160-byte slice against a HAL that would rather work in
+ * 20 ms at 48 kHz.  Four keeps three free at all times, and costs only queue
+ * the recorder draws on when it is behind: OpenSL completes a buffer when it
+ * is full either way, so depth here is not added latency.
+ *
+ * What prompted it, from the device on 2026-08-31: recurring "tx aubuf
+ * underrun" from baresip plus a TX level reading exactly -127 dBov — all-zero
+ * PCM — through most ticks of a call whose RX level moved normally.  Capture
+ * was running and delivering frames, and a fraction of those frames were
+ * digital silence.  Starvation is the likeliest reading of that and this is
+ * the cheap, safe response to it, but it is not proof: TX mute produces the
+ * identical -127 (baresip mutes in ausrc_read_handler(), upstream of where the
+ * level is measured), so validate against a call whose mute state is known —
+ * the example app now prints it next to the level for exactly this reason.
+ *
+ * Playback stays at two.  Its queue is primed full before the player starts,
+ * so every extra buffer there IS 10 ms of mouth-to-ear latency, and nothing in
+ * the evidence points at the playback side. */
+#define N_REC_BUFFERS  4
+#define N_PLAY_BUFFERS 2
 #define PTIME 10
 
 static SLObjectItf s_engine_obj = NULL;
@@ -43,7 +67,7 @@ static struct auplay *s_auplay = NULL;
 /* ── Recorder ────────────────────────────────────────────────────────────── */
 
 struct ausrc_st {
-	int16_t      *sampv[N_QUEUE_BUFFERS];
+	int16_t      *sampv[N_REC_BUFFERS];
 	size_t        sampc;
 	uint8_t       buffer_id;
 	ausrc_read_h *rh;
@@ -68,7 +92,7 @@ static void ausrc_destructor(void *arg)
 			(*st->rec_obj)->Destroy(st->rec_obj);
 	}
 
-	for (int i = 0; i < N_QUEUE_BUFFERS; i++)
+	for (int i = 0; i < N_REC_BUFFERS; i++)
 		mem_deref(st->sampv[i]);
 }
 
@@ -120,7 +144,7 @@ static void rec_bq_callback(SLAndroidSimpleBufferQueueItf bq, void *context)
 	r = (*st->rec_bq)->Enqueue(st->rec_bq, st->sampv[st->buffer_id],
 	                           (unsigned int)(st->sampc * 2));
 	if (SL_RESULT_SUCCESS == r) {
-		st->buffer_id = (st->buffer_id + 1) % N_QUEUE_BUFFERS;
+		st->buffer_id = (st->buffer_id + 1) % N_REC_BUFFERS;
 		return;
 	}
 
@@ -140,7 +164,7 @@ static int create_recorder(struct ausrc_st *st, struct ausrc_prm *prm)
 	SLDataSource audio_src = {&loc_dev, NULL};
 
 	SLDataLocator_AndroidSimpleBufferQueue loc_bq = {
-		SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, N_QUEUE_BUFFERS
+		SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, N_REC_BUFFERS
 	};
 	/* Capture masks are NOT the playback masks.  Mono capture must be
 	 * SL_SPEAKER_FRONT_LEFT: Android maps the OpenSL positional mask onto an
@@ -230,7 +254,7 @@ static int start_recording(struct ausrc_st *st)
 	/* Prime every buffer, not just the first: the recorder must always have
 	 * a free buffer to write into while the callback is draining another. */
 	st->buffer_id = 0;
-	for (int i = 0; i < N_QUEUE_BUFFERS; i++) {
+	for (int i = 0; i < N_REC_BUFFERS; i++) {
 		r = (*st->rec_bq)->Enqueue(st->rec_bq, st->sampv[i],
 		                           (unsigned int)(st->sampc * 2));
 		if (SL_RESULT_SUCCESS != r)
@@ -271,7 +295,7 @@ static int recorder_alloc(struct ausrc_st **stp, const struct ausrc *as,
 	st->prm = *prm;
 
 	st->sampc = prm->srate * prm->ch * PTIME / 1000;
-	for (int i = 0; i < N_QUEUE_BUFFERS; i++) {
+	for (int i = 0; i < N_REC_BUFFERS; i++) {
 		st->sampv[i] = mem_zalloc(2 * st->sampc, NULL);
 		if (!st->sampv[i]) {
 			err = ENOMEM;
@@ -301,7 +325,7 @@ static int recorder_alloc(struct ausrc_st **stp, const struct ausrc *as,
 struct auplay_st {
 	auplay_write_h *wh;
 	void           *arg;
-	int16_t        *sampv[N_QUEUE_BUFFERS];
+	int16_t        *sampv[N_PLAY_BUFFERS];
 	size_t          sampc;
 	uint8_t         buffer_id;
 	struct auplay_prm prm;
@@ -321,7 +345,7 @@ static void auplay_destructor(void *arg)
 	if (st->mix_obj)
 		(*st->mix_obj)->Destroy(st->mix_obj);
 
-	for (int i = 0; i < N_QUEUE_BUFFERS; i++)
+	for (int i = 0; i < N_PLAY_BUFFERS; i++)
 		mem_deref(st->sampv[i]);
 }
 
@@ -351,7 +375,7 @@ static void play_bq_callback(SLAndroidSimpleBufferQueueItf bq, void *context)
 		return;
 	}
 
-	st->buffer_id = (st->buffer_id + 1) % N_QUEUE_BUFFERS;
+	st->buffer_id = (st->buffer_id + 1) % N_PLAY_BUFFERS;
 }
 
 static int create_player(struct auplay_st *st, struct auplay_prm *prm)
@@ -368,7 +392,7 @@ static int create_player(struct auplay_st *st, struct auplay_prm *prm)
 		return ENODEV;
 
 	SLDataLocator_AndroidSimpleBufferQueue loc_bufq = {
-		SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, N_QUEUE_BUFFERS
+		SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, N_PLAY_BUFFERS
 	};
 	uint32_t ch_mask = prm->ch == 2
 		? SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT
@@ -438,7 +462,7 @@ static int start_player(struct auplay_st *st)
 	SLresult r;
 
 	st->buffer_id = 0;
-	for (int i = 0; i < N_QUEUE_BUFFERS; i++) {
+	for (int i = 0; i < N_PLAY_BUFFERS; i++) {
 		r = (*st->play_bq)->Enqueue(st->play_bq, st->sampv[i],
 		                            (unsigned int)(st->sampc * 2));
 		if (SL_RESULT_SUCCESS != r)
@@ -481,7 +505,7 @@ static int player_alloc(struct auplay_st **stp, const struct auplay *ap,
 	st->prm = *prm;
 
 	st->sampc = prm->srate * prm->ch * PTIME / 1000;
-	for (int i = 0; i < N_QUEUE_BUFFERS; i++) {
+	for (int i = 0; i < N_PLAY_BUFFERS; i++) {
 		st->sampv[i] = mem_zalloc(2 * st->sampc, NULL);
 		if (!st->sampv[i]) {
 			err = ENOMEM;
