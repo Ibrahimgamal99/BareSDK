@@ -155,6 +155,17 @@ struct echosdk_account {
 	 * and on unregister. */
 	bool                      reconnecting;
 	uint32_t                  retry_attempt;
+	/* Delay of the retry currently armed.  Carried on every RECONNECTING
+	 * event so an app rendering only the latest one always has a coherent
+	 * (attempt, countdown) pair instead of a 0 from whichever event in the
+	 * cycle happened to be posted last.  0 when no retry is armed. */
+	uint32_t                  retry_delay_ms;
+	/* What the app was last told while reconnecting — see
+	 * bsdk_account_reg_ev_prepare(). */
+	uint32_t                  last_rc_attempt;
+	uint32_t                  last_rc_delay_ms;
+	echosdk_error_t           last_rc_error;
+	bool                      last_rc_valid;
 	struct tmr                retry_tmr;
 	/* Registration watchdog — see bsdk_account_watch_registration(). */
 	struct tmr                reg_watch_tmr;
@@ -410,6 +421,19 @@ void bsdk_sles_vc_close(void);
  * but leave activation to the app (CallKit's didActivateAudioSession). */
 int bsdk_platform_audio_init(bool activate);
 
+/* ── platform/<os>/ca_*.c ──────────────────────────────────────────────── */
+
+/* Path to a CA bundle OpenSSL can load as a CAfile, or NULL when the platform
+ * cannot supply one.  Called from echosdk_init() only when the app left
+ * cfg.ca_cert_path unset, which it usually does — libre never calls
+ * SSL_CTX_set_default_verify_paths(), so with neither the X509_STORE stays
+ * empty and every TLS/WSS registration fails the handshake.
+ *
+ * dir: a writable directory (the SDK's conf_path) for implementations that
+ * have to materialise the trust store as a file.  The returned pointer has
+ * static lifetime; it is not owned by the caller. */
+const char *bsdk_platform_ca_bundle(const char *dir);
+
 /* ── account.c ─────────────────────────────────────────────────────────── */
 
 struct echosdk_account *bsdk_account_find_by_ua(const struct ua *ua);
@@ -428,6 +452,31 @@ echosdk_reg_state_t bsdk_account_reg_fail_state(struct echosdk_account *acct,
  * A no-op for an account that is already there, or that the app never asked to
  * register.  re_main thread only. */
 void bsdk_account_reg_reconnecting(struct echosdk_account *acct);
+
+/* Stamp the reconnect fields onto a REG_STATE event and say whether it is
+ * worth posting.  Call once per event, immediately before posting.
+ *
+ * One failed REGISTER used to produce three RECONNECTING events — the failure
+ * itself, the retry countdown, and the retry's own REGISTER going back out —
+ * all saying the same thing, and only the countdown ever carried the attempt
+ * and the delay.  Whichever landed last won, so an app rendering the latest
+ * event sat on "attempt 0, next in 0ms" for the whole outage.
+ *
+ * Now every RECONNECTING event carries acct->retry_attempt and
+ * acct->retry_delay_ms, which makes those three identical, and this returns
+ * false for the repeats so only the first is posted.
+ *
+ * Deduplication applies to RECONNECTING alone: a repeated REGISTERED is a
+ * refresh and a repeated FAILED a fresh refusal, and both are news.  Any other
+ * state also ends the reconnect, so it clears the signature on the way out. */
+bool bsdk_account_reg_ev_prepare(struct echosdk_account *acct,
+                                 echosdk_event_t *ev);
+
+/* Forget the last RECONNECTING signature, so the next reconnect starts
+ * reporting from its first event.  bsdk_account_reg_ev_prepare() does this
+ * for any event that leaves the reconnecting state; call it directly only
+ * where no event is posted. */
+void bsdk_account_reconnect_reset(struct echosdk_account *acct);
 
 /* Keepalive / reachability probe — cfg.keepalive_interval.  _arm() on a
  * successful registration, _cancel() when the account stops being

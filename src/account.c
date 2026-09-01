@@ -447,6 +447,48 @@ echosdk_reg_state_t bsdk_account_reg_fail_state(struct echosdk_account *acct,
 	return will_retry ? ECHOSDK_REG_RECONNECTING : ECHOSDK_REG_FAILED;
 }
 
+void bsdk_account_reconnect_reset(struct echosdk_account *acct)
+{
+	if (!acct)
+		return;
+
+	acct->last_rc_valid  = false;
+	acct->retry_delay_ms = 0;
+}
+
+bool bsdk_account_reg_ev_prepare(struct echosdk_account *acct,
+                                 echosdk_event_t *ev)
+{
+	if (!acct || !ev)
+		return true;
+
+	/* Anything but RECONNECTING ends the reconnect, so clear the armed
+	 * countdown before stamping — a REGISTERED carrying the delay of the
+	 * retry that just succeeded would read as "reconnecting again in 2 s".
+	 * retry_attempt survives: on a terminal FAILED it is how many attempts
+	 * were spent, and REGISTERED has already zeroed it itself. */
+	if (ev->u.reg.state != ECHOSDK_REG_RECONNECTING)
+		bsdk_account_reconnect_reset(acct);
+
+	ev->u.reg.retry_attempt  = acct->retry_attempt;
+	ev->u.reg.retry_delay_ms = acct->retry_delay_ms;
+
+	if (ev->u.reg.state != ECHOSDK_REG_RECONNECTING)
+		return true;
+
+	if (acct->last_rc_valid &&
+	    acct->last_rc_error    == ev->u.reg.error &&
+	    acct->last_rc_attempt  == acct->retry_attempt &&
+	    acct->last_rc_delay_ms == acct->retry_delay_ms)
+		return false;
+
+	acct->last_rc_valid    = true;
+	acct->last_rc_error    = ev->u.reg.error;
+	acct->last_rc_attempt  = acct->retry_attempt;
+	acct->last_rc_delay_ms = acct->retry_delay_ms;
+	return true;
+}
+
 void bsdk_account_reg_reconnecting(struct echosdk_account *acct)
 {
 	echosdk_event_t ev = {0};
@@ -471,7 +513,8 @@ void bsdk_account_reg_reconnecting(struct echosdk_account *acct)
 	ev.u.reg.state   = ECHOSDK_REG_RECONNECTING;
 	ev.u.reg.error   = ECHOSDK_OK;
 	ev.u.reg.account = acct;
-	bsdk_event_post(&ev);
+	if (bsdk_account_reg_ev_prepare(acct, &ev))
+		bsdk_event_post(&ev);
 }
 
 /* ── Registration watchdog (fires on re_main) ───────────────────────────────
@@ -551,6 +594,7 @@ static void reg_watch_handler(void *arg)
 		ev.u.reg.state   = ECHOSDK_REG_REGISTERED;
 		ev.u.reg.error   = ECHOSDK_OK;
 		ev.u.reg.account = acct;
+		(void)bsdk_account_reg_ev_prepare(acct, &ev);
 		bsdk_event_post(&ev);
 		return;
 	}
@@ -577,7 +621,8 @@ static void reg_watch_handler(void *arg)
 		ev.u.reg.error     = ECHOSDK_ERR_TIMEOUT;
 		ev.u.reg.error_str = acct->reg_error_str;
 		ev.u.reg.account   = acct;
-		bsdk_event_post(&ev);
+		if (bsdk_account_reg_ev_prepare(acct, &ev))
+			bsdk_event_post(&ev);
 
 		bsdk_account_schedule_retry(acct);
 		return;
@@ -769,8 +814,10 @@ static void retry_timer_handler(void *arg)
 	 * the SRV list instead of hammering one host. */
 	srv_advance(acct);
 
+	/* schedule_retry() already counted this one, and the RECONNECTING event
+	 * the app got carries the same number — do not print it one ahead. */
 	info("EchoSDK: re-registering account (attempt %u)\n",
-	     acct->retry_attempt + 1);
+	     acct->retry_attempt);
 	ua_register(acct->ua);
 	bsdk_account_watch_registration(acct);
 }
@@ -832,6 +879,7 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 				ok.u.reg.state   = ECHOSDK_REG_REGISTERED;
 				ok.u.reg.error   = ECHOSDK_OK;
 				ok.u.reg.account = acct;
+				(void)bsdk_account_reg_ev_prepare(acct, &ok);
 				bsdk_event_post(&ok);
 			}
 		}
@@ -868,7 +916,8 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 	ev.u.reg.error     = ECHOSDK_ERR_TIMEOUT;
 	ev.u.reg.error_str = acct->reg_error_str;
 	ev.u.reg.account   = acct;
-	bsdk_event_post(&ev);
+	if (bsdk_account_reg_ev_prepare(acct, &ev))
+		bsdk_event_post(&ev);
 
 	if (g_bsdk.cfg.keepalive_reregister && acct->reg_wanted) {
 		/* Straight to a retry rather than an immediate ua_register(): the
@@ -1014,7 +1063,7 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 		done.u.reg.error_str = acct->reg_error_str[0]
 		        ? acct->reg_error_str : NULL;
 		done.u.reg.account   = acct;
-		done.u.reg.retry_attempt = acct->retry_attempt;
+		(void)bsdk_account_reg_ev_prepare(acct, &done);
 		bsdk_event_post(&done);
 		return;
 	}
@@ -1034,6 +1083,9 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 	delay = apply_jitter(delay, cfg->reg_retry_jitter);
 
 	acct->retry_attempt++;
+	/* Published on every RECONNECTING event from here until the retry
+	 * resolves, so they all agree on the countdown. */
+	acct->retry_delay_ms = delay;
 
 	/* Post retry event so consumer can show UI.  RECONNECTING, with the
 	 * attempt and the delay: an attempt is armed, so this is a countdown and
@@ -1042,15 +1094,14 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 	acct->reg_state    = ECHOSDK_REG_RECONNECTING;
 
 	echosdk_event_t ev = {0};
-	ev.type                    = ECHOSDK_EV_REG_STATE;
-	ev.u.reg.state             = ECHOSDK_REG_RECONNECTING;
-	ev.u.reg.error             = acct->reg_error;
-	ev.u.reg.error_str         = acct->reg_error_str[0]
+	ev.type            = ECHOSDK_EV_REG_STATE;
+	ev.u.reg.state     = ECHOSDK_REG_RECONNECTING;
+	ev.u.reg.error     = acct->reg_error;
+	ev.u.reg.error_str = acct->reg_error_str[0]
 	        ? acct->reg_error_str : NULL;
-	ev.u.reg.account           = acct;
-	ev.u.reg.retry_attempt     = acct->retry_attempt;
-	ev.u.reg.retry_delay_ms    = delay;
-	bsdk_event_post(&ev);
+	ev.u.reg.account   = acct;
+	if (bsdk_account_reg_ev_prepare(acct, &ev))
+		bsdk_event_post(&ev);
 
 	tmr_start(&acct->retry_tmr, delay, retry_timer_handler, acct);
 }

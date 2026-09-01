@@ -2,69 +2,16 @@ name: Build mobile libraries
 
 # Manual only: this workflow is not run on push. Start it from the Actions tab
 # (or `gh workflow run build-mobile.yml`) when native sources change.
+#
+# iOS only: Android is built locally with scripts/build-android.sh, so no
+# Android job here. That means nothing on CI proves the freshly built jniLibs
+# still line up with the Dart/Kotlin plugin (FFI symbol names, the plugin class,
+# the JNI bridge); after a native change, run scripts/build-android.sh and then
+# `flutter build apk --debug` in bindings/flutter/example locally to cover it.
 on:
   workflow_dispatch:
 
 jobs:
-  # ── Android: 3 ABIs, symbol/alignment-verified, stripped jniLibs ────────
-  # Ends by building the Flutter example APK. That is deliberate: this job is
-  # the only place where freshly built jniLibs and the Dart/Kotlin plugin meet,
-  # so it is the only place that can prove the FFI symbol names, the Kotlin
-  # plugin class and the JNI bridge still line up after a native change.
-  android:
-    runs-on: ubuntu-22.04
-    name: Android · arm64-v8a + armeabi-v7a + x86_64 + example APK
-    steps:
-      - uses: actions/checkout@v4
-
-      # The runner exports ANDROID_NDK_LATEST_HOME; build-android.sh falls
-      # back to it when ANDROID_NDK is unset.
-      - name: Build all ABIs (fetches third_party, verifies, syncs jniLibs)
-        run: bash scripts/build-android.sh
-        env:
-          ECHOSDK_BUILD_ROOT: ${{ runner.temp }}/echosdk-build
-
-      - name: Upload jniLibs
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-jniLibs
-          path: bindings/flutter/android/src/main/jniLibs/
-          if-no-files-found: error
-
-      - name: Upload dist (unstripped, with static archives)
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-dist
-          path: dist/android/
-          if-no-files-found: error
-
-      # AGP 9 / Gradle 9 (see example/android/settings.gradle.kts) need JDK 17,
-      # which is also what the plugin compiles against (jvmTarget = '17').
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      # build-android.sh has just refreshed src/main/jniLibs/<abi>/libechosdk.so,
-      # so this APK links the ABIs built above, not the committed blobs.
-      - name: Build example APK
-        working-directory: bindings/flutter/example
-        run: |
-          flutter pub get
-          flutter build apk --debug
-
-      - name: Upload example APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-example-apk
-          path: bindings/flutter/example/build/app/outputs/flutter-apk/app-debug.apk
-          if-no-files-found: error
-
   # ── iOS: dynamic xcframework (device arm64 + simulator arm64/x86_64) ────
   # The example app is built in this same job on purpose. Round-tripping the
   # xcframework through upload/download-artifact would flatten the framework's

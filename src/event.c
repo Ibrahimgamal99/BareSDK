@@ -344,6 +344,12 @@ static void bevent_handler(enum bevent_ev bev,
 			ev.u.reg.state  = ECHOSDK_REG_RECONNECTING;
 			ev.u.reg.error  = acct->reg_error;
 			acct->reg_state = ECHOSDK_REG_RECONNECTING;
+			/* The countdown event already said exactly this, so
+			 * the attempt leaving the socket is not news. */
+			if (!bsdk_account_reg_ev_prepare(acct, &ev)) {
+				post = false;
+				break;
+			}
 
 			/* Carry the reason the recovery started with, so an app that
 			 * renders only the latest event still has one.  Queued with its
@@ -393,6 +399,7 @@ static void bevent_handler(enum bevent_ev bev,
 			/* Registered and reachable — start probing so we notice if
 			 * that stops being true before the next refresh. */
 			bsdk_account_keepalive_arm(acct);
+			(void)bsdk_account_reg_ev_prepare(acct, &ev);
 		}
 		break;
 
@@ -418,6 +425,37 @@ static void bevent_handler(enum bevent_ev bev,
 		        ? bsdk_account_reg_fail_state(acct, ev.u.reg.error)
 		        : ECHOSDK_REG_FAILED;
 
+		if (acct) {
+			acct->reg_state  = ev.u.reg.state;
+			acct->reg_error  = ev.u.reg.error;
+			/* No point probing a registration that is down; the
+			 * retry path re-arms this on success. */
+			bsdk_account_keepalive_cancel(acct);
+			if (reason)
+				str_ncpy(acct->reg_error_str, reason,
+				         sizeof(acct->reg_error_str));
+
+			/* Arm the retry before reporting the failure, not after:
+			 * scheduling settles the attempt number and the countdown
+			 * this failure is reported with.  Done the other way round
+			 * the app got the failure with attempt 0 / delay 0, then
+			 * the countdown, then the retry's own REGISTER with 0 and
+			 * 0 again — three events per cycle, two of them empty.
+			 *
+			 * Outside the queued-event allocation below as well: a
+			 * failed alloc costs one event, it must not cost the
+			 * recovery. */
+			if (ev.u.reg.error != ECHOSDK_ERR_AUTH)
+				bsdk_account_schedule_retry(acct);
+
+			/* schedule_retry() has just reported this same reconnect,
+			 * carrying the same numbers and the same reason. */
+			if (!bsdk_account_reg_ev_prepare(acct, &ev)) {
+				post = false;
+				break;
+			}
+		}
+
 		/* Enqueue via a queued_event so the string lives long enough */
 		struct echosdk_queued_event *qev = bsdk_qev_alloc();
 		if (qev) {
@@ -425,19 +463,6 @@ static void bevent_handler(enum bevent_ev bev,
 				str_ncpy(qev->buf, reason, sizeof(qev->buf));
 			memcpy(&qev->ev, &ev, sizeof(ev));
 			qev->ev.u.reg.error_str = reason ? qev->buf : NULL;
-			if (acct) {
-				acct->reg_state  = ev.u.reg.state;
-				acct->reg_error  = ev.u.reg.error;
-				/* No point probing a registration that is down; the
-				 * retry path re-arms this on success. */
-				bsdk_account_keepalive_cancel(acct);
-				if (reason)
-					str_ncpy(acct->reg_error_str, reason,
-					         sizeof(acct->reg_error_str));
-				/* Trigger retry if not an auth failure */
-				if (ev.u.reg.error != ECHOSDK_ERR_AUTH)
-					bsdk_account_schedule_retry(acct);
-			}
 			bsdk_event_post_qev(qev);
 		}
 		post = false;
@@ -451,6 +476,7 @@ static void bevent_handler(enum bevent_ev bev,
 		if (acct) {
 			acct->reg_state    = ECHOSDK_REG_UNREGISTERING;
 			acct->reconnecting = false;
+			(void)bsdk_account_reg_ev_prepare(acct, &ev);
 		}
 		break;
 

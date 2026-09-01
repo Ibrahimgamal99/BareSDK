@@ -47,7 +47,7 @@ server_url = "wss://pbx.example.com:8089/ws"
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `ca_cert_path` | `const char *` | NULL | CA bundle path. NULL = system store. |
+| `ca_cert_path` | `const char *` | NULL | CA bundle path. NULL = platform trust store ([see below](../guides/tls_wss.md#certificate-trust-store)). |
 | `client_cert` | `const char *` | NULL | Client certificate PEM path. |
 | `client_key` | `const char *` | NULL | Client private key PEM path. |
 | `verify_server` | `bool` | true | Verify server certificate. |

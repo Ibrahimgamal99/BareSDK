@@ -385,6 +385,20 @@ typedef struct {
 	echosdk_account_handle_t account;
 	echosdk_reg_state_t      state;
 	echosdk_error_t          error;         /* ECHOSDK_OK when REGISTERED */
+	/**
+	 * Which recovery attempt this is, and how long until it goes out.
+	 *
+	 * Both are carried on every RECONNECTING event, so an app that renders
+	 * only the latest one always has a coherent pair: retry_attempt counts
+	 * up 1, 2, 3… for as long as the outage lasts and retry_delay_ms is the
+	 * backoff actually armed.  Exactly one RECONNECTING event is emitted per
+	 * attempt — the failure, the countdown and the retry's own REGISTER are
+	 * one event, not three.
+	 *
+	 * On a terminal FAILED, retry_attempt is how many attempts were spent
+	 * and retry_delay_ms is 0: nothing further is armed.  Both are 0 on
+	 * REGISTERED and on a first REGISTERING.
+	 */
 	uint32_t                 retry_attempt;
 	uint32_t                 retry_delay_ms;
 	const char              *error_str;     /* human-readable; NULL on OK */
@@ -713,6 +727,18 @@ typedef struct {
 	const char  *outbound_proxy; /* NULL = auto from server info */
 
 	/* ── TLS / WSS ────────────────────────────────────────────────── */
+	/**
+	 * CA bundle for server verification.  NULL falls back to the
+	 * platform trust store: the concatenated system CAs on Android,
+	 * the keychain anchors on macOS, the ROOT store on Windows, the
+	 * distribution bundle on Linux, and — because iOS exposes no API
+	 * to read its own anchors — a Mozilla root bundle shipped inside
+	 * the SDK on iOS.
+	 *
+	 * Set it explicitly for a private or enterprise CA, and on iOS
+	 * whenever the device is meant to trust an MDM-installed root:
+	 * the bundle compiled into the SDK cannot see those.
+	 */
 	const char  *ca_cert_path;
 	const char  *client_cert;
 	const char  *client_key;

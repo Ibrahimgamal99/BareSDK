@@ -1519,6 +1519,16 @@ class EchoSDKBindings {
   /// Synchronously retrieve current stats for a call.
   /// Also delivered automatically via ECHOSDK_EV_MEDIA_STATS if
   /// cfg.stats_interval_ms > 0.
+  ///
+  /// `out` is zeroed before anything else, so it is fully defined whatever this
+  /// returns: on an error every field reads 0, never uninitialised garbage.
+  ///
+  /// Note which numbers need RTCP to exist at all.  rtt_ms comes only from the
+  /// peer's receiver report (RFC 3550 LSR/DLSR), so it reads 0.0 until the first
+  /// RR carrying both arrives — typically one RTCP interval into the call, and
+  /// for the whole call against a peer that sends no RTCP.  0.0 there means
+  /// "not measured yet", not "zero delay".  The only fields that are ever NaN
+  /// are audio_level_dbov and mic_level_dbov, which use NaN for "unavailable".
   int echosdk_call_get_stats(
     echosdk_call_handle_t call,
     ffi.Pointer<echosdk_ev_media_stats_t> out,
@@ -2058,6 +2068,18 @@ final class echosdk_ev_reg_state_t extends ffi.Struct {
   @ffi.Int32()
   external int error;
 
+  /// Which recovery attempt this is, and how long until it goes out.
+  ///
+  /// Both are carried on every RECONNECTING event, so an app that renders
+  /// only the latest one always has a coherent pair: retry_attempt counts
+  /// up 1, 2, 3… for as long as the outage lasts and retry_delay_ms is the
+  /// backoff actually armed.  Exactly one RECONNECTING event is emitted per
+  /// attempt — the failure, the countdown and the retry's own REGISTER are
+  /// one event, not three.
+  ///
+  /// On a terminal FAILED, retry_attempt is how many attempts were spent
+  /// and retry_delay_ms is 0: nothing further is armed.  Both are 0 on
+  /// REGISTERED and on a first REGISTERING.
   @ffi.Uint32()
   external int retry_attempt;
 
@@ -2145,10 +2167,12 @@ final class echosdk_ev_media_stats_t extends ffi.Struct {
   external int packets_received;
 
   /// TX-side: packets remote did not receive
+  /// (cumulative for the call, per RFC 3550)
   @ffi.Uint32()
   external int packets_lost;
 
   /// RX-side: packets we did not receive
+  /// (cumulative for the call, per RFC 3550)
   @ffi.Uint32()
   external int packets_lost_rx;
 
@@ -2168,19 +2192,21 @@ final class echosdk_ev_media_stats_t extends ffi.Struct {
   @ffi.Uint32()
   external int rx_errors;
 
-  /// TX-side loss %
+  /// TX-side loss % this window
   @ffi.Float()
   external double loss_pct;
 
-  /// RX-side loss %
+  /// RX-side loss % this window
   @ffi.Float()
   external double loss_pct_rx;
 
-  /// RX interarrival jitter (what we observe)
+  /// RX interarrival jitter ms (what we observe),
+  /// RFC 3550 6.4.1
   @ffi.Float()
   external double jitter_ms;
 
-  /// TX interarrival jitter (what remote reports)
+  /// TX interarrival jitter ms (what remote
+  /// reports in its RR)
   @ffi.Float()
   external double tx_jitter_ms;
 
@@ -2300,7 +2326,9 @@ final class echosdk_ev_media_stats_t extends ffi.Struct {
   @ffi.Float()
   external double mos_lq_min;
 
-  /// session average mos_lq
+  /// session average mos_lq — averaged in the
+  /// R-factor domain and converted once, since
+  /// MOS is non-linear in R
   @ffi.Float()
   external double mos_lq_avg;
 
@@ -2534,7 +2562,18 @@ final class echosdk_config_t extends ffi.Struct {
   /// NULL = auto from server info
   external ffi.Pointer<ffi.Char> outbound_proxy;
 
-  /// ── TLS / WSS ──────────────────────────────────────────────────
+  /// ── TLS / WSS ────────────────────────────────────────────────── */
+  /// /**
+  /// CA bundle for server verification.  NULL falls back to the
+  /// platform trust store: the concatenated system CAs on Android,
+  /// the keychain anchors on macOS, the ROOT store on Windows, the
+  /// distribution bundle on Linux, and — because iOS exposes no API
+  /// to read its own anchors — a Mozilla root bundle shipped inside
+  /// the SDK on iOS.
+  ///
+  /// Set it explicitly for a private or enterprise CA, and on iOS
+  /// whenever the device is meant to trust an MDM-installed root:
+  /// the bundle compiled into the SDK cannot see those.
   external ffi.Pointer<ffi.Char> ca_cert_path;
 
   external ffi.Pointer<ffi.Char> client_cert;

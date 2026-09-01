@@ -5,9 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#ifdef __ANDROID__
-#include <dirent.h>
-#endif
 #ifdef _WIN32
 #include <winsock2.h>
 #include <windows.h>
@@ -237,83 +234,6 @@ static void bsdk_resolve_tmpdir(const char *override, char *buf, size_t sz)
 #endif
 }
 
-#ifdef __ANDROID__
-/* ── Android CA bundle ───────────────────────────────────────────────────────
- *
- * Android ships its trust store as one PEM per CA, named by the certificate's
- * subject hash. Those names use OpenSSL's *old* MD5 hash; OpenSSL 1.0 switched
- * to a SHA-1 based name, so handing the directory to OpenSSL as a CApath finds
- * nothing and every server certificate fails with "unable to get local issuer
- * certificate". There is no CA bundle file on Android to point at instead.
- *
- * Concatenating the directory into one PEM sidesteps the naming entirely — a
- * CAfile is parsed start to end. Rebuilt on each init so OS trust-store
- * updates (and user-removed CAs) are picked up.
- *
- * Returns a static path on success, or NULL to leave ca_cert_path unset.
- */
-static const char *bsdk_android_ca_bundle(const char *dir)
-{
-	/* Conscrypt's copy is the live store on Android 14+, where the platform
-	 * one under /system can be stale. Prefer it, fall back for older. */
-	static const char *srcdirs[] = {
-		"/apex/com.android.conscrypt/cacerts",
-		"/system/etc/security/cacerts",
-	};
-	static char path[700];
-	size_t written = 0;
-
-	(void)re_snprintf(path, sizeof(path), "%s/android-ca-bundle.pem", dir);
-
-	FILE *out = fopen(path, "w");
-	if (!out)
-		return NULL;
-
-	for (size_t i = 0; i < RE_ARRAY_SIZE(srcdirs) && !written; i++) {
-		DIR *d = opendir(srcdirs[i]);
-		if (!d)
-			continue;
-
-		struct dirent *ent;
-		while ((ent = readdir(d)) != NULL) {
-			char cert[768];
-			char buf[4096];
-			size_t n;
-
-			if (ent->d_name[0] == '.')
-				continue;
-
-			(void)re_snprintf(cert, sizeof(cert), "%s/%s",
-			                  srcdirs[i], ent->d_name);
-
-			FILE *in = fopen(cert, "r");
-			if (!in)
-				continue;
-
-			while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
-				if (fwrite(buf, 1, n, out) != n)
-					break;
-				written += n;
-			}
-			fclose(in);
-			/* Each file ends without a guaranteed newline. */
-			fputc('\n', out);
-		}
-		closedir(d);
-	}
-
-	fclose(out);
-
-	if (!written) {
-		warning("EchoSDK: no Android system CAs found; TLS server "
-		        "verification will fail unless ca_cert_path is set\n");
-		return NULL;
-	}
-
-	return path;
-}
-#endif
-
 /* ── echosdk_init ────────────────────────────────────────────────────────── */
 
 int echosdk_init(const echosdk_config_t *cfg)
@@ -386,10 +306,16 @@ int echosdk_init(const echosdk_config_t *cfg)
 		(void)re_snprintf(_confdir, sizeof(_confdir), "%s/.echosdk", _tmpbase);
 		(void)fs_mkdir(_confdir, 0700);
 		conf_path_set(_confdir);
-#ifdef __ANDROID__
+
+		/* No CAfile means an empty X509_STORE: libre never calls
+		 * SSL_CTX_set_default_verify_paths(), so unless the app named
+		 * a bundle every TLS/WSS handshake fails verification with
+		 * "unable to get local issuer certificate" (surfacing as
+		 * "Register: Protocol error [100]").  Fall back to whatever
+		 * the platform can offer — see platform/<os>/ca_*.c. */
 		if (!g_bsdk.cfg.ca_cert_path)
-			g_bsdk.cfg.ca_cert_path = bsdk_android_ca_bundle(_confdir);
-#endif
+			g_bsdk.cfg.ca_cert_path =
+				bsdk_platform_ca_bundle(_confdir);
 	}
 	conf_configure_buf((const uint8_t *)"#\n", 2);
 

@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# Download the prebuilt native libraries from a build-mobile CI run into the
-# Flutter plugin, where the podspec and the Gradle ffiPlugin vendor them.
+# Download the prebuilt iOS xcframework from a build-mobile CI run into the
+# Flutter plugin, where the podspec vendors it.
 #
 #   scripts/fetch-prebuilt.sh                 latest successful run on main
 #   scripts/fetch-prebuilt.sh --wait          wait for the newest run, then sync
 #   scripts/fetch-prebuilt.sh --run-id 123    a specific run
 #   scripts/fetch-prebuilt.sh --branch dev    latest successful run on a branch
 #
+# iOS only. Android has no CI job any more (see .github/workflows/
+# build-mobile.yml) — build its jniLibs locally with scripts/build-android.sh.
+#
 # Why this exists: the plugin ships *prebuilt* binaries, so a consumer adding
 # it as a git dependency gets whatever is committed — not whatever CI last
-# built. CI builds both platforms and uploads them as artifacts, but nothing
-# commits them back, so the two drift silently. That drift has already shipped
-# once: the committed libechosdk.so predated the baresdk_* -> echosdk_* rename
-# and exported none of the symbols ffi_bindings.dart looks up, so apps built,
+# built. CI uploads the xcframework as an artifact, but nothing commits it
+# back, so the two drift silently. That drift has already shipped once: the
+# committed libechosdk.so predated the baresdk_* -> echosdk_* rename and
+# exported none of the symbols ffi_bindings.dart looks up, so apps built,
 # installed, and then failed at the first SDK call.
 #
-# Nothing here is committed for you — review, then `git add` the two paths
-# printed at the end.
+# Nothing here is committed for you — review, then `git add` the path printed
+# at the end.
 #
-# Requires: gh (authenticated). Symbol verification additionally wants readelf
-# for Android and nm for iOS; it is skipped with a warning where unavailable.
+# Requires: gh (authenticated). Symbol verification additionally wants nm; it
+# falls back to probing the string table where unavailable.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -31,14 +34,13 @@ WAIT=0
 EXPLICIT=0
 
 IOS_DEST="${ROOT}/bindings/flutter/ios/Frameworks/EchoSDK.xcframework"
-AND_DEST="${ROOT}/bindings/flutter/android/src/main/jniLibs"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-id) RUN_ID="$2"; EXPLICIT=1; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
     --wait)   WAIT=1; shift ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "ERROR: unknown argument '$1' (try --help)" >&2; exit 1 ;;
   esac
 done
@@ -89,10 +91,9 @@ TITLE="$(gh run view "${RUN_ID}" --json displayTitle --jq .displayTitle)"
 
 echo "=== Run ${RUN_ID} — ${TITLE} (${SHA:0:12}) — ${STATUS} ${CONCL} ==="
 
-# A failed run can still have uploaded one artifact and not the other, which
-# would leave the plugin half-updated: a fresh xcframework beside stale .so
-# files is worse than either, because Android then fails at runtime instead of
-# at build time. Refuse unless the run is explicitly named.
+# A failed run's artifact can be from a job that died partway, so the payload
+# may be incomplete even when it uploaded. Refuse unless the run is explicitly
+# named; the checks below are the backstop if you override.
 if [ "${CONCL}" != "success" ] && [ "${EXPLICIT}" != "1" ]; then
   echo "ERROR: run ${RUN_ID} concluded '${CONCL}', not 'success'." >&2
   echo "       Re-run with --run-id ${RUN_ID} to sync from it anyway." >&2
@@ -133,51 +134,9 @@ find "${IOS_DEST}" -name EchoSDK -type f | while read -r BIN; do
 done
 
 # ---------------------------------------------------------------------------
-# Android — overwrite the three ABIs in place.
-# ---------------------------------------------------------------------------
-echo "=== Android: android-jniLibs ==="
-gh run download "${RUN_ID}" -n android-jniLibs -D "${TMP}/jni"
-for ABI in arm64-v8a armeabi-v7a x86_64; do
-  SRC="${TMP}/jni/${ABI}/libechosdk.so"
-  if [ ! -f "${SRC}" ]; then
-    echo "ERROR: artifact is missing ${ABI}/libechosdk.so" >&2
-    exit 1
-  fi
-  mkdir -p "${AND_DEST}/${ABI}"
-  cp "${SRC}" "${AND_DEST}/${ABI}/libechosdk.so"
-done
-
-# ---------------------------------------------------------------------------
 # Verify the symbols the Dart side actually looks up. This is the check that
 # would have caught the baresdk_* blobs before they shipped.
-# ---------------------------------------------------------------------------
-if command -v readelf >/dev/null; then
-  READELF=readelf
-elif command -v llvm-readelf >/dev/null; then
-  READELF=llvm-readelf
-else
-  READELF=""
-fi
-
-if [ -n "${READELF}" ]; then
-  for ABI in arm64-v8a armeabi-v7a x86_64; do
-    SYMS="$(${READELF} --dyn-syms -W "${AND_DEST}/${ABI}/libechosdk.so" 2>/dev/null || true)"
-    NEW=$(grep -c ' echosdk_' <<<"${SYMS}" || true)
-    OLD=$(grep -c ' baresdk_' <<<"${SYMS}" || true)
-    if [ "${NEW}" -lt 40 ]; then
-      echo "ERROR: ${ABI}: only ${NEW} echosdk_* symbols exported" >&2
-      exit 1
-    fi
-    if [ "${OLD}" -gt 0 ]; then
-      echo "ERROR: ${ABI}: ${OLD} baresdk_* symbols — this library predates the rename" >&2
-      exit 1
-    fi
-    echo "  ${ABI}: ${NEW} echosdk_* symbols"
-  done
-else
-  echo "  (readelf not found — skipping Android symbol check)"
-fi
-
+#
 # nm reads Mach-O only on macOS; elsewhere fall back to probing the string
 # table, which is enough to catch an empty or wrong-project binary.
 # Process substitution, not a pipe: a piped `while` runs in a subshell, where
@@ -198,4 +157,5 @@ done < <(find "${IOS_DEST}" -name EchoSDK -type f)
 
 echo ""
 echo "Synced from run ${RUN_ID} (${SHA:0:12}). Review and commit:"
-echo "  git add bindings/flutter/ios/Frameworks bindings/flutter/android/src/main/jniLibs"
+echo "  git add bindings/flutter/ios/Frameworks"
+echo "(Android jniLibs are not fetched — build them with scripts/build-android.sh)"

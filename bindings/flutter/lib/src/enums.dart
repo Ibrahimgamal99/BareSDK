@@ -52,8 +52,10 @@ enum RegState {
   ///
   /// It holds for the whole recovery — the state does not flip back to
   /// [registering] for each attempt — and ends at [registered] or [failed].
-  /// [RegStateEvent.retryAttempt] / [RegStateEvent.retryDelayMs] are set on
-  /// the event that announces an armed retry.
+  /// One event per attempt: [RegStateEvent.retryAttempt] counts up 1, 2, 3…
+  /// for as long as the outage lasts and [RegStateEvent.retryDelayMs] is the
+  /// backoff armed for the next one, so the latest event always renders a
+  /// complete status line.
   reconnecting(c.echosdk_reg_state_t.ECHOSDK_REG_RECONNECTING);
 
   final int raw;
