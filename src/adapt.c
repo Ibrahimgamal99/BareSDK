@@ -210,6 +210,59 @@ int bsdk_adapt_apply_bitrate(struct echosdk_call *lc, uint32_t bitrate)
 
 /* ── Media-stall detection ───────────────────────────────────────────────── */
 
+/* How long media setup gets before its silence counts as a stall.
+ *
+ * dtls_srtp's own restart ladder is 1200 ms plus four 2500 ms attempts
+ * (cmake/patches/dtls_srtp-state.new), so a handshake that is going to
+ * complete at all can still be trying 11.2 s in.  This spans it, and matches
+ * the deadline ice_shim.c holds its candidate re-offer for. */
+#define BSDK_MEDIA_SETUP_GRACE_MS 12000
+
+/**
+ * Is this call's media encryption still being set up?
+ *
+ * There is no inbound RTP during a DTLS handshake and there is not meant to
+ * be: dtls_srtp sets `wait_secure`, so stream_is_ready() is false and baresip
+ * has not opened the audio device yet.  Calling that a stall starts a repair
+ * (netmon.c) whose ICE restart re-INVITEs the call in the middle of the very
+ * handshake it is waiting for — which ice_shim.c measured across 22 calls as
+ * the single strongest predictor of a permanently silent call, and which on
+ * 2026-09-02 turned a 4 s handshake on cellular into five re-INVITEs and a
+ * dead call (outbound to *43 over WSS).
+ *
+ * The account's media_enc answers "is there a handshake at all" the same way
+ * sdp.c does, and stream_is_secure() answers "has it finished".  A call
+ * configured for DTLS whose peer answered plain RTP never reads as secure and
+ * so holds for the full grace once — bounded, once per call, and the alert
+ * still follows.
+ */
+static bool media_setup_pending(const struct echosdk_call *lc)
+{
+	struct list *streaml;
+	struct le *le;
+	echosdk_media_enc_t enc;
+
+	if (!lc->bc)
+		return false;
+
+	enc = lc->acct ? lc->acct->cfg.media_enc : g_bsdk.cfg.media_enc;
+	if (enc != ECHOSDK_MEDIA_ENC_DTLS_SRTP)
+		return false;
+
+	streaml = call_streaml(lc->bc);
+	if (!streaml)
+		return false;
+
+	LIST_FOREACH(streaml, le) {
+		const struct stream *strm = le->data;
+
+		if (!stream_is_secure(strm))
+			return true;
+	}
+
+	return false;
+}
+
 static void stall_clear(struct echosdk_call *lc, uint32_t elapsed_ms)
 {
 	if (!lc->stall_active)
@@ -259,7 +312,17 @@ static void stall_tick(struct echosdk_call *lc,
 	 * never receives a single packet — one-way audio from the start, the
 	 * classic symptom of a NAT that never opened — is reported too. */
 	elapsed = (uint32_t)(now - lc->stall_since);
+
 	if (!lc->stall_active && elapsed >= g_bsdk.cfg.media_stall_ms) {
+
+		/* Media that has not started yet has not stalled.  Give the
+		 * handshake its ladder before calling this a fault — the alert
+		 * and the repair both still follow if it never lands, they just
+		 * stop arriving while it is still plausibly in flight. */
+		if (elapsed < BSDK_MEDIA_SETUP_GRACE_MS &&
+		    media_setup_pending(lc))
+			return;
+
 		lc->stall_active = true;
 		bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MEDIA_STALL,
 		                        (float)elapsed,

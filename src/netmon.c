@@ -1111,11 +1111,13 @@ static void verify_handler(void *arg)
  * Inbound RTP has stopped on an established call.
  *
  * adapt.c raises ECHOSDK_QUALITY_MEDIA_STALL when the receive counter has not
- * moved for cfg.media_stall_ms; this is the repair that used to be missing
- * behind that alert.  Everything the handover path does applies — ask the
- * routing table which source address reaches the peer, restart ICE (new
- * credentials, fresh gather) or re-offer, then check whether RTP came back —
- * with two differences that matter:
+ * moved for cfg.media_stall_ms — and not while the media encryption is still
+ * handshaking (BSDK_MEDIA_SETUP_GRACE_MS there, because the re-INVITE this
+ * repair ends in would break the handshake it is waiting for).  This is the
+ * repair that used to be missing behind that alert.  Everything the handover
+ * path does applies — ask the routing table which source address reaches the
+ * peer, restart ICE (new credentials, fresh gather) or re-offer, then check
+ * whether RTP came back — with two differences that matter:
  *
  *   - The address has usually not moved.  A handover stops right there
  *     ("same path — no re-INVITE"); a stall repair must not, because the path

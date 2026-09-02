@@ -191,6 +191,8 @@ struct bsdk_ice_sess {
 	bool              released; /* the offer has been handed to baresip */
 	bool              reoffered;/* a candidate re-offer has been requested */
 	bool              restarting;/* a restart gather is outstanding */
+	bool              in_estab; /* inside estabh — see ice_updateh() */
+	bool              await_answer;/* a restart offer is on the wire */
 	struct tmr        tmr_rrestart;/* deferred answer to a peer ICE restart */
 	unsigned          rrestarts;/* peer restarts answered with our own */
 	bool              primed;   /* early connectivity checks kicked off */
@@ -439,9 +441,20 @@ static void rrestart_handler(void *arg)
  * concludes during ringing needs no candidate re-offer at all: see
  * ice_connected().
  *
- * Only for the answerer.  As the offerer we have no remote candidates yet, and
- * the ice module would decline anyway (verify_peer_ice); the peer's ice-ufrag
- * is what distinguishes the two.
+ * Only for a call that is still ringing, and the call state is what says so.
+ *
+ * "The peer's ice-ufrag is known" used to stand in for that, on the reasoning
+ * that only the answerer has remote candidates this early.  It is also true of
+ * an *established* call whose ICE session has just been replaced: the peer's
+ * credentials are still in the SDP from the last answer, so a restart gather
+ * reported here would prime a second round of checks against the generation
+ * the restart is in the middle of replacing — the very mistake ice_updateh()
+ * now suppresses.  It also produced the nonsense line "running the
+ * connectivity checks now, before the call is answered" on a call that had
+ * been up for seconds (2026-09-02, outbound to *43 over WSS).
+ *
+ * As the offerer on a fresh call there are no remote candidates at all, and
+ * the ice module would decline anyway (verify_peer_ice).
  */
 static void prime_conncheck(struct bsdk_ice_sess *s)
 {
@@ -449,6 +462,9 @@ static void prime_conncheck(struct bsdk_ice_sess *s)
 	bool have_remote = false;
 
 	if (!s || s->primed || !real_updateh || !s->inner || !s->sdp)
+		return;
+
+	if (!s->arg || CALL_STATE_INCOMING != call_state((struct call *)s->arg))
 		return;
 
 	LIST_FOREACH(&s->medial, le) {
@@ -480,6 +496,51 @@ static void prime_conncheck(struct bsdk_ice_sess *s)
 
 /* ── Estab handler — runs on re_main ─────────────────────────────────────── */
 
+/**
+ * Hand the offer to baresip, with the offer-side media-NAT update suppressed.
+ *
+ * Every path into baresip's mnat_handler on an established call ends in
+ * call_modify(), which sends the re-INVITE and *then* calls call_update_media()
+ * — so the media-NAT update handler runs before the answer arrives (baresip
+ * src/call.c, call_modify).  For a session that has just been replaced by a
+ * restart that is the worst possible moment: ice.c's update handler takes its
+ * not-yet-started branch, re-decodes the peer's credentials from the SDP as it
+ * still stands (the *previous* answer), and calls icem_conncheck_start() —
+ * pairing our new ice-ufrag/ice-pwd with the peer's old ones.  The peer answers
+ * those checks `401 Unauthorized`, and because ice_start() sets `sess->started`
+ * on the way out, the answer that carries the peer's new credentials can only
+ * reach the refresh branch: no further check is ever sent and the whole ICE
+ * generation is dead on arrival.
+ *
+ * Measured on-device (2026-09-02, outbound to *43 over WSS on cellular): three
+ * restarts in a row, each one's checks answered 401, `concluded=0` on every
+ * check list, tx 0 / rx 0 for the life of the call.
+ *
+ * So `in_estab` marks this window and ice_updateh() returns without delegating
+ * inside it.  The next update handler baresip runs is the one from
+ * call_apply_sdp() when the answer lands, and that one finds `started` still
+ * false — the checks then start against the credentials the peer is actually
+ * using.  Nothing is lost by skipping the earlier call: the candidates and
+ * credentials for the offer were written into the SDP by the gather handler
+ * before we got here, and the not-yet-started branch does not touch the SDP.
+ */
+static void estab_release(struct bsdk_ice_sess *s, int err, uint16_t scode,
+                          const char *reason)
+{
+	/* A failure can end the call from inside estabh — baresip's mnat_handler
+	 * answers one with CALL_EVENT_CLOSED — and take `s` with it, which is
+	 * why ice_estab() only touches `s` again on the success path.  There is
+	 * no offer on that path either, so leave it to unwind untouched. */
+	if (err || scode) {
+		s->estabh(err, scode, reason, s->arg);
+		return;
+	}
+
+	s->in_estab = true;
+	s->estabh(0, 0, NULL, s->arg);
+	s->in_estab = false;
+}
+
 static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 {
 	struct bsdk_ice_sess *s = arg;
@@ -487,14 +548,24 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 	tmr_cancel(&s->tmr);
 
 	if (s->released) {
-		/* The deadline already released the offer.
+		/* The offer for this session has already gone out.
 		 *
-		 * A success here is the real gather finishing late.  Pass it on:
-		 * baresip sees a media-NAT established on a call that is no
-		 * longer waiting for one and turns it into a re-INVITE, which
-		 * re-offers the now-complete candidate set.  That is the same
-		 * refresh the ice module already performs from its connectivity
-		 * check.
+		 * Two different things arrive here, and only one of them is a
+		 * late gather.  The ice module calls its estab handler again
+		 * from conncheck_handler() once the checks conclude and the
+		 * selected candidate has changed (ice.c: "sending Re-INVITE
+		 * with updated default candidates"), which on a NAT'd call is
+		 * the ordinary outcome — the peer-reflexive candidate ICE
+		 * settles on was not in the offer.  The other is the gather the
+		 * deadline gave up waiting for, reporting at last.
+		 *
+		 * Both want the same thing: pass it on, and baresip turns a
+		 * media-NAT established on a call that is no longer waiting for
+		 * one into a re-INVITE carrying whatever the SDP now says.  So
+		 * the handling does not distinguish them — but the log line
+		 * must, because reading "gathering completed after the
+		 * deadline" against a gather that finished in 144 ms sends you
+		 * looking for a gathering problem that is not there.
 		 *
 		 * A failure is not actionable any more.  The offer is on the
 		 * wire and the call may well be up; baresip's handler answers a
@@ -504,15 +575,16 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 		s->restarting = false;
 
 		if (err || scode) {
-			warning("EchoSDK/ice: gathering failed after the "
-			        "deadline had already released the offer "
+			warning("EchoSDK/ice: the media-NAT reported a failure "
+			        "after the offer had already gone out "
 			        "(%m, %u %s) — call left alone\n",
 			        err, scode, reason ? reason : "");
 			return;
 		}
 
-		info("EchoSDK/ice: gathering completed after the deadline; "
-		     "re-offering the full candidate set\n");
+		info("EchoSDK/ice: the media-NAT reports again with the offer "
+		     "already out (ICE concluded on a new candidate, or a "
+		     "late gather) — re-offering what the SDP carries now\n");
 	}
 
 	/* A restart gathers under a call that is already up, so a failure here
@@ -536,7 +608,7 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 		rebase_signalled(s);
 
 	s->released = true;
-	s->estabh(err, scode, reason, s->arg);
+	estab_release(s, err, scode, reason);
 
 	/* After estabh, not before: for an inbound call that handler is what
 	 * delivers CALL_EVENT_INCOMING, and the checks belong to the ringing it
@@ -576,7 +648,7 @@ static void gather_deadline(void *arg)
 	 * restart and migrate with the candidates of a network that is gone. */
 	s->restarting = false;
 	s->released   = true;
-	s->estabh(0, 0, NULL, s->arg);
+	estab_release(s, 0, 0, NULL);
 }
 
 /* ── Wrapped vtable entries ──────────────────────────────────────────────── */
@@ -706,7 +778,7 @@ static bool sess_awaiting_secure(const struct bsdk_ice_sess *s)
 static void reoffer_release(struct bsdk_ice_sess *s)
 {
 	tmr_cancel(&s->tmr_reoffer);
-	s->estabh(0, 0, NULL, s->arg);
+	estab_release(s, 0, 0, NULL);
 }
 
 
@@ -1161,10 +1233,13 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	}
 
 	mem_deref(s->inner);
-	s->inner      = inner;
-	s->released   = false;
-	s->restarting = true;
-	s->reoffered  = false;
+	s->inner        = inner;
+	s->released     = false;
+	s->restarting   = true;
+	s->reoffered    = false;
+	/* The peer will restart in its answer to this, per RFC 8445 §9.  Marks
+	 * that credential change as ours to expect — see ice_updateh(). */
+	s->await_answer = true;
 
 	LIST_FOREACH(&s->medial, le) {
 		struct bsdk_ice_media *m = le->data;
@@ -1222,12 +1297,80 @@ bool bsdk_ice_call_active(void *call)
 static int ice_updateh(struct mnat_sess *sess)
 {
 	struct bsdk_ice_sess *s = (struct bsdk_ice_sess *)sess;
+	bool changed;
 	int err;
 
 	if (!s)
 		return EINVAL;
 
+	/* A restart's offer-side update, from call_modify() before the answer is
+	 * in.  Delegating here is what starts this generation's connectivity
+	 * checks against the credentials of the one it replaces — see
+	 * estab_release().  Nothing is lost by waiting: call_modify() encodes
+	 * and sends the offer before it calls call_update_media(), so this
+	 * update never contributed to the offer on the wire, and the answer's
+	 * update does the same work a round trip later.
+	 *
+	 * Narrow to a restart on purpose.  On a session the ice module has
+	 * already started, the same call is a harmless refresh (icem_update,
+	 * refresh_laddr, set_media_attributes — SDP bookkeeping, no callbacks),
+	 * and suppressing it would change the plain re-offer paths for nothing.
+	 *
+	 * reassert_selected() still has to run: call_apply_sdp() got here
+	 * through stream_update(), which reset each stream to the address the
+	 * peer signalled.  A restart has dropped its nominated pairs so this is
+	 * a no-op today, but skipping it would silently break the day one is
+	 * kept. */
+	if (s->in_estab && s->await_answer) {
+		reassert_selected(s);
+		return 0;
+	}
+
 	err = real_updateh(s->inner);
+
+	changed = remote_ufrag_sync(s);
+
+	/* This is the answer to a restart *we* offered, so the peer's new
+	 * credentials are the expected consequence of our own re-INVITE and not
+	 * a restart it decided on.
+	 *
+	 * RFC 8445 §9 leaves it no choice: an answerer that receives a restart
+	 * offer restarts too, and mints a new ice-ufrag/ice-pwd to say so.
+	 * Reading that as a peer-initiated restart made every restart of ours
+	 * provoke another one of ours — three re-INVITEs inside a second, each
+	 * one's answer triggering the next until the budget ran out, then
+	 * netmon's next stall round starting the sequence again (2026-09-02,
+	 * outbound to *43 over WSS).  `s->restarting` does not cover it: it is
+	 * cleared in ice_estab() before the offer is even handed to baresip, so
+	 * by the time the answer arrives the guard below sees nothing.
+	 *
+	 * Cleared unconditionally, not only when the credentials changed: a peer
+	 * that answers under the same ufrag must not leave the flag armed for a
+	 * genuine restart later in the call to be swallowed by.  It is single-
+	 * shot for the same reason — if call_modify() declined to send the offer
+	 * at all (call_refresh_allowed() false under glare), the flag is spent on
+	 * whichever exchange comes next instead, which costs one restart out of
+	 * the budget of BSDK_ICE_MAX_REMOTE_RESTARTS and cannot wedge. */
+	if (s->await_answer) {
+		s->await_answer = false;
+
+		if (changed) {
+			struct le *le;
+
+			info("EchoSDK/ice: the peer's new credentials are the"
+			     " answer to our own ICE restart — checks are"
+			     " running against them, not restarting again\n");
+
+			/* The pair ICE nominated belonged to the generation
+			 * this restart replaced. */
+			LIST_FOREACH(&s->medial, le) {
+				struct bsdk_ice_media *m = le->data;
+				m->sel_set = false;
+			}
+
+			return err;
+		}
+	}
 
 	/* A peer that restarted ICE has thrown away the pair we nominated, so
 	 * re-asserting that pair's remote address would pin the stream to a
@@ -1241,7 +1384,7 @@ static int ice_updateh(struct mnat_sess *sess)
 	 * reads as "not awaiting secure" and is likewise left alone — nothing
 	 * gates its media on a handshake, and symmetric-RTP latching follows the
 	 * peer without help from us. */
-	if (remote_ufrag_sync(s) && sess_awaiting_secure(s)) {
+	if (changed && sess_awaiting_secure(s)) {
 		struct le *le;
 
 		LIST_FOREACH(&s->medial, le) {
@@ -1250,11 +1393,12 @@ static int ice_updateh(struct mnat_sess *sess)
 		}
 
 		/* Not while one is already under way.  Two SDP exchanges can
-		 * carry a credential change 70 ms apart — the answer to our
-		 * restart's own re-offer is one — and bsdk_ice_restart() would
-		 * answer the second with EALREADY.  Counting that as a restart
-		 * spends the budget on a call that never happened, and the
-		 * genuine restart later in the call then finds none left. */
+		 * carry a credential change 70 ms apart, and bsdk_ice_restart()
+		 * would answer the second with EALREADY.  Counting that as a
+		 * restart spends the budget on a call that never happened, and
+		 * the genuine restart later in the call then finds none left.
+		 * (The commonest such pair — our own restart offer and its
+		 * answer — is taken out above, before this runs.) */
 		if (s->restarting || tmr_isrunning(&s->tmr_rrestart)) {
 			info("EchoSDK/ice: an ICE restart is already under way"
 			     " — not starting another\n");
