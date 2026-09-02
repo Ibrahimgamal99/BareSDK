@@ -7,8 +7,40 @@
  */
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include "echosdk_internal.h"
+
+/* Post a non-fatal registrar warning.
+ *
+ * ECHOSDK_EV_REGISTRAR_WARNING has been declared in echosdk.h, cloned in
+ * event.c and decoded by every binding since the event set was written, but
+ * nothing ever posted it — so the one channel meant to explain a registration
+ * that is technically alive but behaving oddly delivered nothing, and the
+ * explanations went to warning() and were thrown away.  The two callers below
+ * are the conditions a host actually needs in order to answer "why did it
+ * reconnect?" without trawling logs after the fact.
+ *
+ * String ownership follows the producer idiom in log.c: the message is packed
+ * into the queued event's own inline buf, because bsdk_event_post() is a
+ * shallow copy and qev_clone() rebases pointers that live in that buf.
+ */
+static void post_registrar_warning(const char *fmt, ...)
+{
+	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	va_list ap;
+
+	if (!qev)
+		return;
+
+	va_start(ap, fmt);
+	(void)re_vsnprintf(qev->buf, sizeof(qev->buf), fmt, ap);
+	va_end(ap);
+
+	qev->ev.type               = ECHOSDK_EV_REGISTRAR_WARNING;
+	qev->ev.u.reg_warn.message = qev->buf;
+	bsdk_event_post_qev(qev);   /* warns and frees on failure */
+}
 
 /* ── URI parser: "user@host", "user@host:port", or "sip:user@host" ──────── */
 
@@ -585,6 +617,10 @@ static void reg_watch_handler(void *arg)
 		        "no event; synthesising REGISTERED\n",
 		        acct->cfg_uri ? acct->cfg_uri : "(unknown)");
 
+		post_registrar_warning("registration is up but the stack emitted "
+		                       "no event; state was synthesised from "
+		                       "ua_isregistered()");
+
 		acct->reg_state     = ECHOSDK_REG_REGISTERED;
 		acct->retry_attempt = 0;
 		acct->reconnecting  = false;
@@ -682,7 +718,17 @@ static bool srv_failover_eligible(const struct echosdk_account *acct)
 		return false;
 	if (acct->cfg.outbound || acct->cfg.outbound_proxy || cfg->outbound_proxy)
 		return false;
-	if (acct->cfg.server_url || acct->auto_server_url[0])
+	/* Only a server_url the APP supplied is an operator decision that
+	 * overrides SRV.  auto_server_url is one WE synthesise (see the
+	 * "Auto-generate server_url for all transports" branch in
+	 * bsdk_account_create_h), and it is populated on every account that
+	 * did not pass one — so testing it here made this predicate always
+	 * false and the whole RFC 3263 failover path below dead code: the
+	 * retry ladder re-sent to the same host forever, which is exactly
+	 * what SRV records are published to prevent.  Rotating the outbound
+	 * proxy (srv_advance) is independent of the registrar URI, so an
+	 * auto-derived server_url stays valid while we walk the targets. */
+	if (acct->cfg.server_url)
 		return false;
 	if (acct->parsed_transport == ECHOSDK_TRANSPORT_WS ||
 	    acct->parsed_transport == ECHOSDK_TRANSPORT_WSS)
@@ -890,6 +936,15 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 
 	warning("EchoSDK: keepalive probe failed (%m); path to proxy is "
 	        "unreachable\n", err ? err : ETIMEDOUT);
+
+	/* The registrar answered our last REGISTER and has not refused
+	 * anything since — the PATH to it died.  REG_STATE below reports the
+	 * resulting reconnect, but not this cause, which is the one thing a
+	 * diagnostics view needs to distinguish "the proxy rejected us" from
+	 * "the network under us went away". */
+	post_registrar_warning("keepalive probe went unanswered (%m); the path "
+	                       "to the proxy is unreachable",
+	                       err ? err : ETIMEDOUT);
 
 	acct->ka_failed = true;
 	acct->reg_error = ECHOSDK_ERR_TIMEOUT;
@@ -1247,18 +1302,33 @@ static void create_fn(void *arg)
 	 * IPv6 literals must be wrapped in brackets per RFC 3261. */
 	char aor[512];
 	bool ipv6 = strchr(acct->parsed_host, ':') != NULL;
+	/* cfg.reg_refresh_pct is the documented "refresh at N% of expires" knob
+	 * (default 75).  It used to be written by echosdk_config_init() and read
+	 * NOWHERE, so an app tuning it silently got libre's built-in 90% —
+	 * worse than absent, because the config, the docs and four bindings all
+	 * advertise it.  baresip takes this as the AOR ";rwait=" parameter
+	 * (account.c: param_u32(&acc->rwait, ..., "rwait")) and hands it to
+	 * sipreg_set_rwait(), which clamps to 5..95; 0 means "leave libre's
+	 * default alone", so an out-of-range value is dropped rather than
+	 * silently clamped to something the app did not ask for. */
+	char rwait[24] = "";
+	if (g_bsdk.cfg.reg_refresh_pct >= 5 && g_bsdk.cfg.reg_refresh_pct <= 95) {
+		re_snprintf(rwait, sizeof(rwait), ";rwait=%u",
+		            (unsigned)g_bsdk.cfg.reg_refresh_pct);
+	}
 	if (acct->parsed_port) {
 		re_snprintf(aor, sizeof(aor),
-		            ipv6 ? "sip:%s@[%s]:%u;transport=%s"
-		                 : "sip:%s@%s:%u;transport=%s",
+		            ipv6 ? "sip:%s@[%s]:%u;transport=%s%s"
+		                 : "sip:%s@%s:%u;transport=%s%s",
 		            acct->parsed_user, acct->parsed_host,
-		            (unsigned)acct->parsed_port, bsdk_transport_str(tp));
+		            (unsigned)acct->parsed_port, bsdk_transport_str(tp),
+		            rwait);
 	} else {
 		re_snprintf(aor, sizeof(aor),
-		            ipv6 ? "sip:%s@[%s];transport=%s"
-		                 : "sip:%s@%s;transport=%s",
+		            ipv6 ? "sip:%s@[%s];transport=%s%s"
+		                 : "sip:%s@%s;transport=%s%s",
 		            acct->parsed_user, acct->parsed_host,
-		            bsdk_transport_str(tp));
+		            bsdk_transport_str(tp), rwait);
 	}
 
 	err = ua_alloc(&acct->ua, aor);

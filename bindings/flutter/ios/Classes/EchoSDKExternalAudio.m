@@ -158,8 +158,25 @@ static OSStatus RenderCB(void *inRefCon,
 	dispatch_sync(self.queue, ^{
 		out = @{
 			@"armed"         : @(self.armed),
-			@"sessionActive" : @(self.sessionActive),
 			@"running"       : @(self.running),
+			/* `paused` and `available` are part of the documented status
+			 * contract (platform_channel.dart) and are supplied by Android;
+			 * iOS omitted both, so a diagnostics view read null for two
+			 * fields on one platform only.
+			 *
+			 * paused: Android pauses on audio-focus loss. The iOS analogue is
+			 * armed-but-the-session-is-not-ours, which is what an
+			 * interruption or a CallKit deactivation leaves behind.
+			 *
+			 * available: on Android this is whether libechosdk.so loaded. iOS
+			 * resolves the same symbols at link time through
+			 * -framework EchoSDK, so reaching this line at all means they are
+			 * present — it is constant YES rather than a runtime probe. */
+			@"paused"        : @(self.armed && !self.sessionActive),
+			@"available"     : @YES,
+			/* iOS-only extra: whether the AVAudioSession is currently active.
+			 * Android has no equivalent — it has no session to own. */
+			@"sessionActive" : @(self.sessionActive),
 			@"sampleRate"    : self.running ? @(self->_srate) : NSNull.null,
 			@"channels"      : self.running ? @(self->_ch)    : NSNull.null,
 			@"ptimeMs"       : self.running ? @(self->_ptime) : NSNull.null,
@@ -253,16 +270,20 @@ static OSStatus RenderCB(void *inRefCon,
 	};
 	AudioComponent comp = AudioComponentFindNext(NULL, &desc);
 	if (!comp) {
-		[self reportCode:@"vpio-missing"
+		/* No VPIO component on this device: the feature cannot run at
+		 * all, which is what the documented `unavailable` code means
+		 * (Android reports it when libechosdk.so did not load). */
+		[self reportCode:@"unavailable"
 		         message:@"VoiceProcessingIO unit not available"];
 		return;
 	}
 
 	err = AudioComponentInstanceNew(comp, &_unit);
 	if (err != noErr) {
-		[self reportCode:@"vpio-alloc"
-		         message:[NSString stringWithFormat:@"AudioComponentInstanceNew: %d",
-		                                            (int)err]];
+		[self reportCode:@"device-open"
+		         message:[NSString stringWithFormat:
+		                  @"vpio-alloc failed: AudioComponentInstanceNew: %d",
+		                  (int)err]];
 		return;
 	}
 
@@ -344,11 +365,36 @@ static OSStatus RenderCB(void *inRefCon,
 	      srate, ch, ptime);
 }
 
+/* Map an internal setup stage onto the documented onAppOwnedAudioError code
+ * vocabulary (platform_channel.dart: mic-permission, unsupported-rate,
+ * device-open, capture-dead, playback-dead, unavailable).
+ *
+ * The stage names below — enable-io, stream-format, render-callback, alloc,
+ * start — are precise and worth keeping, but they were being emitted AS the
+ * code, and they overlap the documented set nowhere. Android emits the
+ * documented six; iOS emitted five names that appear in no contract, so a host
+ * switching on the documented codes handled every Android failure and no iOS
+ * one. Translate the code and keep the stage in the message, so nothing is
+ * lost from the logs. */
+static NSString *EchoSDKPublicErrorCode(NSString *stage)
+{
+	/* A format the VoiceProcessingIO unit refused is the same class of
+	 * failure Android reports when it cannot open a stream at the rate the
+	 * core asked for. */
+	if ([stage isEqualToString:@"stream-format"])
+		return @"unsupported-rate";
+
+	/* Everything else here is "the device would not open": enabling I/O,
+	 * installing the render callback, AudioUnitInitialize, AudioOutputUnitStart. */
+	return @"device-open";
+}
+
 - (void)failSetup:(NSString *)code status:(OSStatus)err
 {
 	[self teardownUnit];
-	[self reportCode:code
-	         message:[NSString stringWithFormat:@"OSStatus %d", (int)err]];
+	[self reportCode:EchoSDKPublicErrorCode(code)
+	         message:[NSString stringWithFormat:@"%@ failed: OSStatus %d",
+	                                            code, (int)err]];
 }
 
 - (void)teardownUnit

@@ -128,6 +128,14 @@ class EchoSDKPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             }
             "appOwnedAudioStatus" ->
                 result.success(appAudio?.status() ?: emptyMap<String, Any?>())
+            // iOS-only: CallKit activates and deactivates the AVAudioSession, and
+            // the host forwards that here. Android has no such broker — audio focus
+            // is requested by configureAudioSession above — so this is a genuine
+            // no-op. It still needs a case: the Dart guard is `_isMobile`, which is
+            // true for Android too, so falling through to notImplemented() below
+            // raised MissingPluginException on a call three doc comments promise is
+            // harmless (platform_channel.dart, echo_sdk.dart, docs/api/media.md).
+            "notifyCallKitAudioActive" -> result.success(null)
             else -> result.notImplemented()
         }
     }
@@ -252,6 +260,10 @@ class EchoSDKPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     private fun unregisterNetworkCallback() {
+        // A debounced notify must not outlive the callback that scheduled it:
+        // onDetachedFromEngine clears the method-call handler right after this,
+        // and invoking into a detached channel throws.
+        mainHandler.removeCallbacks(notifyRunnable)
         defaultNetwork = null
         val cb = networkCallback ?: return
         try {
@@ -261,10 +273,43 @@ class EchoSDKPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         networkCallback = null
     }
 
+    /**
+     * Coalesce a burst of default-network callbacks into ONE handover.
+     *
+     * onAvailable's and onLost's own dedupes each assume they see the other
+     * half of a switch first, and the ordering is not guaranteed (see the
+     * comment on the callback above). When onLost(old) lands FIRST,
+     * `defaultNetwork == network` still holds, so it notifies and clears the
+     * field — and the onAvailable(new) that follows sees a different network
+     * and notifies again. That is two handovers for one switch in half of all
+     * orderings: exactly the doubled transport reset + doubled re-INVITE the
+     * dedupes exist to prevent.
+     *
+     * Debouncing on the main thread makes the result ordering-independent: the
+     * last state to settle within the window is the one the SDK is told about.
+     * The window is short enough to stay imperceptible against the 1/2/4/8s
+     * handover ladder in netmon.c, and it costs nothing when only one callback
+     * arrives.
+     */
     private fun notifyDart() {
-        // MethodChannel calls must run on the platform (main) thread.
-        mainHandler.post {
-            channel.invokeMethod("onNetworkChanged", null)
-        }
+        // MethodChannel calls must run on the platform (main) thread anyway, so
+        // the debounce and the invoke share one handler and need no locking.
+        mainHandler.removeCallbacks(notifyRunnable)
+        mainHandler.postDelayed(notifyRunnable, NETWORK_COALESCE_MS)
+    }
+
+    private val notifyRunnable = Runnable {
+        channel.invokeMethod("onNetworkChanged", null)
+    }
+
+    private companion object {
+        /**
+         * How long [notifyDart] waits for a default-network burst to settle.
+         *
+         * A Wi-Fi<->cellular switch delivers onLost + onAvailable within a few
+         * hundred ms; 400 ms swallows the pair without adding a delay the SDK's
+         * own handover ladder (1/2/4/8s, netmon.c) would notice.
+         */
+        const val NETWORK_COALESCE_MS = 400L
     }
 }

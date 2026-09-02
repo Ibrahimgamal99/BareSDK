@@ -16,8 +16,14 @@ import UIKit
 public class EchoSDKPlugin: NSObject, FlutterPlugin {
   private var channel: FlutterMethodChannel?
   private var pathMonitor: NWPathMonitor?
-  private var lastPathStatus: NWPath.Status?
-  private var lastPathInterfaces: Set<String>?
+  /// Signature of the last path we reported — see `pathSignature(_:)`.
+  private var lastPathSignature: String?
+  /// Observer for AVAudioSession interruptions (Siri, an inbound cellular call).
+  private var interruptionObserver: NSObjectProtocol?
+  /// True while THIS plugin holds the activation (host set manageAudioSession).
+  /// False when CallKit owns it, in which case we forward its activated/
+  /// deactivated callbacks and must never call setActive ourselves.
+  private var pluginActivatedSession = false
   private var routeObserver: NSObjectProtocol?
 
   /// Report-only mode: a CallKit-integrated host app may own routing itself
@@ -45,17 +51,26 @@ public class EchoSDKPlugin: NSObject, FlutterPlugin {
     registrar.addMethodCallDelegate(instance, channel: channel)
     instance.startPathMonitor()
     instance.observeRouteChanges()
+    instance.observeInterruptions()
   }
 
   public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
     appAudio.disarm()
+    // Hand the audio session back. Android's counterpart (abandonAudioFocus,
+    // which also restores MODE_NORMAL) has always run on detach; iOS kept the
+    // exclusive PlayAndRecord route, so an engine detached mid-call left the
+    // device holding the mic and other apps ducked with nothing playing.
+    configureAudioSession(active: false)
     pathMonitor?.cancel()
     pathMonitor = nil
-    lastPathStatus = nil
-    lastPathInterfaces = nil
+    lastPathSignature = nil
     if let observer = routeObserver {
       NotificationCenter.default.removeObserver(observer)
       routeObserver = nil
+    }
+    if let observer = interruptionObserver {
+      NotificationCenter.default.removeObserver(observer)
+      interruptionObserver = nil
     }
   }
 
@@ -140,12 +155,14 @@ public class EchoSDKPlugin: NSObject, FlutterPlugin {
     do {
       if active {
         try session.setActive(true)
+        pluginActivatedSession = true
         // Tell the engine only once activation actually succeeded — starting
         // the AudioUnit against an inactive session is the ordering bug that
         // owning the device is supposed to remove.
         appAudio.sessionActivated()
       } else {
         appAudio.sessionDeactivated()
+        pluginActivatedSession = false
         try session.setActive(false,
                               options: .notifyOthersOnDeactivation)
       }
@@ -294,37 +311,119 @@ public class EchoSDKPlugin: NSObject, FlutterPlugin {
   /// them moved. Interface *names* rather than types: Wi-Fi to Wi-Fi is still a
   /// different path when it is a different interface, and a same-name repeat is
   /// the case being suppressed.
+  ///
+  /// The set of available interfaces is NOT sufficient on its own, though.
+  /// `availableInterfaces` lists what could carry the path, not what does — so
+  /// on a phone with Wi-Fi and cellular both up, a Wi-Fi -> cellular switch of
+  /// the PRIMARY path leaves `status == .satisfied` and that set unchanged, and
+  /// the filter suppressed a handover that really happened. Android notices,
+  /// because a default-network callback keys on the network's identity. And
+  /// there is no safety net: EchoSDK.start() sets netMonitorIntervalSeconds: 0
+  /// on both mobile platforms, so the built-in getifaddrs() poller is off and a
+  /// missed notification means no handover at all — the call stays bound to the
+  /// dead path until the keepalive probe times out ~30 s later. Hence the
+  /// signature below also carries the primary interface and the interface types
+  /// the path actually traverses.
+  /// Everything about a path that decides whether a handover is real:
+  /// reachability, which interface is primary, every usable interface, and the
+  /// interface types the path traverses. Two paths with equal signatures need
+  /// no handover; any difference is one worth reporting.
+  private func pathSignature(_ path: NWPath) -> String {
+    let names = path.availableInterfaces.map { $0.name }
+    // availableInterfaces is ordered best-first, so element 0 is the primary.
+    let primary = names.first ?? "-"
+    let types: [(String, NWInterface.InterfaceType)] = [
+      ("wifi", .wifi), ("cell", .cellular), ("wired", .wiredEthernet),
+      ("loop", .loopback), ("other", .other),
+    ]
+    let used = types.filter { path.usesInterfaceType($0.1) }.map { $0.0 }
+    return [
+      String(describing: path.status),
+      primary,
+      names.sorted().joined(separator: ","),
+      used.joined(separator: ","),
+    ].joined(separator: "|")
+  }
+
   private func startPathMonitor() {
     // Idempotent: a second monitor would deliver every path update twice, and
     // each duplicate is another handover. Registering more than once is not
     // hypothetical for a push-woken app whose engine can be re-attached.
     pathMonitor?.cancel()
-    lastPathStatus = nil
-    lastPathInterfaces = nil
+    lastPathSignature = nil
 
     let monitor = NWPathMonitor()
     pathMonitor = monitor
     monitor.pathUpdateHandler = { [weak self] path in
       guard let self = self else { return }
 
-      let interfaces = Set(path.availableInterfaces.map { $0.name })
+      let signature = self.pathSignature(path)
 
       // First callback after start() always fires and reports the current
-      // path; lastPathStatus is nil then, so it is forwarded once. That is
+      // path; lastPathSignature is nil then, so it is forwarded once. That is
       // the registration-time notification, and the SDK treats a handover
       // with an unchanged address set as a transport refresh.
-      if self.lastPathStatus == path.status,
-         self.lastPathInterfaces == interfaces {
+      if self.lastPathSignature == signature {
         return
       }
 
-      self.lastPathStatus = path.status
-      self.lastPathInterfaces = interfaces
+      self.lastPathSignature = signature
 
       DispatchQueue.main.async {
         self.channel?.invokeMethod("onNetworkChanged", arguments: nil)
       }
     }
     monitor.start(queue: DispatchQueue.global(qos: .utility))
+  }
+
+  /// Stand the app-owned engine down across an audio-session interruption.
+  ///
+  /// Android has covered this since the app-owned path existed, through the
+  /// audio-focus listener (AUDIOFOCUS_LOSS* -> pause, GAIN -> resume). iOS had
+  /// no counterpart: the engine's only session input was the
+  /// activated/deactivated pair driven by configureAudioSession and the CallKit
+  /// forwarder, so Siri or an inbound cellular call left `running == YES`
+  /// against a session iOS had already suspended — a live AudioUnit rendering
+  /// into nothing, which is one-way or dead audio with no error surfaced. This
+  /// is the same class of failure the mediaServicesWereReset observer exists
+  /// for, and it reuses the same two entry points.
+  private func observeInterruptions() {
+    if let observer = interruptionObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
+    interruptionObserver = NotificationCenter.default.addObserver(
+      forName: AVAudioSession.interruptionNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: nil
+    ) { [weak self] note in
+      guard let self = self,
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: raw)
+      else { return }
+
+      switch type {
+      case .began:
+        NSLog("EchoSDK: audio session interrupted — standing the engine down")
+        self.appAudio.sessionDeactivated()
+      case .ended:
+        // Only reactivate a session this plugin activated. When CallKit owns
+        // it (the app-owned-audio configuration on iOS), CXProvider calls
+        // didActivateAudioSession itself once the interruption clears and the
+        // host forwards that as notifyCallKitAudioActive — calling setActive
+        // here as well would be two owners fighting over one session.
+        guard self.pluginActivatedSession else {
+          NSLog("EchoSDK: interruption ended — CallKit owns the session, "
+                + "waiting for its activation")
+          return
+        }
+        // iOS does not reactivate for us. Go through configureAudioSession so
+        // activation and the engine's sessionActivated() stay in the one order
+        // that works.
+        NSLog("EchoSDK: audio session interruption ended — restoring")
+        self.configureAudioSession(active: true)
+      @unknown default:
+        break
+      }
+    }
   }
 }

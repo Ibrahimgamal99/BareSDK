@@ -33,7 +33,14 @@ internal object ExternalAudio {
      * this is reported rather than fatal.
      */
     val available: Boolean = try {
-        System.loadLibrary("EchoSDK")
+        // The shipped artifact is libechosdk.so (all three ABIs), and
+        // loadLibrary prepends "lib"/appends ".so" — so the argument is the
+        // BARE, lower-case stem. "EchoSDK" here looked for libEchoSDK.so and
+        // threw UnsatisfiedLinkError on every (case-sensitive) Android
+        // filesystem, which the catch below turned into a permanent
+        // available=false: app-owned audio could never arm. Keep this in step
+        // with DynamicLibrary.open('libechosdk.so') in lib/src/sdk.dart.
+        System.loadLibrary("echosdk")
         true
     } catch (t: Throwable) {
         Log.e(TAG, "libechosdk.so not loadable; app-owned audio unavailable", t)
