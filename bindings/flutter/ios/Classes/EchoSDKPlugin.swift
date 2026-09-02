@@ -17,6 +17,7 @@ public class EchoSDKPlugin: NSObject, FlutterPlugin {
   private var channel: FlutterMethodChannel?
   private var pathMonitor: NWPathMonitor?
   private var lastPathStatus: NWPath.Status?
+  private var lastPathInterfaces: Set<String>?
   private var routeObserver: NSObjectProtocol?
 
   /// Report-only mode: a CallKit-integrated host app may own routing itself
@@ -50,6 +51,8 @@ public class EchoSDKPlugin: NSObject, FlutterPlugin {
     appAudio.disarm()
     pathMonitor?.cancel()
     pathMonitor = nil
+    lastPathStatus = nil
+    lastPathInterfaces = nil
     if let observer = routeObserver {
       NotificationCenter.default.removeObserver(observer)
       routeObserver = nil
@@ -267,18 +270,57 @@ public class EchoSDKPlugin: NSObject, FlutterPlugin {
   }
 
   /// Forward network-path changes to Dart (drives echosdk_network_changed()).
+  ///
+  /// Every notification forwarded from here costs a full handover in the SDK:
+  /// `echosdk_network_changed()` flushes the SIP transports, re-REGISTERs, and
+  /// — over WebSocket, where the Contact is tied to the connection — re-INVITEs
+  /// every live call to re-bind its dialog. On a call that is already up that
+  /// is seconds of audio, so a notification that does not correspond to a real
+  /// handover is not a harmless extra event.
+  ///
+  /// NWPathMonitor cannot be taken at its word for that. It fires on *any*
+  /// path property change — `isExpensive`/`isConstrained` flips, DNS changes, a
+  /// secondary interface appearing — repeats the same `.satisfied` status
+  /// several times for one Wi-Fi transition, and fires again when the app comes
+  /// back to the foreground with nothing about the network having changed.
+  /// A VoIP app foregrounds exactly when a push arrives for an incoming call,
+  /// which is the worst possible moment for a spurious handover: measured
+  /// on-device (2026-09-02, inbound over WSS), one such notification 1.3 s into
+  /// the ring produced a transport reset 1 s after the answer and 4 s of dead
+  /// air at the head of the call.
+  ///
+  /// So compare against what actually decides a handover — the reachability
+  /// status and the set of usable interfaces — and forward only when one of
+  /// them moved. Interface *names* rather than types: Wi-Fi to Wi-Fi is still a
+  /// different path when it is a different interface, and a same-name repeat is
+  /// the case being suppressed.
   private func startPathMonitor() {
+    // Idempotent: a second monitor would deliver every path update twice, and
+    // each duplicate is another handover. Registering more than once is not
+    // hypothetical for a push-woken app whose engine can be re-attached.
+    pathMonitor?.cancel()
+    lastPathStatus = nil
+    lastPathInterfaces = nil
+
     let monitor = NWPathMonitor()
     pathMonitor = monitor
     monitor.pathUpdateHandler = { [weak self] path in
       guard let self = self else { return }
-      // NWPathMonitor fires on any property change; only status flips and
-      // interface changes matter for SIP handover. Debounce identical states.
+
+      let interfaces = Set(path.availableInterfaces.map { $0.name })
+
+      // First callback after start() always fires and reports the current
+      // path; lastPathStatus is nil then, so it is forwarded once. That is
+      // the registration-time notification, and the SDK treats a handover
+      // with an unchanged address set as a transport refresh.
       if self.lastPathStatus == path.status,
-         path.status != .satisfied {
+         self.lastPathInterfaces == interfaces {
         return
       }
+
       self.lastPathStatus = path.status
+      self.lastPathInterfaces = interfaces
+
       DispatchQueue.main.async {
         self.channel?.invokeMethod("onNetworkChanged", arguments: nil)
       }

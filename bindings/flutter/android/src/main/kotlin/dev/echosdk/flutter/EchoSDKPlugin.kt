@@ -33,6 +33,13 @@ class EchoSDKPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private var focusRequest: AudioFocusRequest? = null
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    // The network that is currently the default, as last reported by the
+    // callback below. Identity, not capabilities — see onAvailable/onLost.
+    // Volatile: the callbacks arrive on ConnectivityManager's thread, the
+    // register/unregister path writes it from the main thread.
+    @Volatile
+    private var defaultNetwork: Network? = null
     private var audioRouter: AudioRouter? = null
     private var appAudio: AppOwnedAudioEngine? = null
 
@@ -192,12 +199,47 @@ class EchoSDKPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     // ── Network change → Dart → echosdk_network_changed() ──────────────
 
     private fun registerNetworkCallback() {
+        // Idempotent. Android's guidance is that a NetworkCallback is
+        // registered at most once at a time, and overwriting the field would
+        // leak the previous one: it stays registered and keeps delivering, so
+        // every network change would arrive twice and cost two handovers
+        // (transport flush + re-REGISTER + a re-INVITE per live call). Not
+        // hypothetical for a push-woken app whose engine can be re-attached
+        // without onDetachedFromEngine having run.
+        unregisterNetworkCallback()
+
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
         connectivityManager = cm
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = notifyDart()
-            override fun onLost(network: Network) = notifyDart()
+            // Only the default-network *identity* matters here. onCapabilities-
+            // Changed / onLinkPropertiesChanged fire constantly on a healthy
+            // network (signal strength, validation, DNS) and are deliberately
+            // not overridden: each one would be an unnecessary handover.
+            //
+            // One Wi-Fi<->cellular switch delivers both of the callbacks below
+            // — for a default-network callback onLost() means "no longer the
+            // default", not "gone" — and the ordering between them is not
+            // guaranteed. Reporting both means two handovers for one switch,
+            // and the second one lands while the first is still re-REGISTERing.
+            // Observed on-device (2026-09-02, Android, mid-call over WSS): two
+            // changeDetected 3.5 s apart, two transport resets, two re-INVITEs
+            // of the same call. So key on the network that is default now.
+            override fun onAvailable(network: Network) {
+                if (defaultNetwork == network) return   // re-reported, not new
+                defaultNetwork = network
+                notifyDart()
+            }
+
+            override fun onLost(network: Network) {
+                // A replacement already arrived: this is the tail of the switch
+                // that onAvailable reported, not a second one. When it is the
+                // current default that went away, there is no replacement yet
+                // and the SDK does need to know — it has no address to bind.
+                if (defaultNetwork != network) return
+                defaultNetwork = null
+                notifyDart()
+            }
         }
         networkCallback = cb
         try {
@@ -210,6 +252,7 @@ class EchoSDKPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     private fun unregisterNetworkCallback() {
+        defaultNetwork = null
         val cb = networkCallback ?: return
         try {
             connectivityManager?.unregisterNetworkCallback(cb)
