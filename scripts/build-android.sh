@@ -8,8 +8,8 @@
 # bindings/flutter/android/src/main/jniLibs/<abi>/ — no second command to run.
 #
 # Prerequisites:
-#   - Android NDK (set ANDROID_NDK or detected from ANDROID_NDK_ROOT /
-#     ANDROID_NDK_LATEST_HOME)
+#   - Android NDK (set ANDROID_NDK, or detected from ANDROID_NDK_ROOT /
+#     ANDROID_NDK_LATEST_HOME, or the newest ndk/<ver> under the SDK)
 #   - cmake ninja
 #
 # Env knobs:
@@ -41,10 +41,22 @@ BUILD_ROOT="${ECHOSDK_BUILD_ROOT:-${ROOT}/build}"
 # Phase 0.5 comment in CMakeLists.txt).
 ECHOSDK_TLS=openssl ECHOSDK_OPENSSL_SRC=1 bash "${SCRIPT_DIR}/fetch-third-party.sh"
 
-# Locate NDK
+# Locate NDK. Explicit env wins; otherwise fall back to the SDK's ndk/<ver>
+# directory (the layout `sdkmanager "ndk;<ver>"` and Android Studio produce),
+# picking the highest version installed.
 NDK="${ANDROID_NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_LATEST_HOME:-}}}"
 if [ -z "${NDK}" ]; then
-  echo "ERROR: Set ANDROID_NDK to the NDK root directory." >&2
+  for SDK in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" \
+             "${HOME}/Android/Sdk" "${HOME}/Library/Android/sdk"; do
+    [ -n "${SDK}" ] && [ -d "${SDK}/ndk" ] || continue
+    NDK="$(find "${SDK}/ndk" -maxdepth 1 -mindepth 1 -type d \
+             -name '[0-9]*' | sort -V | tail -n1)"
+    [ -n "${NDK}" ] && break
+  done
+fi
+if [ -z "${NDK}" ]; then
+  echo "ERROR: Set ANDROID_NDK to the NDK root directory (or install one via" \
+       "'sdkmanager \"ndk;<version>\"')." >&2
   exit 1
 fi
 TOOLCHAIN="${NDK}/build/cmake/android.toolchain.cmake"

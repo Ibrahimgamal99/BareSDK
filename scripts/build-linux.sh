@@ -4,9 +4,28 @@
 #
 # Prerequisites: cmake ninja gcc openssl-devel (or libssl-dev)
 #                webrtc-audio-processing-devel (build-time only; optional at runtime)
+#                libpulse-dev / pulseaudio-libs-devel — optional: if the -dev
+#                symlink is absent the link falls back to libpulse.so.0 directly.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# PulseAudio link flag. Prefer the -dev-provided linker name; if that package
+# is not installed but the runtime shared object is, link it by soname so the
+# build works without pulseaudio-libs-devel / libpulse-dev.
+PULSE_LDLIB="-lpulse"
+if ! echo 'int main(void){return 0;}' | \
+     gcc -x c - -lpulse -o /dev/null >/dev/null 2>&1; then
+  if echo 'int main(void){return 0;}' | \
+       gcc -x c - -l:libpulse.so.0 -o /dev/null >/dev/null 2>&1; then
+    PULSE_LDLIB="-l:libpulse.so.0"
+    echo "note: libpulse -dev not found; linking -l:libpulse.so.0" >&2
+  else
+    echo "ERROR: libpulse not found. Install pulseaudio-libs-devel /" \
+         "libpulse-dev (or the pulseaudio-libs / libpulse0 runtime)." >&2
+    exit 1
+  fi
+fi
 
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${ROOT}/build/linux-x86_64"
@@ -35,7 +54,7 @@ echo "=== Linking ${SO} ==="
 gcc -shared \
   -Wl,--whole-archive "${DIST_DIR}/echosdk.a" -Wl,--no-whole-archive \
   -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl -lstdc++ \
-  -lpulse \
+  "${PULSE_LDLIB}" \
   -Wl,--default-symver \
   -Wl,--version-script="${SCRIPT_DIR}/glibc-compat.ver" \
   -Wl,-z,defs \
