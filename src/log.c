@@ -1,8 +1,8 @@
 /**
- * @file log.c  baresip log + re dbg → ECHOSDK_EV_LOG bridge
+ * @file log.c  baresip log + re dbg → VOXSDK_EV_LOG bridge
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 #include <re_dbg.h>
 #include <stdio.h>
 
@@ -15,7 +15,7 @@
  */
 static void queue_log_event(const char *msg, size_t len)
 {
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	if (!qev)
 		return;
 
@@ -23,28 +23,28 @@ static void queue_log_event(const char *msg, size_t len)
 		memcpy(qev->buf, msg, len);
 	else
 		str_ncpy(qev->buf, msg, sizeof(qev->buf));
-	qev->ev.type = ECHOSDK_EV_LOG;
+	qev->ev.type = VOXSDK_EV_LOG;
 	qev->ev.u.log.message = qev->buf;
 
-	/* Deliberately not bsdk_event_post_qev(): that warns on a full queue,
+	/* Deliberately not vox_event_post_qev(): that warns on a full queue,
 	 * and a warning from inside the log handler re-enters this function.
 	 * The bookkeeping below must therefore stay in sync with it by hand —
 	 * ev_queue_len++ on the enqueue is not optional (see event.c). */
-	mtx_lock(&g_bsdk.ev_lock);
-	if (g_bsdk.ev_queue_len >= g_bsdk.ev_queue_max) {
-		mtx_unlock(&g_bsdk.ev_lock);
+	mtx_lock(&g_vox.ev_lock);
+	if (g_vox.ev_queue_len >= g_vox.ev_queue_max) {
+		mtx_unlock(&g_vox.ev_lock);
 		mem_deref(qev);
 		return; /* silently drop — no warning to avoid re-entrant logging */
 	}
-	list_append(&g_bsdk.ev_queue, &qev->le, qev);
-	g_bsdk.ev_queue_len++;
-	cnd_signal(&g_bsdk.ev_cond);
-	mtx_unlock(&g_bsdk.ev_lock);
+	list_append(&g_vox.ev_queue, &qev->le, qev);
+	g_vox.ev_queue_len++;
+	cnd_signal(&g_vox.ev_cond);
+	mtx_unlock(&g_vox.ev_lock);
 }
 
 static void log_handler(uint32_t level, const char *msg)
 {
-	if ((int)level < (3 - g_bsdk.cfg.log_level))
+	if ((int)level < (3 - g_vox.cfg.log_level))
 		return;
 
 	queue_log_event(msg, 0);
@@ -66,7 +66,7 @@ static void re_dbg_handler(int re_level, const char *p, size_t len, void *arg)
 	else if (re_level == 4) bslevel = 2;
 	else                    bslevel = 1;
 
-	if ((int)bslevel < (3 - g_bsdk.cfg.log_level))
+	if ((int)bslevel < (3 - g_vox.cfg.log_level))
 		return;
 
 	queue_log_event(p, len);
@@ -76,7 +76,7 @@ static struct log s_logger = {
 	.h = log_handler,
 };
 
-int bsdk_log_init(void)
+int vox_log_init(void)
 {
 	/* Route all baresip log output through our handler only.
 	 * log_enable_stdout(false) stops vlog() from printing directly to
@@ -106,7 +106,7 @@ int bsdk_log_init(void)
 	return 0;
 }
 
-void bsdk_log_close(void)
+void vox_log_close(void)
 {
 	dbg_handler_set(NULL, NULL);
 	log_unregister_handler(&s_logger);

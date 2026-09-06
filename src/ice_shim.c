@@ -15,7 +15,7 @@
  * module's no-STUN/TURN case arms a 1 ms timer whose handler walks
  * `sess->medial` and calls the gather handler once per media entry, so an
  * empty list means the estab handler is never invoked.  The call then sits in
- * ECHOSDK_CALL_CALLING forever — no INVITE on the wire, no event, nothing for
+ * VOXSDK_CALL_CALLING forever — no INVITE on the wire, no event, nothing for
  * the app to react to.  `ua_connect()` returned 0, so the SDK cannot see it
  * either.
  *
@@ -25,7 +25,7 @@
  * same with `ice_gathering_timeout`, default 500 ms; pjsua has
  * PJSUA_ICE_TRANSPORT_INIT_TIMEOUT (30 s) whose own comment calls it "a safety
  * net so the calling thread cannot block indefinitely if the callback never
- * arrives".  This file is that bound for EchoSDK, as cfg.ice_gathering_timeout_ms.
+ * arrives".  This file is that bound for VoxSDK, as cfg.ice_gathering_timeout_ms.
  *
  * ── How it hooks in ─────────────────────────────────────────────────────────
  *
@@ -94,7 +94,7 @@
  * media encryption that is keyed to them.
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* Originals, captured at install time. */
 static mnat_sess_h   *real_sessh;
@@ -117,7 +117,7 @@ static struct list s_sessl = LIST_INIT;
  * happens under a live call whose audio is already gone, and a gather that
  * never reports would leave it that way with no offer ever sent.  So the
  * restart always has a bound, configured or not. */
-#define BSDK_ICE_RESTART_DEADLINE_MS 3000
+#define VOX_ICE_RESTART_DEADLINE_MS 3000
 
 /* How long the candidate re-offer waits for a media-encryption handshake.
  *
@@ -154,13 +154,13 @@ static struct list s_sessl = LIST_INIT;
  * so a call that recovers late still gets its address across.
  *
  * A peer that genuinely filters on the signalled address needs an ICE restart
- * (fresh credentials, fresh gather — bsdk_ice_restart() already does exactly
+ * (fresh credentials, fresh gather — vox_ice_restart() already does exactly
  * that for handover), not a plain re-offer.  Nothing in the captures needs it:
  * every inbound call reached `Secure` or reached nothing, and the DTLS role
  * change (cmake/patches/dtls_srtp-setup.new) removes the address dependency
  * from the handshake in the first place. */
-#define BSDK_ICE_REOFFER_SECURE_DEADLINE_MS 12000
-#define BSDK_ICE_REOFFER_POLL_MS               50
+#define VOX_ICE_REOFFER_SECURE_DEADLINE_MS 12000
+#define VOX_ICE_REOFFER_POLL_MS               50
 
 /* How many peer-initiated ICE restarts to answer with one of our own.
  *
@@ -168,7 +168,7 @@ static struct list s_sessl = LIST_INIT;
  * receives would otherwise trade re-INVITEs with us for the life of the call.
  * Two is enough to cover the real sequence (peer restarts once, in the answer
  * to our candidate re-offer) with one spare. */
-#define BSDK_ICE_MAX_REMOTE_RESTARTS           2
+#define VOX_ICE_MAX_REMOTE_RESTARTS           2
 
 /**
  * Our stand-in for the ice module's session object.
@@ -180,7 +180,7 @@ static struct list s_sessl = LIST_INIT;
  * The fields below `medial` are the arguments the ice module was allocated
  * with, kept so an equivalent session can be built again on a restart.
  */
-struct bsdk_ice_sess {
+struct vox_ice_sess {
 	struct le         le;       /* s_sessl */
 	struct mnat_sess *inner;    /* the ice module's own session */
 	mnat_estab_h     *estabh;   /* baresip's mnat_handler */
@@ -197,7 +197,7 @@ struct bsdk_ice_sess {
 	unsigned          rrestarts;/* peer restarts answered with our own */
 	bool              primed;   /* early connectivity checks kicked off */
 	struct sdp_session *sdp;    /* borrowed; the call's SDP session */
-	struct list       medial;   /* struct bsdk_ice_media */
+	struct list       medial;   /* struct vox_ice_media */
 
 	const struct mnat *mnat;
 	struct dnsc       *dnsc;    /* borrowed; owned by the SIP stack */
@@ -218,9 +218,9 @@ struct bsdk_ice_sess {
  * It also remembers the address we signalled, so it can be compared with the
  * one ICE ends up using.  See the peer-reflexive note on ice_connected().
  */
-struct bsdk_ice_media {
+struct vox_ice_media {
 	struct le              le;
-	struct bsdk_ice_sess  *sess;    /* NULL once the session is gone */
+	struct vox_ice_sess  *sess;    /* NULL once the session is gone */
 	struct mnat_media     *inner;   /* the ice module's own media */
 	struct udp_sock       *sock1;   /* refs: re-creating `inner` needs them */
 	struct udp_sock       *sock2;   /* NULL with rtcp-mux */
@@ -238,7 +238,7 @@ struct bsdk_ice_media {
 
 static void media_destructor(void *data)
 {
-	struct bsdk_ice_media *m = data;
+	struct vox_ice_media *m = data;
 
 	list_unlink(&m->le);
 	mem_deref(m->inner);
@@ -249,7 +249,7 @@ static void media_destructor(void *data)
 
 static void sess_destructor(void *data)
 {
-	struct bsdk_ice_sess *s = data;
+	struct vox_ice_sess *s = data;
 	struct le *le, *tmp;
 
 	/* Timers first: all three close over `s`. */
@@ -265,7 +265,7 @@ static void sess_destructor(void *data)
 	 * list_flushes its own media list), and a wrapper left pointing at it
 	 * would double-free from media_destructor. */
 	LIST_FOREACH_SAFE(&s->medial, le, tmp) {
-		struct bsdk_ice_media *m = le->data;
+		struct vox_ice_media *m = le->data;
 		m->inner = mem_deref(m->inner);
 		m->sess  = NULL;
 		list_unlink(&m->le);
@@ -277,12 +277,12 @@ static void sess_destructor(void *data)
 	mem_deref(s->pass);
 }
 
-static struct bsdk_ice_sess *sess_find(const void *call)
+static struct vox_ice_sess *sess_find(const void *call)
 {
 	struct le *le;
 
 	LIST_FOREACH(&s_sessl, le) {
-		struct bsdk_ice_sess *s = le->data;
+		struct vox_ice_sess *s = le->data;
 		if (s->arg == call)
 			return s;
 	}
@@ -302,12 +302,12 @@ static struct bsdk_ice_sess *sess_find(const void *call)
  * already told about.  Take the baseline from the addresses ICE has written
  * into the SDP by now instead.
  */
-static void rebase_signalled(struct bsdk_ice_sess *s)
+static void rebase_signalled(struct vox_ice_sess *s)
 {
 	struct le *le;
 
 	LIST_FOREACH(&s->medial, le) {
-		struct bsdk_ice_media *m = le->data;
+		struct vox_ice_media *m = le->data;
 		const struct sa *laddr = sdp_media_laddr(m->sdpm);
 
 		if (laddr && sa_isset(laddr, SA_ADDR))
@@ -357,7 +357,7 @@ static void rebase_signalled(struct bsdk_ice_sess *s)
  * back to the session level, covering a peer that puts one ufrag on the
  * session for every stream.
  */
-static bool remote_ufrag_sync(struct bsdk_ice_sess *s)
+static bool remote_ufrag_sync(struct vox_ice_sess *s)
 {
 	struct le *le;
 	bool restarted = false;
@@ -366,7 +366,7 @@ static bool remote_ufrag_sync(struct bsdk_ice_sess *s)
 		return false;
 
 	LIST_FOREACH(&s->medial, le) {
-		struct bsdk_ice_media *m = le->data;
+		struct vox_ice_media *m = le->data;
 		const char *ru;
 		bool baselined;
 
@@ -382,7 +382,7 @@ static bool remote_ufrag_sync(struct bsdk_ice_sess *s)
 		baselined = str_isset(m->rufrag);
 
 		if (baselined && str_cmp(m->rufrag, ru)) {
-			info("EchoSDK/ice: peer restarted ICE on '%s'"
+			info("VoxSDK/ice: peer restarted ICE on '%s'"
 			     " (ice-ufrag %s -> %s)\n",
 			     sdp_media_name(m->sdpm), m->rufrag, ru);
 			restarted = true;
@@ -400,16 +400,16 @@ static bool remote_ufrag_sync(struct bsdk_ice_sess *s)
  *
  * Deferred through a timer because this runs from the media-NAT update handler,
  * which baresip calls from inside call_apply_sdp() while it is still applying
- * the SDP that carried the peer's new credentials.  bsdk_ice_restart() replaces
+ * the SDP that carried the peer's new credentials.  vox_ice_restart() replaces
  * the ICE session under that call and arms an offer; doing it from underneath
  * the SDP the offer is built from is asking for trouble. */
 static void rrestart_handler(void *arg)
 {
-	struct bsdk_ice_sess *s = arg;
-	int err = bsdk_ice_restart(s->arg, NULL);
+	struct vox_ice_sess *s = arg;
+	int err = vox_ice_restart(s->arg, NULL);
 
 	if (err && err != EALREADY) {
-		warning("EchoSDK/ice: could not answer the peer's ICE restart"
+		warning("VoxSDK/ice: could not answer the peer's ICE restart"
 		        " (%m) — this call may have no audio\n", err);
 	}
 }
@@ -456,7 +456,7 @@ static void rrestart_handler(void *arg)
  * As the offerer on a fresh call there are no remote candidates at all, and
  * the ice module would decline anyway (verify_peer_ice).
  */
-static void prime_conncheck(struct bsdk_ice_sess *s)
+static void prime_conncheck(struct vox_ice_sess *s)
 {
 	struct le *le;
 	bool have_remote = false;
@@ -468,7 +468,7 @@ static void prime_conncheck(struct bsdk_ice_sess *s)
 		return;
 
 	LIST_FOREACH(&s->medial, le) {
-		struct bsdk_ice_media *m = le->data;
+		struct vox_ice_media *m = le->data;
 
 		if (m->sdpm &&
 		    str_isset(sdp_media_session_rattr(m->sdpm, s->sdp,
@@ -483,7 +483,7 @@ static void prime_conncheck(struct bsdk_ice_sess *s)
 
 	s->primed = true;
 
-	info("EchoSDK/ice: peer candidates are already known — running the"
+	info("VoxSDK/ice: peer candidates are already known — running the"
 	     " connectivity checks now, before the call is answered\n");
 
 	(void)real_updateh(s->inner);
@@ -524,7 +524,7 @@ static void prime_conncheck(struct bsdk_ice_sess *s)
  * credentials for the offer were written into the SDP by the gather handler
  * before we got here, and the not-yet-started branch does not touch the SDP.
  */
-static void estab_release(struct bsdk_ice_sess *s, int err, uint16_t scode,
+static void estab_release(struct vox_ice_sess *s, int err, uint16_t scode,
                           const char *reason)
 {
 	/* A failure can end the call from inside estabh — baresip's mnat_handler
@@ -543,7 +543,7 @@ static void estab_release(struct bsdk_ice_sess *s, int err, uint16_t scode,
 
 static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 {
-	struct bsdk_ice_sess *s = arg;
+	struct vox_ice_sess *s = arg;
 
 	tmr_cancel(&s->tmr);
 
@@ -575,14 +575,14 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 		s->restarting = false;
 
 		if (err || scode) {
-			warning("EchoSDK/ice: the media-NAT reported a failure "
+			warning("VoxSDK/ice: the media-NAT reported a failure "
 			        "after the offer had already gone out "
 			        "(%m, %u %s) — call left alone\n",
 			        err, scode, reason ? reason : "");
 			return;
 		}
 
-		info("EchoSDK/ice: the media-NAT reports again with the offer "
+		info("VoxSDK/ice: the media-NAT reports again with the offer "
 		     "already out (ICE concluded on a new candidate, or a "
 		     "late gather) — re-offering what the SDP carries now\n");
 	}
@@ -595,7 +595,7 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 	 * interface is better than the old network's candidate list, which is
 	 * what not offering at all would leave in place. */
 	if (s->restarting && (err || scode)) {
-		warning("EchoSDK/ice: restart gathering failed (%m, %u %s) —"
+		warning("VoxSDK/ice: restart gathering failed (%m, %u %s) —"
 		        " offering the candidates gathered so far\n",
 		        err, scode, reason ? reason : "");
 		err    = 0;
@@ -621,7 +621,7 @@ static void ice_estab(int err, uint16_t scode, const char *reason, void *arg)
 
 static void gather_deadline(void *arg)
 {
-	struct bsdk_ice_sess *s = arg;
+	struct vox_ice_sess *s = arg;
 
 	if (s->released)
 		return;
@@ -631,16 +631,16 @@ static void gather_deadline(void *arg)
 	 * the ice module has put into the SDP so far.  Reporting an error
 	 * instead would close the call, which is the outcome the deadline
 	 * exists to avoid. */
-	warning("EchoSDK/ice: %s gathering did not complete in time; offering "
+	warning("VoxSDK/ice: %s gathering did not complete in time; offering "
 	        "the candidates gathered so far "
 	        "(cfg.ice_gathering_timeout_ms=%u)\n",
 	        s->restarting ? "restart" : "candidate",
-	        g_bsdk.cfg.ice_gathering_timeout_ms);
+	        g_vox.cfg.ice_gathering_timeout_ms);
 
 	/* `released` is not cleared: a real gather that reports after this takes
 	 * the `released` path in ice_estab(), which re-offers the complete set.
 	 *
-	 * `restarting` IS cleared, and must be.  It gates bsdk_ice_restart()
+	 * `restarting` IS cleared, and must be.  It gates vox_ice_restart()
 	 * against re-entry, and the gather this deadline just gave up on may
 	 * never report at all — that is the failure the deadline exists for.
 	 * Leaving the flag set would make every later restart on this call
@@ -659,7 +659,7 @@ static int ice_sessh(struct mnat_sess **sessp, const struct mnat *mnat,
                      struct sdp_session *sdp, bool offerer,
                      mnat_estab_h *estabh, void *arg)
 {
-	struct bsdk_ice_sess *s;
+	struct vox_ice_sess *s;
 	int err = 0;
 
 	if (!sessp || !estabh)
@@ -710,8 +710,8 @@ static int ice_sessh(struct mnat_sess **sessp, const struct mnat *mnat,
 	/* Arm after the inner session exists.  `released` is checked because a
 	 * media-NAT is free to report synchronously; the ice module does not,
 	 * but a deadline armed after the fact would never be cancelled. */
-	if (g_bsdk.cfg.ice_gathering_timeout_ms && !s->released) {
-		tmr_start(&s->tmr, g_bsdk.cfg.ice_gathering_timeout_ms,
+	if (g_vox.cfg.ice_gathering_timeout_ms && !s->released) {
+		tmr_start(&s->tmr, g_vox.cfg.ice_gathering_timeout_ms,
 		          gather_deadline, s);
 	}
 
@@ -734,7 +734,7 @@ static int ice_sessh(struct mnat_sess **sessp, const struct mnat *mnat,
  * session level, which is where baresip's dtls_srtp puts our own — and where a
  * peer that offers one fingerprint for the whole session puts its.
  */
-static bool sess_awaiting_secure(const struct bsdk_ice_sess *s)
+static bool sess_awaiting_secure(const struct vox_ice_sess *s)
 {
 	struct list *streaml;
 	struct le *le;
@@ -744,7 +744,7 @@ static bool sess_awaiting_secure(const struct bsdk_ice_sess *s)
 		return false;
 
 	LIST_FOREACH(&s->medial, le) {
-		const struct bsdk_ice_media *m = le->data;
+		const struct vox_ice_media *m = le->data;
 
 		if (m->sdpm &&
 		    sdp_media_session_rattr(m->sdpm, s->sdp, "fingerprint")) {
@@ -775,7 +775,7 @@ static bool sess_awaiting_secure(const struct bsdk_ice_sess *s)
  * call_modify(), i.e. a re-INVITE.  It is guarded by sipsess_refresh_allowed(),
  * so a call whose negotiation is still in flight ignores it rather than
  * sending a malformed request. */
-static void reoffer_release(struct bsdk_ice_sess *s)
+static void reoffer_release(struct vox_ice_sess *s)
 {
 	tmr_cancel(&s->tmr_reoffer);
 	estab_release(s, 0, 0, NULL);
@@ -784,23 +784,23 @@ static void reoffer_release(struct bsdk_ice_sess *s)
 
 static void reoffer_deadline(void *arg)
 {
-	struct bsdk_ice_sess *s = arg;
+	struct vox_ice_sess *s = arg;
 
 	if (sess_awaiting_secure(s)) {
 		if (tmr_jiffies() < s->reoffer_due) {
-			tmr_start(&s->tmr_reoffer, BSDK_ICE_REOFFER_POLL_MS,
+			tmr_start(&s->tmr_reoffer, VOX_ICE_REOFFER_POLL_MS,
 			          reoffer_deadline, s);
 			return;
 		}
 
 		/* The handshake is not coming back, and this offer is not what
-		 * would bring it back — see BSDK_ICE_REOFFER_SECURE_DEADLINE_MS
+		 * would bring it back — see VOX_ICE_REOFFER_SECURE_DEADLINE_MS
 		 * for the 9 calls that died proving it.  Drop it: a re-INVITE
 		 * now only resets what little state the peer has left. */
 		tmr_cancel(&s->tmr_reoffer);
-		warning("EchoSDK/ice: media encryption still not secure after "
+		warning("VoxSDK/ice: media encryption still not secure after "
 		        "%u ms — dropping the candidate re-offer\n",
-		        BSDK_ICE_REOFFER_SECURE_DEADLINE_MS);
+		        VOX_ICE_REOFFER_SECURE_DEADLINE_MS);
 		return;
 	}
 
@@ -844,7 +844,7 @@ static void reoffer_deadline(void *arg)
  * rarely waiting to be told; and a re-offer that goes out mid-handshake is the
  * single strongest predictor of a silent call in any capture we have.  So the
  * offer is held for the handshake and dropped if the handshake never lands
- * (BSDK_ICE_REOFFER_SECURE_DEADLINE_MS), and the disagreement it answers is
+ * (VOX_ICE_REOFFER_SECURE_DEADLINE_MS), and the disagreement it answers is
  * itself now much rarer: the SDK no longer gathers on interfaces the media
  * does not use (cmake/patches/ice-ifsel.new), and an inbound call no longer
  * depends on the peer accepting a handshake we started
@@ -853,8 +853,8 @@ static void reoffer_deadline(void *arg)
 static void ice_connected(const struct sa *raddr1, const struct sa *raddr2,
                           void *arg)
 {
-	struct bsdk_ice_media *m = arg;
-	struct bsdk_ice_sess *s = m->sess;
+	struct vox_ice_media *m = arg;
+	struct vox_ice_sess *s = m->sess;
 	const struct sa *laddr;
 
 	if (!s) {
@@ -899,7 +899,7 @@ static void ice_connected(const struct sa *raddr1, const struct sa *raddr2,
 	if (s->arg && CALL_STATE_INCOMING == call_state((struct call *)s->arg)) {
 		if (m->sel_set)
 			m->held = true;
-		info("EchoSDK/ice: '%s' concluded on %J while the call was"
+		info("VoxSDK/ice: '%s' concluded on %J while the call was"
 		     " still ringing — holding media setup until the answer"
 		     " goes out\n",
 		     sdp_media_name(m->sdpm), raddr1);
@@ -929,19 +929,19 @@ static void ice_connected(const struct sa *raddr1, const struct sa *raddr2,
 		return;
 	s->reoffered = true;
 
-	info("EchoSDK/ice: selected local candidate %J was never signalled "
+	info("VoxSDK/ice: selected local candidate %J was never signalled "
 	     "(offered %J) — re-offering so the peer accepts our media\n",
 	     laddr, &m->signalled);
 
 	/* Never while the media encryption is mid-handshake: the re-INVITE
 	 * would perturb an association dtls_srtp can only start once, and the
-	 * call would come up silent.  See BSDK_ICE_REOFFER_SECURE_DEADLINE_MS. */
+	 * call would come up silent.  See VOX_ICE_REOFFER_SECURE_DEADLINE_MS. */
 	if (sess_awaiting_secure(s)) {
-		info("EchoSDK/ice: holding the re-offer until the media "
+		info("VoxSDK/ice: holding the re-offer until the media "
 		     "encryption handshake completes\n");
 		s->reoffer_due = tmr_jiffies() +
-		                 BSDK_ICE_REOFFER_SECURE_DEADLINE_MS;
-		tmr_start(&s->tmr_reoffer, BSDK_ICE_REOFFER_POLL_MS,
+		                 VOX_ICE_REOFFER_SECURE_DEADLINE_MS;
+		tmr_start(&s->tmr_reoffer, VOX_ICE_REOFFER_POLL_MS,
 		          reoffer_deadline, s);
 		return;
 	}
@@ -954,8 +954,8 @@ static int ice_mediah(struct mnat_media **mp, struct mnat_sess *sess,
                       struct sdp_media *sdpm,
                       mnat_connected_h *connh, void *arg)
 {
-	struct bsdk_ice_sess *s = (struct bsdk_ice_sess *)sess;
-	struct bsdk_ice_media *m;
+	struct vox_ice_sess *s = (struct vox_ice_sess *)sess;
+	struct vox_ice_media *m;
 	const struct sa *laddr;
 	int err;
 
@@ -1021,7 +1021,7 @@ static int ice_mediah(struct mnat_media **mp, struct mnat_sess *sess,
 static void ice_attrh(struct mnat_media *mm, const char *name,
                       const char *value)
 {
-	struct bsdk_ice_media *m = (struct bsdk_ice_media *)mm;
+	struct vox_ice_media *m = (struct vox_ice_media *)mm;
 
 	if (!m || !m->inner || !real_attrh)
 		return;
@@ -1062,12 +1062,12 @@ static void ice_attrh(struct mnat_media *mm, const char *name,
  * stream_update() has run for every stream, which makes this the seam that
  * covers all of those paths at once.
  */
-static void reassert_selected(struct bsdk_ice_sess *s)
+static void reassert_selected(struct vox_ice_sess *s)
 {
 	struct le *le;
 
 	LIST_FOREACH(&s->medial, le) {
-		struct bsdk_ice_media *m = le->data;
+		struct vox_ice_media *m = le->data;
 		const struct sa *rsig;
 
 		if (!m->sel_set || !m->connh)
@@ -1082,7 +1082,7 @@ static void reassert_selected(struct bsdk_ice_sess *s)
 		 * outcome than one that started it at a stale address. */
 		if (m->held) {
 			m->held = false;
-			info("EchoSDK/ice: answer is out — starting media on "
+			info("VoxSDK/ice: answer is out — starting media on "
 			     "the pair ICE nominated during ringing (%J)\n",
 			     &m->selected[0]);
 			m->connh(&m->selected[0],
@@ -1107,7 +1107,7 @@ static void reassert_selected(struct bsdk_ice_sess *s)
 
 		if (!m->reasserted) {
 			m->reasserted = true;
-			info("EchoSDK/ice: re-applying the remote address ICE "
+			info("VoxSDK/ice: re-applying the remote address ICE "
 			     "selected (%J) after the SDP exchange reset it to "
 			     "the signalled %J\n",
 			     &m->selected[0], &m->rsig);
@@ -1145,7 +1145,7 @@ static void reassert_selected(struct bsdk_ice_sess *s)
  * than from the SDP, because the address that was there may have been a
  * server-reflexive candidate whose port is the NAT's, not ours.
  */
-static void media_clear_stale(struct bsdk_ice_media *m, const struct sa *laddr)
+static void media_clear_stale(struct vox_ice_media *m, const struct sa *laddr)
 {
 	struct sa local;
 
@@ -1184,9 +1184,9 @@ static void media_clear_stale(struct bsdk_ice_media *m, const struct sa *laddr)
  *         already gathering, or an errorcode when the replacement session could
  *         not be allocated (the old one is left running).
  */
-int bsdk_ice_restart(void *call, const struct sa *laddr)
+int vox_ice_restart(void *call, const struct sa *laddr)
 {
-	struct bsdk_ice_sess *s = sess_find(call);
+	struct vox_ice_sess *s = sess_find(call);
 	struct mnat_sess *inner;
 	struct le *le;
 	uint32_t deadline;
@@ -1214,7 +1214,7 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	                 s->have_srv ? &s->srv : NULL, s->user, s->pass,
 	                 s->sdp, true, ice_estab, s);
 	if (err) {
-		warning("EchoSDK/ice: restart: replacement session failed"
+		warning("VoxSDK/ice: restart: replacement session failed"
 		        " (%m) — keeping the current ICE state\n", err);
 		return err;
 	}
@@ -1227,7 +1227,7 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	/* Drop the old media objects first: each unlinks itself from the old
 	 * session's list, so the deref below cannot free them a second time. */
 	LIST_FOREACH(&s->medial, le) {
-		struct bsdk_ice_media *m = le->data;
+		struct vox_ice_media *m = le->data;
 		m->inner = mem_deref(m->inner);
 		media_clear_stale(m, laddr);
 	}
@@ -1242,7 +1242,7 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	s->await_answer = true;
 
 	LIST_FOREACH(&s->medial, le) {
-		struct bsdk_ice_media *m = le->data;
+		struct vox_ice_media *m = le->data;
 		int e;
 
 		m->sel_set    = false;
@@ -1252,15 +1252,15 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 		e = real_mediah(&m->inner, s->inner, m->sock1, m->sock2,
 		                m->sdpm, ice_connected, m);
 		if (e) {
-			warning("EchoSDK/ice: restart: media '%s' failed (%m)"
+			warning("VoxSDK/ice: restart: media '%s' failed (%m)"
 			        " — that stream keeps the candidates it had\n",
 			        sdp_media_name(m->sdpm), e);
 		}
 	}
 
-	deadline = g_bsdk.cfg.ice_gathering_timeout_ms
-	         ? g_bsdk.cfg.ice_gathering_timeout_ms
-	         : BSDK_ICE_RESTART_DEADLINE_MS;
+	deadline = g_vox.cfg.ice_gathering_timeout_ms
+	         ? g_vox.cfg.ice_gathering_timeout_ms
+	         : VOX_ICE_RESTART_DEADLINE_MS;
 	tmr_start(&s->tmr, deadline, gather_deadline, s);
 
 	/* No laddr is not a missing one: rrestart_handler() answers a peer's ICE
@@ -1268,12 +1268,12 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
 	 * an unset sa there produced a line that read like a bug ("restarting
 	 * ICE on  —"), so say which case this is. */
 	if (laddr && sa_isset(laddr, SA_ADDR)) {
-		info("EchoSDK/ice: restarting ICE on %j — new credentials,"
+		info("VoxSDK/ice: restarting ICE on %j — new credentials,"
 		     " re-gathering, re-INVITE follows within %u ms\n",
 		     laddr, deadline);
 	}
 	else {
-		info("EchoSDK/ice: restarting ICE, keeping the current local"
+		info("VoxSDK/ice: restarting ICE, keeping the current local"
 		     " address — new credentials, re-gathering, re-INVITE"
 		     " follows within %u ms\n", deadline);
 	}
@@ -1287,16 +1287,16 @@ int bsdk_ice_restart(void *call, const struct sa *laddr)
  * Answers the question netmon actually has ("are this call's candidates mine to
  * migrate?") rather than the one the config answers ("was ICE asked for?").
  */
-bool bsdk_ice_call_active(void *call)
+bool vox_ice_call_active(void *call)
 {
-	struct bsdk_ice_sess *s = sess_find(call);
+	struct vox_ice_sess *s = sess_find(call);
 
 	return s && !list_isempty(&s->medial);
 }
 
 static int ice_updateh(struct mnat_sess *sess)
 {
-	struct bsdk_ice_sess *s = (struct bsdk_ice_sess *)sess;
+	struct vox_ice_sess *s = (struct vox_ice_sess *)sess;
 	bool changed;
 	int err;
 
@@ -1350,21 +1350,21 @@ static int ice_updateh(struct mnat_sess *sess)
 	 * shot for the same reason — if call_modify() declined to send the offer
 	 * at all (call_refresh_allowed() false under glare), the flag is spent on
 	 * whichever exchange comes next instead, which costs one restart out of
-	 * the budget of BSDK_ICE_MAX_REMOTE_RESTARTS and cannot wedge. */
+	 * the budget of VOX_ICE_MAX_REMOTE_RESTARTS and cannot wedge. */
 	if (s->await_answer) {
 		s->await_answer = false;
 
 		if (changed) {
 			struct le *le;
 
-			info("EchoSDK/ice: the peer's new credentials are the"
+			info("VoxSDK/ice: the peer's new credentials are the"
 			     " answer to our own ICE restart — checks are"
 			     " running against them, not restarting again\n");
 
 			/* The pair ICE nominated belonged to the generation
 			 * this restart replaced. */
 			LIST_FOREACH(&s->medial, le) {
-				struct bsdk_ice_media *m = le->data;
+				struct vox_ice_media *m = le->data;
 				m->sel_set = false;
 			}
 
@@ -1388,27 +1388,27 @@ static int ice_updateh(struct mnat_sess *sess)
 		struct le *le;
 
 		LIST_FOREACH(&s->medial, le) {
-			struct bsdk_ice_media *m = le->data;
+			struct vox_ice_media *m = le->data;
 			m->sel_set = false;
 		}
 
 		/* Not while one is already under way.  Two SDP exchanges can
-		 * carry a credential change 70 ms apart, and bsdk_ice_restart()
+		 * carry a credential change 70 ms apart, and vox_ice_restart()
 		 * would answer the second with EALREADY.  Counting that as a
 		 * restart spends the budget on a call that never happened, and
 		 * the genuine restart later in the call then finds none left.
 		 * (The commonest such pair — our own restart offer and its
 		 * answer — is taken out above, before this runs.) */
 		if (s->restarting || tmr_isrunning(&s->tmr_rrestart)) {
-			info("EchoSDK/ice: an ICE restart is already under way"
+			info("VoxSDK/ice: an ICE restart is already under way"
 			     " — not starting another\n");
 		}
-		else if (s->rrestarts < BSDK_ICE_MAX_REMOTE_RESTARTS) {
+		else if (s->rrestarts < VOX_ICE_MAX_REMOTE_RESTARTS) {
 			++s->rrestarts;
 			tmr_start(&s->tmr_rrestart, 0, rrestart_handler, s);
 		}
 		else {
-			warning("EchoSDK/ice: peer has restarted ICE %u times"
+			warning("VoxSDK/ice: peer has restarted ICE %u times"
 			        " and the media encryption is still not up —"
 			        " not restarting again\n", s->rrestarts);
 		}
@@ -1430,7 +1430,7 @@ static int ice_updateh(struct mnat_sess *sess)
  * the struct we mutate.  A build without the ice module returns ENOENT and the
  * SDK runs unchanged — there is no media-NAT to defer an INVITE behind.
  */
-int bsdk_ice_shim_init(void)
+int vox_ice_shim_init(void)
 {
 	/* mnat_find returns const because callers have no business editing the
 	 * registry entry; the object itself is a mutable static owned by the
@@ -1440,7 +1440,7 @@ int bsdk_ice_shim_init(void)
 	if (!m)
 		return ENOENT;
 
-	/* echosdk_init after echosdk_shutdown re-runs module_init(), which
+	/* voxsdk_init after voxsdk_shutdown re-runs module_init(), which
 	 * re-registers the same static struct.  Installing twice would capture
 	 * our own wrappers as the originals and recurse forever. */
 	if (m->sessh == ice_sessh)
@@ -1460,7 +1460,7 @@ int bsdk_ice_shim_init(void)
 	return 0;
 }
 
-void bsdk_ice_shim_close(void)
+void vox_ice_shim_close(void)
 {
 	if (!s_mnat)
 		return;

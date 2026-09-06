@@ -22,11 +22,11 @@
 #include <string.h>
 #include <re.h>
 #include <baresip.h>
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
-/* ws_path.c reads g_bsdk.cfg for ws_origin / ws_extra_headers / keepalive;
+/* ws_path.c reads g_vox.cfg for ws_origin / ws_extra_headers / keepalive;
  * core.c is not linked in, so own the definition here. */
-struct bsdk_ctx g_bsdk;
+struct vox_ctx g_vox;
 
 static int g_pass, g_fail;
 
@@ -67,7 +67,7 @@ int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
 }
 
 /* ws_path.c's sip_dialog_route glue references libre's renamed accessor; the
- * route tests below exercise bsdk_ws_route_override() directly, so the glue
+ * route tests below exercise vox_ws_route_override() directly, so the glue
  * is never called here.  Weak: if the link pulls libre's dialog.o (which
  * defines the real one under the rename) the real definition wins, and if it
  * does not, this stub satisfies the reference. */
@@ -94,12 +94,12 @@ static const char *connect_to(const char *uri)
 
 static void test_single_server(void)
 {
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443,
 	                   "/ws");
 
-	CHECK(!strcmp(g_bsdk_ws_server, "wss://pbx.example.com:443"),
-	      "pin is '%s'", g_bsdk_ws_server);
-	CHECK(!strcmp(g_bsdk_ws_path, "/ws"), "path is '%s'", g_bsdk_ws_path);
+	CHECK(!strcmp(g_vox_ws_server, "wss://pbx.example.com:443"),
+	      "pin is '%s'", g_vox_ws_server);
+	CHECK(!strcmp(g_vox_ws_path, "/ws"), "path is '%s'", g_vox_ws_path);
 
 	/* libre hands us the address it resolved from the dialog's
 	 * Record-Route; behind a reverse proxy that is the server's loopback. */
@@ -112,12 +112,12 @@ static void test_single_server(void)
 	              "wss://pbx.example.com:443/ws"),
 	      "pinned connect went to '%s'", g_used);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443,
 	                     "/ws");
-	CHECK(!g_bsdk_ws_server[0], "pin survived destroy: '%s'",
-	      g_bsdk_ws_server);
-	CHECK(!g_bsdk_ws_path[0], "path survived destroy: '%s'",
-	      g_bsdk_ws_path);
+	CHECK(!g_vox_ws_server[0], "pin survived destroy: '%s'",
+	      g_vox_ws_server);
+	CHECK(!g_vox_ws_path[0], "path survived destroy: '%s'",
+	      g_vox_ws_path);
 }
 
 /* A second account on another server makes pinning ambiguous — and destroying
@@ -125,11 +125,11 @@ static void test_single_server(void)
  * behind by the app disabled pinning for every later call in the process. */
 static void test_stale_account_releases_pin(void)
 {
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "typo.example.com", 443, "");
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "typo.example.com", 443, "");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
 
-	CHECK(!g_bsdk_ws_server[0], "pinned to '%s' with two servers live",
-	      g_bsdk_ws_server);
+	CHECK(!g_vox_ws_server[0], "pinned to '%s' with two servers live",
+	      g_vox_ws_server);
 
 	/* Ambiguous: a real address is left alone, because sending it to the
 	 * wrong server is worse than libre's routing. */
@@ -142,66 +142,66 @@ static void test_stale_account_releases_pin(void)
 	              "wss://pbx.example.com:443/"),
 	      "dead target went to '%s'", g_used);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "typo.example.com", 443,
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "typo.example.com", 443,
 	                     "");
-	CHECK(!strcmp(g_bsdk_ws_server, "wss://pbx.example.com:443"),
-	      "pin after destroy is '%s'", g_bsdk_ws_server);
+	CHECK(!strcmp(g_vox_ws_server, "wss://pbx.example.com:443"),
+	      "pin after destroy is '%s'", g_vox_ws_server);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
 }
 
 /* Same server twice (two accounts on one PBX) is not a conflict. */
 static void test_refcount_same_server(void)
 {
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443,
 	                   "/ws");
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443,
 	                   "/ws");
 
-	CHECK(!strcmp(g_bsdk_ws_server, "wss://pbx.example.com:443"),
-	      "pin is '%s'", g_bsdk_ws_server);
+	CHECK(!strcmp(g_vox_ws_server, "wss://pbx.example.com:443"),
+	      "pin is '%s'", g_vox_ws_server);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443,
 	                     "/ws");
-	CHECK(!strcmp(g_bsdk_ws_server, "wss://pbx.example.com:443"),
-	      "one destroy dropped the pin: '%s'", g_bsdk_ws_server);
+	CHECK(!strcmp(g_vox_ws_server, "wss://pbx.example.com:443"),
+	      "one destroy dropped the pin: '%s'", g_vox_ws_server);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443,
 	                     "/ws");
-	CHECK(!g_bsdk_ws_server[0], "pin is '%s' after both destroys",
-	      g_bsdk_ws_server);
+	CHECK(!g_vox_ws_server[0], "pin is '%s' after both destroys",
+	      g_vox_ws_server);
 }
 
 /* Host ambiguous, path agreed: substituting the path is still correct. */
 static void test_path_survives_host_conflict(void)
 {
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "b.example.com", 443, "/ws");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "b.example.com", 443, "/ws");
 
-	CHECK(!g_bsdk_ws_server[0], "pinned to '%s'", g_bsdk_ws_server);
-	CHECK(!strcmp(g_bsdk_ws_path, "/ws"), "path is '%s'", g_bsdk_ws_path);
+	CHECK(!g_vox_ws_server[0], "pinned to '%s'", g_vox_ws_server);
+	CHECK(!strcmp(g_vox_ws_path, "/ws"), "path is '%s'", g_vox_ws_path);
 	CHECK(!strcmp(connect_to("wss://a.example.com:443/"),
 	              "wss://a.example.com:443/ws"),
 	      "path-only substitution gave '%s'", g_used);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "b.example.com", 443, "/ws");
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "b.example.com", 443, "/ws");
 }
 
 /* Paths disagree: substituting either one would break the other's handshake. */
 static void test_conflicting_paths_disable_substitution(void)
 {
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "b.example.com", 443, "/sip");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "b.example.com", 443, "/sip");
 
-	CHECK(!g_bsdk_ws_path[0], "path is '%s' with two paths live",
-	      g_bsdk_ws_path);
+	CHECK(!g_vox_ws_path[0], "path is '%s' with two paths live",
+	      g_vox_ws_path);
 	CHECK(!strcmp(connect_to("wss://a.example.com:443/"),
 	              "wss://a.example.com:443/"),
 	      "path substituted anyway: '%s'", g_used);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "b.example.com", 443,
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "a.example.com", 443, "/ws");
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "b.example.com", 443,
 	                     "/sip");
 }
 
@@ -209,15 +209,15 @@ static void test_conflicting_paths_disable_substitution(void)
  * must not be "rescued" to somewhere else. */
 static void test_own_loopback_server_untouched(void)
 {
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WS, "127.0.0.1", 8088, "/ws");
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WS, "127.0.0.1", 8088, "/ws");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
 
 	CHECK(!strcmp(connect_to("ws://127.0.0.1:8088/"),
 	              "ws://127.0.0.1:8088/"),
 	      "own loopback server rewritten to '%s'", g_used);
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WS, "127.0.0.1", 8088, "/ws");
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WS, "127.0.0.1", 8088, "/ws");
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443, "");
 }
 
 /* Nothing registered (non-WS accounts only): pass everything through. */
@@ -240,7 +240,7 @@ static void test_no_servers_passthrough(void)
 /* The decision under test.  Exercised directly rather than through the
  * sip_dialog_route() glue: handing libre's real accessor a synthetic dialog
  * is not safe. */
-const struct uri *bsdk_ws_route_override(const struct uri *route);
+const struct uri *vox_ws_route_override(const struct uri *route);
 
 static struct uri g_dlg_route;
 static char       g_dlg_buf[256];
@@ -255,14 +255,14 @@ static const struct uri *route_for(const char *uri)
 	if (uri_decode(&g_dlg_route, &pl))
 		return NULL;
 
-	return bsdk_ws_route_override(&g_dlg_route);
+	return vox_ws_route_override(&g_dlg_route);
 }
 
 static void test_indialog_route_follows_flow(void)
 {
 	const struct uri *r;
 
-	bsdk_ws_set_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443, "/ws");
+	vox_ws_set_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443, "/ws");
 
 	/* The failing case: Asterisk's own Contact, unroutable from here. */
 	r = route_for("sip:asterisk@echo:5060;transport=ws");
@@ -287,7 +287,7 @@ static void test_indialog_route_follows_flow(void)
 	CHECK(r != NULL && !pl_strcmp(&r->host, "proxy.example.com"),
 	      "a transport-less route was rerouted");
 
-	bsdk_ws_unset_server(ECHOSDK_TRANSPORT_WSS, "pbx.example.com", 443,
+	vox_ws_unset_server(VOXSDK_TRANSPORT_WSS, "pbx.example.com", 443,
 	                     "/ws");
 }
 

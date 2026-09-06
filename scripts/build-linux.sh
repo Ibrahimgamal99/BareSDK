@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build EchoSDK for Linux x86_64.
-# Output: dist/linux/x86_64/echosdk.a  +  dist/linux/x86_64/include/
+# Build VoxSDK for Linux x86_64.
+# Output: dist/linux/x86_64/voxsdk.a  +  dist/linux/x86_64/include/
 #
 # Prerequisites: cmake ninja gcc openssl-devel (or libssl-dev)
 #                webrtc-audio-processing-devel (build-time only; optional at runtime)
@@ -34,25 +34,25 @@ bash "${SCRIPT_DIR}/fetch-third-party.sh"
 
 cmake -S "${ROOT}" -B "${BUILD_DIR}" -GNinja \
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
-  -DECHOSDK_TLS=openssl \
-  -DECHOSDK_MODULES_PROFILE=desktop \
-  -DECHOSDK_WITH_WEBRTC_AEC="${ECHOSDK_WITH_WEBRTC_AEC:-ON}" \
+  -DVOXSDK_TLS=openssl \
+  -DVOXSDK_MODULES_PROFILE=desktop \
+  -DVOXSDK_WITH_WEBRTC_AEC="${VOXSDK_WITH_WEBRTC_AEC:-ON}" \
   -DHAVE_THREADS=OFF \
   -DCMAKE_C_FLAGS="-std=gnu11 -D_GNU_SOURCE -D_DEFAULT_SOURCE -Wno-error=deprecated-declarations"
 
-cmake --build "${BUILD_DIR}" --target echosdk -j"$(nproc)"
+cmake --build "${BUILD_DIR}" --target voxsdk -j"$(nproc)"
 cmake --install "${BUILD_DIR}"
 
 # ── Link shared library ───────────────────────────────────────────────────────
 DIST_DIR="${ROOT}/dist/linux/x86_64"
-SO="${DIST_DIR}/echosdk.so"
+SO="${DIST_DIR}/voxsdk.so"
 echo ""
 echo "=== Linking ${SO} ==="
-# glibc_symver.c is already compiled into echosdk.a via the SRC_MODE build.
+# glibc_symver.c is already compiled into voxsdk.a via the SRC_MODE build.
 # No --wrap flags: the SIP fixes live in the patched libre sources
 # (cmake/patch-re-sources.cmake), so the archive is self-contained.
 gcc -shared \
-  -Wl,--whole-archive "${DIST_DIR}/echosdk.a" -Wl,--no-whole-archive \
+  -Wl,--whole-archive "${DIST_DIR}/voxsdk.a" -Wl,--no-whole-archive \
   -lssl -lcrypto -lz -lpthread -lm -lresolv -ldl -lstdc++ \
   "${PULSE_LDLIB}" \
   -Wl,--default-symver \
@@ -62,4 +62,4 @@ gcc -shared \
 
 echo ""
 echo "Done. Output:"
-ls -lh "${DIST_DIR}/echosdk.a" "${SO}"
+ls -lh "${DIST_DIR}/voxsdk.a" "${SO}"

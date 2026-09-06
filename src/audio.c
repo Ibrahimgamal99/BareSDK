@@ -2,19 +2,19 @@
  * @file audio.c  Audio device control, mute, and runtime quality settings
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 #include <re_udp.h>
 #include <math.h>
 
 
-/* ── echosdk_audio_mute ──────────────────────────────────────────────────── */
+/* ── voxsdk_audio_mute ──────────────────────────────────────────────────── */
 
-typedef struct { struct echosdk_call *lc; bool mute; int result; } mute_ctx_t;
+typedef struct { struct voxsdk_call *lc; bool mute; int result; } mute_ctx_t;
 
 static void mute_fn(void *arg)
 {
 	mute_ctx_t *ctx = arg;
-	struct echosdk_call *lc = ctx->lc;
+	struct voxsdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = ENOENT; return; }
 
 	struct audio *au = call_audio(lc->bc);
@@ -24,41 +24,41 @@ static void mute_fn(void *arg)
 	ctx->result = 0;
 }
 
-int echosdk_audio_mute(echosdk_call_handle_t call, bool mute)
+int voxsdk_audio_mute(voxsdk_call_handle_t call, bool mute)
 {
-	if (!call) return ECHOSDK_ERR_INVAL;
+	if (!call) return VOXSDK_ERR_INVAL;
 	mute_ctx_t ctx = {.lc = call, .mute = mute, .result = 0};
-	int err = bsdk_dispatch_sync(mute_fn, &ctx);
+	int err = vox_dispatch_sync(mute_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
-/* ── echosdk_audio_is_muted ──────────────────────────────────────────────── */
+/* ── voxsdk_audio_is_muted ──────────────────────────────────────────────── */
 
-typedef struct { struct echosdk_call *lc; bool result; } is_muted_ctx_t;
+typedef struct { struct voxsdk_call *lc; bool result; } is_muted_ctx_t;
 
 static void is_muted_fn(void *arg)
 {
 	is_muted_ctx_t *ctx = arg;
-	struct echosdk_call *lc = ctx->lc;
+	struct voxsdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = false; return; }
 	struct audio *au = call_audio(lc->bc);
 	ctx->result = au ? audio_ismuted(au) : false;
 }
 
-bool echosdk_audio_is_muted(echosdk_call_handle_t call)
+bool voxsdk_audio_is_muted(voxsdk_call_handle_t call)
 {
 	if (!call) return false;
 	is_muted_ctx_t ctx = {.lc = call, .result = false};
-	bsdk_dispatch_sync(is_muted_fn, &ctx);
+	vox_dispatch_sync(is_muted_fn, &ctx);
 	return ctx.result;
 }
 
-/* ── echosdk_audio_mute_rx ───────────────────────────────────────────────── */
+/* ── voxsdk_audio_mute_rx ───────────────────────────────────────────────── */
 
 static void mute_rx_fn(void *arg)
 {
 	mute_ctx_t *ctx = arg;
-	struct echosdk_call *lc = ctx->lc;
+	struct voxsdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = ENOENT; return; }
 
 	struct audio *au = call_audio(lc->bc);
@@ -70,29 +70,29 @@ static void mute_rx_fn(void *arg)
 	ctx->result = stream_enable_rx(strm, !ctx->mute);
 }
 
-int echosdk_audio_mute_rx(echosdk_call_handle_t call, bool mute)
+int voxsdk_audio_mute_rx(voxsdk_call_handle_t call, bool mute)
 {
-	if (!call) return ECHOSDK_ERR_INVAL;
+	if (!call) return VOXSDK_ERR_INVAL;
 	mute_ctx_t ctx = {.lc = call, .mute = mute, .result = 0};
-	int err = bsdk_dispatch_sync(mute_rx_fn, &ctx);
+	int err = vox_dispatch_sync(mute_rx_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
-/* ── echosdk_audio_set_input_device ──────────────────────────────────────── */
+/* ── voxsdk_audio_set_input_device ──────────────────────────────────────── */
 
 typedef struct { const char *name; int result; } device_ctx_t;
 
 typedef struct {
-	struct echosdk_call *lc;
+	struct voxsdk_call *lc;
 	const char *mod;
 	const char *dev;
 	bool        is_input;
 } update_call_dev_ctx_t;
 
-static void update_call_device(struct echosdk_call *lc, void *arg)
+static void update_call_device(struct voxsdk_call *lc, void *arg)
 {
 	update_call_dev_ctx_t *ctx = arg;
-	if (lc->state != ECHOSDK_CALL_ESTABLISHED || !lc->bc)
+	if (lc->state != VOXSDK_CALL_ESTABLISHED || !lc->bc)
 		return;
 	struct audio *au = call_audio(lc->bc);
 	if (!au)
@@ -119,14 +119,14 @@ static void set_input_fn(void *arg)
 		.dev      = bc->audio.src_dev,
 		.is_input = true,
 	};
-	bsdk_call_foreach(update_call_device, &uctx);
+	vox_call_foreach(update_call_device, &uctx);
 	ctx->result = 0;
 }
 
-int echosdk_audio_set_input_device(const char *name)
+int voxsdk_audio_set_input_device(const char *name)
 {
 	device_ctx_t ctx = {.name = name, .result = 0};
-	int err = bsdk_dispatch_sync(set_input_fn, &ctx);
+	int err = vox_dispatch_sync(set_input_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
@@ -146,14 +146,14 @@ static void set_output_fn(void *arg)
 		.dev      = bc->audio.play_dev,
 		.is_input = false,
 	};
-	bsdk_call_foreach(update_call_device, &uctx);
+	vox_call_foreach(update_call_device, &uctx);
 	ctx->result = 0;
 }
 
-int echosdk_audio_set_output_device(const char *name)
+int voxsdk_audio_set_output_device(const char *name)
 {
 	device_ctx_t ctx = {.name = name, .result = 0};
-	int err = bsdk_dispatch_sync(set_output_fn, &ctx);
+	int err = vox_dispatch_sync(set_output_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
@@ -169,12 +169,12 @@ static void use_external_fn(void *arg)
 		mod = "external";
 	}
 	else {
-		mod = bsdk_platform_audio_mod();
+		mod = vox_platform_audio_mod();
 		if (!mod) {
 			/* Nothing to go back to — this build has no platform
 			 * device compiled in. Leaving "external" in place beats
 			 * pointing the stack at a module that does not exist. */
-			warning("EchoSDK: no platform audio device to restore; "
+			warning("VoxSDK: no platform audio device to restore; "
 			        "staying on the app-owned device\n");
 			return;
 		}
@@ -193,13 +193,13 @@ static void use_external_fn(void *arg)
 		.mod = bc->audio.src_mod, .dev = bc->audio.src_dev,
 		.is_input = true,
 	};
-	bsdk_call_foreach(update_call_device, &src);
+	vox_call_foreach(update_call_device, &src);
 
 	update_call_dev_ctx_t play = {
 		.mod = bc->audio.play_mod, .dev = bc->audio.play_dev,
 		.is_input = false,
 	};
-	bsdk_call_foreach(update_call_device, &play);
+	vox_call_foreach(update_call_device, &play);
 
 	/* Going back to the platform device puts its hardware canceller back in
 	 * the path.  Leaving the software suppressor on would stack the two and
@@ -210,22 +210,22 @@ static void use_external_fn(void *arg)
 	 * capture through VOICE_COMMUNICATION / VoiceProcessingIO itself, and
 	 * silently ducking its TX by 16.5 dB would be the SDK fighting the
 	 * platform — the exact failure this feature exists to avoid.  Apps that
-	 * want the fallback ask for it with echosdk_set_aec_mode(). */
-	if (!*enable && bsdk_platform_has_aec()) {
+	 * want the fallback ask for it with voxsdk_set_aec_mode(). */
+	if (!*enable && vox_platform_has_aec()) {
 		/* PROTECTED BY RE_MAIN — already on the re thread here. */
-		aufilt_enable(baresip_aufiltl(), "bsdk_aec", false);
+		aufilt_enable(baresip_aufiltl(), "vox_aec", false);
 	}
 
-	info("EchoSDK: audio device -> '%s'\n", mod);
+	info("VoxSDK: audio device -> '%s'\n", mod);
 }
 
-int echosdk_audio_use_external(bool enable)
+int voxsdk_audio_use_external(bool enable)
 {
 	bool flag = enable;
-	return bsdk_dispatch_sync(use_external_fn, &flag);
+	return vox_dispatch_sync(use_external_fn, &flag);
 }
 
-bool bsdk_audio_external_selected(void)
+bool vox_audio_external_selected(void)
 {
 	return 0 == str_cmp(conf_config()->audio.src_mod, "external");
 }
@@ -241,7 +241,7 @@ struct audio_mod_hdr {
 };
 
 typedef struct {
-	echosdk_audio_device_t *devices;
+	voxsdk_audio_device_t *devices;
 	int                     max_count;
 	int                     count;
 	bool                    is_input;
@@ -254,7 +254,7 @@ static bool fill_mediadev(struct le *le, void *arg)
 	if (ctx->count >= ctx->max_count)
 		return true;  /* stop */
 	struct mediadev *md = le->data;
-	echosdk_audio_device_t *d = &ctx->devices[ctx->count++];
+	voxsdk_audio_device_t *d = &ctx->devices[ctx->count++];
 	str_ncpy(d->name, md->name, sizeof(d->name));
 	d->description[0] = '\0';
 	d->is_default = ctx->is_input ? md->src.is_default : md->play.is_default;
@@ -270,7 +270,7 @@ static bool fill_module_devices(struct le *le, void *arg)
 		/* Module registered but no enumerated devices yet — expose the
 		 * module name itself as a usable device identifier. */
 		if (ctx->count < ctx->max_count) {
-			echosdk_audio_device_t *d = &ctx->devices[ctx->count++];
+			voxsdk_audio_device_t *d = &ctx->devices[ctx->count++];
 			str_ncpy(d->name, mod->name, sizeof(d->name));
 			d->description[0] = '\0';
 			d->is_default = true;  /* single entry = default */
@@ -282,7 +282,7 @@ static bool fill_module_devices(struct le *le, void *arg)
 }
 
 typedef struct {
-	echosdk_audio_device_t *devices;
+	voxsdk_audio_device_t *devices;
 	int                     max_count;
 	int                     result;
 	bool                    is_input;
@@ -314,36 +314,36 @@ static void enum_output_fn(void *arg)
 	ctx->result = lctx.count;
 }
 
-int echosdk_audio_list_input_devices(echosdk_audio_device_t *devices, int max_count)
+int voxsdk_audio_list_input_devices(voxsdk_audio_device_t *devices, int max_count)
 {
-	if (!devices || max_count <= 0) return ECHOSDK_ERR_INVAL;
+	if (!devices || max_count <= 0) return VOXSDK_ERR_INVAL;
 	enum_dev_ctx_t ctx = {
 		.devices   = devices,
 		.max_count = max_count,
 		.result    = 0,
 		.is_input  = true,
 	};
-	int err = bsdk_dispatch_sync(enum_input_fn, &ctx);
+	int err = vox_dispatch_sync(enum_input_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
-int echosdk_audio_list_output_devices(echosdk_audio_device_t *devices, int max_count)
+int voxsdk_audio_list_output_devices(voxsdk_audio_device_t *devices, int max_count)
 {
-	if (!devices || max_count <= 0) return ECHOSDK_ERR_INVAL;
+	if (!devices || max_count <= 0) return VOXSDK_ERR_INVAL;
 	enum_dev_ctx_t ctx = {
 		.devices   = devices,
 		.max_count = max_count,
 		.result    = 0,
 		.is_input  = false,
 	};
-	int err = bsdk_dispatch_sync(enum_output_fn, &ctx);
+	int err = vox_dispatch_sync(enum_output_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
 /* ── Runtime audio processing toggles ───────────────────────────────────── */
 
 /* aufilt_enable() modifies the aufiltl list which the audio thread iterates.
- * PROTECTED BY RE_MAIN — must run via bsdk_dispatch_sync.
+ * PROTECTED BY RE_MAIN — must run via vox_dispatch_sync.
  * Do NOT make this atomic like the gain setters even though the pattern looks
  * similar — the asymmetry is intentional. */
 static void set_filter_fn(void *arg)
@@ -355,97 +355,97 @@ static void set_filter_fn(void *arg)
 
 static void set_aec_mode_fn(void *arg)
 {
-	echosdk_aec_mode_t mode = *(echosdk_aec_mode_t *)arg;
+	voxsdk_aec_mode_t mode = *(voxsdk_aec_mode_t *)arg;
 	struct list *fl = baresip_aufiltl();
 
 	/* PROTECTED BY RE_MAIN */
-	aufilt_enable(fl, "bsdk_aec", bsdk_aec_suppressor_wanted(mode));
+	aufilt_enable(fl, "vox_aec", vox_aec_suppressor_wanted(mode));
 
-#if defined(ECHOSDK_PROFILE_DESKTOP) && defined(ECHOSDK_HAS_WEBRTC_AEC)
-	aufilt_enable(fl, "webrtc_aec", mode == ECHOSDK_AEC_WEBRTC);
+#if defined(VOXSDK_PROFILE_DESKTOP) && defined(VOXSDK_HAS_WEBRTC_AEC)
+	aufilt_enable(fl, "webrtc_aec", mode == VOXSDK_AEC_WEBRTC);
 #endif
 }
 
-void echosdk_set_aec(bool enable)
+void voxsdk_set_aec(bool enable)
 {
 	/* Re-enables the aec_mode configured at init; disables all AEC backends
 	 * when enable=false.  Back-compat shim for the former bool aec API. */
-	echosdk_aec_mode_t target = enable ? g_bsdk.cfg.aec_mode : ECHOSDK_AEC_OFF;
-	echosdk_set_aec_mode(target);
+	voxsdk_aec_mode_t target = enable ? g_vox.cfg.aec_mode : VOXSDK_AEC_OFF;
+	voxsdk_set_aec_mode(target);
 }
 
-int echosdk_set_aec_mode(echosdk_aec_mode_t mode)
+int voxsdk_set_aec_mode(voxsdk_aec_mode_t mode)
 {
 	/* Only AEC_OFF ↔ init_mode transitions are valid at runtime.
 	 * Switching between SUPPRESSOR and WEBRTC requires re-init. */
-	if (mode != ECHOSDK_AEC_OFF && mode != g_bsdk.cfg.aec_mode) {
-		warning("EchoSDK: set_aec_mode: cannot switch from %d to %d at runtime "
+	if (mode != VOXSDK_AEC_OFF && mode != g_vox.cfg.aec_mode) {
+		warning("VoxSDK: set_aec_mode: cannot switch from %d to %d at runtime "
 		        "(only OFF ↔ init mode transitions allowed)\n",
-		        (int)g_bsdk.cfg.aec_mode, (int)mode);
+		        (int)g_vox.cfg.aec_mode, (int)mode);
 		return EINVAL;
 	}
 
-#if !defined(ECHOSDK_PROFILE_DESKTOP) || !defined(ECHOSDK_HAS_WEBRTC_AEC)
-	if (mode == ECHOSDK_AEC_WEBRTC) {
-		warning("EchoSDK: set_aec_mode: WEBRTC AEC not available "
-		        "(requires desktop build with ECHOSDK_WITH_WEBRTC_AEC=ON)\n");
+#if !defined(VOXSDK_PROFILE_DESKTOP) || !defined(VOXSDK_HAS_WEBRTC_AEC)
+	if (mode == VOXSDK_AEC_WEBRTC) {
+		warning("VoxSDK: set_aec_mode: WEBRTC AEC not available "
+		        "(requires desktop build with VOXSDK_WITH_WEBRTC_AEC=ON)\n");
 		return ENOTSUP;
 	}
 #endif
 
-	/* One dispatch, not two: bsdk_aec_suppressor_wanted() now reads
+	/* One dispatch, not two: vox_aec_suppressor_wanted() now reads
 	 * conf_config() to see which device is selected, so it has to be
 	 * evaluated on the re thread rather than on the caller's. */
-	return bsdk_dispatch_sync(set_aec_mode_fn, &mode);
+	return vox_dispatch_sync(set_aec_mode_fn, &mode);
 }
 
-void echosdk_set_aec_suppression_level(float level)
+void voxsdk_set_aec_suppression_level(float level)
 {
 	if (level < 0.0f) level = 0.0f;
 	if (level > 1.0f) level = 1.0f;
 	/* aec_suppression_level=0 → floor=1.0 (no attenuation)
 	 * aec_suppression_level=1 → floor=0.15 (−16.5 dB, default)
 	 * Mapping inverted because floor is a minimum gain, not a suppression amount. */
-	bsdk_aec_floor_store(1.0f - level * 0.85f);
-	g_bsdk.cfg.aec_suppression_level = level;
+	vox_aec_floor_store(1.0f - level * 0.85f);
+	g_vox.cfg.aec_suppression_level = level;
 }
 
-void echosdk_set_ns(bool enable)
+void voxsdk_set_ns(bool enable)
 {
-	struct { const char *name; bool enable; } ctx = { "bsdk_ns", enable };
+	struct { const char *name; bool enable; } ctx = { "vox_ns", enable };
 	/* PROTECTED BY RE_MAIN */
-	bsdk_dispatch_sync(set_filter_fn, &ctx);
-	g_bsdk.cfg.ns = enable;
+	vox_dispatch_sync(set_filter_fn, &ctx);
+	g_vox.cfg.ns = enable;
 }
 
-void echosdk_set_agc(bool enable)
+void voxsdk_set_agc(bool enable)
 {
-	struct { const char *name; bool enable; } ctx = { "bsdk_agc", enable };
+	struct { const char *name; bool enable; } ctx = { "vox_agc", enable };
 	/* PROTECTED BY RE_MAIN */
-	bsdk_dispatch_sync(set_filter_fn, &ctx);
-	g_bsdk.cfg.agc = enable;
+	vox_dispatch_sync(set_filter_fn, &ctx);
+	g_vox.cfg.agc = enable;
 }
 
-void echosdk_set_mic_gain_db(float db)
+void voxsdk_set_mic_gain_db(float db)
 {
 	if (db < -20.0f) db = -20.0f;
 	if (db >  20.0f) db =  20.0f;
-	bsdk_mic_gain_store(powf(10.0f, db / 20.0f));
-	g_bsdk.cfg.mic_gain_db = db;
+	vox_mic_gain_store(powf(10.0f, db / 20.0f));
+	g_vox.cfg.mic_gain_db = db;
 }
 
-void echosdk_set_speaker_gain_db(float db)
+void voxsdk_set_speaker_gain_db(float db)
 {
 	if (db < -20.0f) db = -20.0f;
 	if (db >  20.0f) db =  20.0f;
-	bsdk_spk_gain_store(powf(10.0f, db / 20.0f));
-	g_bsdk.cfg.speaker_gain_db = db;
+	vox_spk_gain_store(powf(10.0f, db / 20.0f));
+	g_vox.cfg.speaker_gain_db = db;
 }
 
 /* ── Per-call DSCP ───────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_call *lc;
+	struct voxsdk_call *lc;
 	uint8_t              dscp;
 	int                  result;
 } dscp_ctx_t;
@@ -471,11 +471,11 @@ static void set_dscp_rtp_fn(void *arg)
 	ctx->result = udp_settos(us, ctx->dscp);
 }
 
-int echosdk_call_set_dscp_rtp(echosdk_call_handle_t call, uint8_t dscp)
+int voxsdk_call_set_dscp_rtp(voxsdk_call_handle_t call, uint8_t dscp)
 {
-	if (!call) return ECHOSDK_ERR_INVAL;
+	if (!call) return VOXSDK_ERR_INVAL;
 	dscp_ctx_t ctx = { .lc = call, .dscp = dscp, .result = 0 };
-	int err = bsdk_dispatch_sync(set_dscp_rtp_fn, &ctx);
+	int err = vox_dispatch_sync(set_dscp_rtp_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
@@ -490,25 +490,25 @@ static void set_jbuf_fn(void *arg)
 	c->avt.audio.jbuf_del.max = bounds[1] ? bounds[1] : 150u;
 }
 
-void echosdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms)
+void voxsdk_set_jitter_buffer(uint32_t min_ms, uint32_t max_ms)
 {
 	uint32_t bounds[2] = { min_ms, max_ms };
-	bsdk_dispatch_sync(set_jbuf_fn, bounds);
-	g_bsdk.cfg.jitter_buffer_min_ms = min_ms;
-	g_bsdk.cfg.jitter_buffer_max_ms = max_ms;
+	vox_dispatch_sync(set_jbuf_fn, bounds);
+	g_vox.cfg.jitter_buffer_min_ms = min_ms;
+	g_vox.cfg.jitter_buffer_max_ms = max_ms;
 }
 
-/* ── echosdk_set_jitter_buffer_type ──────────────────────────────────────── */
+/* ── voxsdk_set_jitter_buffer_type ──────────────────────────────────────── */
 
 static void set_jbuf_type_fn(void *arg)
 {
-	echosdk_jbuf_type_t *type = arg;
+	voxsdk_jbuf_type_t *type = arg;
 	struct config *c = conf_config();
-	c->avt.audio.jbtype = (*type == ECHOSDK_JBUF_FIXED) ? JBUF_FIXED : JBUF_ADAPTIVE;
+	c->avt.audio.jbtype = (*type == VOXSDK_JBUF_FIXED) ? JBUF_FIXED : JBUF_ADAPTIVE;
 }
 
-void echosdk_set_jitter_buffer_type(echosdk_jbuf_type_t type)
+void voxsdk_set_jitter_buffer_type(voxsdk_jbuf_type_t type)
 {
-	bsdk_dispatch_sync(set_jbuf_type_fn, &type);
-	g_bsdk.cfg.jbuf_type = type;
+	vox_dispatch_sync(set_jbuf_type_fn, &type);
+	g_vox.cfg.jbuf_type = type;
 }

@@ -1,20 +1,20 @@
 /**
  * @file message.c  SIP MESSAGE — send and receive
  *
- * Send: echosdk_message_send() → bsdk_dispatch_sync → message_send()
+ * Send: voxsdk_message_send() → vox_dispatch_sync → message_send()
  *       baresip's message_send() supports text/plain only; content_type
  *       parameter is accepted for API consistency but currently ignored.
  *
  * Receive: message_listen() registers a handler on the baresip message
- *          subsystem. Each incoming SIP MESSAGE fires ECHOSDK_EV_MESSAGE
+ *          subsystem. Each incoming SIP MESSAGE fires VOXSDK_EV_MESSAGE
  *          via the event queue.
  *
- * Lifecycle: bsdk_message_init() is called from core.c after ua_init().
- *            bsdk_message_close() is called from echosdk_shutdown().
+ * Lifecycle: vox_message_init() is called from core.c after ua_init().
+ *            vox_message_close() is called from voxsdk_shutdown().
  */
 
 #include <string.h>
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* ── Incoming MESSAGE handler ────────────────────────────────────────────── */
 
@@ -24,14 +24,14 @@ static void message_recv_handler(struct ua *ua, const struct pl *peer,
 {
 	(void)arg;
 
-	struct echosdk_account *acct = bsdk_account_find_by_ua(ua);
+	struct voxsdk_account *acct = vox_account_find_by_ua(ua);
 
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = ECHOSDK_EV_MESSAGE;
-	echosdk_ev_message_t *m = &qev->ev.u.msg;
+	qev->ev.type = VOXSDK_EV_MESSAGE;
+	voxsdk_ev_message_t *m = &qev->ev.u.msg;
 	m->account = acct;
 
 	/* Pack strings into buf: peer\0ctype\0body\0 */
@@ -62,13 +62,13 @@ static void message_recv_handler(struct ua *ua, const struct pl *peer,
 		m->body = qev->buf + off;
 	}
 
-	bsdk_event_post_qev(qev);   /* warns and frees qev when the queue is full */
+	vox_event_post_qev(qev);   /* warns and frees qev when the queue is full */
 }
 
 /* ── Send ────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_account *acct;
+	struct voxsdk_account *acct;
 	const char             *to_uri;
 	const char             *body;
 	int                     result;
@@ -79,32 +79,32 @@ static void send_msg_fn(void *arg)
 	send_msg_ctx_t *ctx = arg;
 	if (!ctx->acct->ua) { ctx->result = ENOENT; return; }
 	/* baresip message_send uses text/plain; custom content_type via
-	 * echosdk_message_send() is accepted for future use */
+	 * voxsdk_message_send() is accepted for future use */
 	ctx->result = message_send(ctx->acct->ua, ctx->to_uri,
 	                           ctx->body, NULL, NULL);
 }
 
-int echosdk_message_send(echosdk_account_handle_t account,
+int voxsdk_message_send(voxsdk_account_handle_t account,
                           const char *to_uri,
                           const char *body,
                           const char *content_type)
 {
-	if (!account || !to_uri || !body) return ECHOSDK_ERR_INVAL;
+	if (!account || !to_uri || !body) return VOXSDK_ERR_INVAL;
 	(void)content_type; /* currently always text/plain */
 	send_msg_ctx_t ctx = {.acct = account, .to_uri = to_uri,
 	                       .body = body, .result = 0};
-	int err = bsdk_dispatch_sync(send_msg_fn, &ctx);
+	int err = vox_dispatch_sync(send_msg_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bsdk_message_init(void)
+int vox_message_init(void)
 {
 	return message_listen(baresip_message(), message_recv_handler, NULL);
 }
 
-void bsdk_message_close(void)
+void vox_message_close(void)
 {
 	message_unlisten(baresip_message(), message_recv_handler);
 }

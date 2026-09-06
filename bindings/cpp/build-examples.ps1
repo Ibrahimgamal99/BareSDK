@@ -1,5 +1,5 @@
 # Quick build script for C++ examples
-# Assumes you have echosdk.dll and echosdk.lib already built
+# Assumes you have voxsdk.dll and voxsdk.lib already built
 
 param(
     [string]$Config = "Release"
@@ -10,17 +10,17 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== Building C++ Examples ===" -ForegroundColor Cyan
 
 # Check prerequisites
-$dllPath = "..\..\dist\windows\x64\echosdk.dll"
-$libPath = "..\..\dist\windows\x64\echosdk.lib"
-$headerPath = "..\..\dist\windows\x64\include\echosdk.h"
+$dllPath = "..\..\dist\windows\x64\voxsdk.dll"
+$libPath = "..\..\dist\windows\x64\voxsdk.lib"
+$headerPath = "..\..\dist\windows\x64\include\voxsdk.h"
 
 if (-not (Test-Path $dllPath)) {
-    Write-Error "echosdk.dll not found at $dllPath`nPlease build the SDK first or copy the DLL."
+    Write-Error "voxsdk.dll not found at $dllPath`nPlease build the SDK first or copy the DLL."
     exit 1
 }
 
 if (-not (Test-Path $libPath)) {
-    Write-Error "echosdk.lib not found at $libPath`nThe import library is required to link against the DLL."
+    Write-Error "voxsdk.lib not found at $libPath`nThe import library is required to link against the DLL."
     exit 1
 }
 
@@ -29,8 +29,8 @@ if (-not (Test-Path $headerPath)) {
     exit 1
 }
 
-Write-Host "[OK] Found echosdk.dll" -ForegroundColor Green
-Write-Host "[OK] Found echosdk.lib" -ForegroundColor Green
+Write-Host "[OK] Found voxsdk.dll" -ForegroundColor Green
+Write-Host "[OK] Found voxsdk.lib" -ForegroundColor Green
 Write-Host "[OK] Found headers" -ForegroundColor Green
 Write-Host ""
 

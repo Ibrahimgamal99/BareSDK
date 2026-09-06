@@ -14,7 +14,7 @@ library;
 
 import 'dart:convert';
 
-import 'package:echo_sdk/echo_sdk.dart';
+import 'package:vox_sdk/vox_sdk.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -113,10 +113,10 @@ class AccountProfile {
 
 /// Loads and saves the one [AccountProfile] the example app keeps.
 class AccountStore {
-  static const _prefsKey = 'echosdk.account';
-  static const _rememberKey = 'echosdk.account.remember';
-  static const _passKey = 'echosdk.account.password';
-  static const _turnPassKey = 'echosdk.account.turnPassword';
+  static const _prefsKey = 'voxsdk.account';
+  static const _rememberKey = 'voxsdk.account.remember';
+  static const _passKey = 'voxsdk.account.password';
+  static const _turnPassKey = 'voxsdk.account.turnPassword';
 
   /// `encryptedSharedPreferences` puts the Android backing store behind
   /// Keystore instead of a plain XML file; on iOS the Keychain item is

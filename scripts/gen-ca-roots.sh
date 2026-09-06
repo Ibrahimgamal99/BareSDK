@@ -43,7 +43,7 @@ echo "==> ${count} roots"
 
 /* Declared extern in ca_ios.c, the only consumer. */
 
-const char bsdk_ca_roots_pem[] =
+const char vox_ca_roots_pem[] =
 HDR
   # One C string literal per line; adjacent literals concatenate into one
   # array initialiser.  Escaping is defensive — PEM is base64 plus ASCII
@@ -51,7 +51,7 @@ HDR
   sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/\t"/' -e 's/$/\\n"/' "${PEM}"
   echo ";"
   echo ""
-  echo "const size_t bsdk_ca_roots_pem_len = sizeof(bsdk_ca_roots_pem) - 1;"
+  echo "const size_t vox_ca_roots_pem_len = sizeof(vox_ca_roots_pem) - 1;"
 } > "${OUT}"
 
 echo "==> wrote ${OUT} ($(wc -c < "${OUT}") bytes)"

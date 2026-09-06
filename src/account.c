@@ -1,7 +1,7 @@
 /**
  * @file account.c  Multi-account registration FSM
  *
- * echosdk_account_t wraps a baresip ua. One UA per account.
+ * voxsdk_account_t wraps a baresip ua. One UA per account.
  * Registration retry uses exponential backoff with jitter.
  * All string fields in the account config are deep-copied.
  */
@@ -9,11 +9,11 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* Post a non-fatal registrar warning.
  *
- * ECHOSDK_EV_REGISTRAR_WARNING has been declared in echosdk.h, cloned in
+ * VOXSDK_EV_REGISTRAR_WARNING has been declared in voxsdk.h, cloned in
  * event.c and decoded by every binding since the event set was written, but
  * nothing ever posted it — so the one channel meant to explain a registration
  * that is technically alive but behaving oddly delivered nothing, and the
@@ -22,12 +22,12 @@
  * reconnect?" without trawling logs after the fact.
  *
  * String ownership follows the producer idiom in log.c: the message is packed
- * into the queued event's own inline buf, because bsdk_event_post() is a
+ * into the queued event's own inline buf, because vox_event_post() is a
  * shallow copy and qev_clone() rebases pointers that live in that buf.
  */
 static void post_registrar_warning(const char *fmt, ...)
 {
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	va_list ap;
 
 	if (!qev)
@@ -37,9 +37,9 @@ static void post_registrar_warning(const char *fmt, ...)
 	(void)re_vsnprintf(qev->buf, sizeof(qev->buf), fmt, ap);
 	va_end(ap);
 
-	qev->ev.type               = ECHOSDK_EV_REGISTRAR_WARNING;
+	qev->ev.type               = VOXSDK_EV_REGISTRAR_WARNING;
 	qev->ev.u.reg_warn.message = qev->buf;
-	bsdk_event_post_qev(qev);   /* warns and frees on failure */
+	vox_event_post_qev(qev);   /* warns and frees on failure */
 }
 
 /* ── URI parser: "user@host", "user@host:port", or "sip:user@host" ──────── */
@@ -115,25 +115,25 @@ static void parse_account_uri(const char *uri,
 
 /* ── Deep-copy helpers for account config ───────────────────────────────── */
 
-void bsdk_acct_cfg_deep_copy(echosdk_account_config_t *dst,
-                              const echosdk_account_config_t *src,
-                              struct echosdk_account *acct)
+void vox_acct_cfg_deep_copy(voxsdk_account_config_t *dst,
+                              const voxsdk_account_config_t *src,
+                              struct voxsdk_account *acct)
 {
 	*dst = *src;
-	acct->cfg_uri         = bsdk_strdup(src->uri);
-	acct->cfg_password    = bsdk_strdup(src->password);
-	acct->cfg_server_host = bsdk_strdup(src->server_host);
-	acct->cfg_server_url  = bsdk_strdup(src->server_url);
-	acct->cfg_auth_user   = bsdk_strdup(src->auth_user);
-	acct->cfg_display_name = bsdk_strdup(src->display_name);
-	acct->cfg_stun_server = bsdk_strdup(src->stun_server);
-	acct->cfg_turn_server = bsdk_strdup(src->turn_server);
-	acct->cfg_turn_user   = bsdk_strdup(src->turn_user);
-	acct->cfg_turn_pass   = bsdk_strdup(src->turn_pass);
-	acct->cfg_outbound    = bsdk_strdup(src->outbound);
-	acct->cfg_outbound_proxy = bsdk_strdup(src->outbound_proxy);
-	acct->cfg_push_token  = bsdk_strdup(src->push_token);
-	acct->cfg_push_param  = bsdk_strdup(src->push_param);
+	acct->cfg_uri         = vox_strdup(src->uri);
+	acct->cfg_password    = vox_strdup(src->password);
+	acct->cfg_server_host = vox_strdup(src->server_host);
+	acct->cfg_server_url  = vox_strdup(src->server_url);
+	acct->cfg_auth_user   = vox_strdup(src->auth_user);
+	acct->cfg_display_name = vox_strdup(src->display_name);
+	acct->cfg_stun_server = vox_strdup(src->stun_server);
+	acct->cfg_turn_server = vox_strdup(src->turn_server);
+	acct->cfg_turn_user   = vox_strdup(src->turn_user);
+	acct->cfg_turn_pass   = vox_strdup(src->turn_pass);
+	acct->cfg_outbound    = vox_strdup(src->outbound);
+	acct->cfg_outbound_proxy = vox_strdup(src->outbound_proxy);
+	acct->cfg_push_token  = vox_strdup(src->push_token);
+	acct->cfg_push_param  = vox_strdup(src->push_param);
 
 	dst->uri          = acct->cfg_uri;
 	dst->password     = acct->cfg_password;
@@ -151,7 +151,7 @@ void bsdk_acct_cfg_deep_copy(echosdk_account_config_t *dst,
 	dst->push_param   = acct->cfg_push_param;
 }
 
-void bsdk_acct_cfg_deep_free(struct echosdk_account *acct)
+void vox_acct_cfg_deep_free(struct voxsdk_account *acct)
 {
 	mem_deref(acct->cfg_uri);          acct->cfg_uri = NULL;
 	mem_deref(acct->cfg_password);     acct->cfg_password = NULL;
@@ -202,21 +202,21 @@ static const char *normalize_codec_name(const char *name)
  * (wideband), G.711 as the universally-interoperable fallback.  Both profiles
  * compile exactly these two codec modules — see cmake/modules-{desktop,mobile}
  * .cmake — so this list is always fully satisfiable. */
-#define BSDK_DEFAULT_AUDIO_CODECS "opus/48000/2,PCMU/8000/1,PCMA/8000/1"
+#define VOX_DEFAULT_AUDIO_CODECS "opus/48000/2,PCMU/8000/1,PCMA/8000/1"
 
 /* Build codec list string from enum array: "opus/48000/2,PCMU/8000/1" */
-static void codec_list_str(const echosdk_codec_t *codecs, int count,
+static void codec_list_str(const voxsdk_codec_t *codecs, int count,
                              char *buf, size_t sz)
 {
 	buf[0] = '\0';
 	for (int i = 0; i < count && i < 8; i++) {
 		const char *name;
 		switch (codecs[i]) {
-		case ECHOSDK_CODEC_OPUS: name = "opus/48000/2";  break;
-		case ECHOSDK_CODEC_PCMU: name = "PCMU/8000/1";   break;
-		case ECHOSDK_CODEC_PCMA: name = "PCMA/8000/1";   break;
-		case ECHOSDK_CODEC_G722:    name = "G722/8000/1";    break;
-		case ECHOSDK_CODEC_G726_32: name = "G726-32/8000/1"; break;
+		case VOXSDK_CODEC_OPUS: name = "opus/48000/2";  break;
+		case VOXSDK_CODEC_PCMU: name = "PCMU/8000/1";   break;
+		case VOXSDK_CODEC_PCMA: name = "PCMA/8000/1";   break;
+		case VOXSDK_CODEC_G722:    name = "G722/8000/1";    break;
+		case VOXSDK_CODEC_G726_32: name = "G726-32/8000/1"; break;
 		default:                    name = NULL;              break;
 		}
 		if (!name) continue;
@@ -241,25 +241,25 @@ static void codec_names_list_str(const char names[][32], int count,
 /* Maximum buffer for the RFC 8599 Contact URI params string.
  * Worst case: "pn-provider=apns-sandbox" (24) + ";pn-prid=" (9) +
  * token (~256) + ";pn-param=" (10) + param (~200) + NUL. */
-#define BSDK_PUSH_PARAMS_BUFSZ 1024
+#define VOX_PUSH_PARAMS_BUFSZ 1024
 
 /* Build the RFC 8599 Contact URI params string into buf.
  * Returns length written (>0), 0 if push is disabled/unconfigured,
  * or -1 on overflow. */
-static int build_push_contact_params(const struct echosdk_account *acct,
+static int build_push_contact_params(const struct voxsdk_account *acct,
                                       char *buf, size_t buf_sz)
 {
 	const char *provider_str;
 
-	if (acct->cfg.push_provider == ECHOSDK_PUSH_PROVIDER_NONE)
+	if (acct->cfg.push_provider == VOXSDK_PUSH_PROVIDER_NONE)
 		return 0;
 	if (!acct->cfg.push_token || !acct->cfg.push_token[0])
 		return 0;
 
 	switch (acct->cfg.push_provider) {
-	case ECHOSDK_PUSH_PROVIDER_APNS:         provider_str = "apns";         break;
-	case ECHOSDK_PUSH_PROVIDER_APNS_SANDBOX: provider_str = "apns-sandbox"; break;
-	case ECHOSDK_PUSH_PROVIDER_FCM:          provider_str = "fcm";          break;
+	case VOXSDK_PUSH_PROVIDER_APNS:         provider_str = "apns";         break;
+	case VOXSDK_PUSH_PROVIDER_APNS_SANDBOX: provider_str = "apns-sandbox"; break;
+	case VOXSDK_PUSH_PROVIDER_FCM:          provider_str = "fcm";          break;
 	default: return 0;
 	}
 
@@ -290,10 +290,10 @@ static int build_push_contact_params(const struct echosdk_account *acct,
 
 /* Configure a baresip account object.
  * acct->parsed_* fields (user, host, port, transport) must be set first. */
-static void configure_baresip_account(struct echosdk_account *acct)
+static void configure_baresip_account(struct voxsdk_account *acct)
 {
 	struct account *ba = ua_account(acct->ua);
-	const echosdk_config_t *cfg = &g_bsdk.cfg;
+	const voxsdk_config_t *cfg = &g_vox.cfg;
 
 	/* Auth — password required; auth_user defaults to uri user part */
 	if (acct->cfg.password)
@@ -330,7 +330,7 @@ static void configure_baresip_account(struct echosdk_account *acct)
 			uint16_t sport = acct->cfg.server_port ? acct->cfg.server_port
 			                                       : acct->parsed_port;
 			if (surl || shost[0]) {
-				bsdk_build_outbound(surl, shost, sport,
+				vox_build_outbound(surl, shost, sport,
 				                    acct->parsed_transport, ob, sizeof(ob));
 				ob_str = ob;
 			}
@@ -341,9 +341,9 @@ static void configure_baresip_account(struct echosdk_account *acct)
 
 	/* Media encryption — account overrides global */
 	{
-		echosdk_media_enc_t enc = acct->cfg.media_enc
+		voxsdk_media_enc_t enc = acct->cfg.media_enc
 		                        ? acct->cfg.media_enc : cfg->media_enc;
-		const char *menc = bsdk_mediaenc_str(enc);
+		const char *menc = vox_mediaenc_str(enc);
 		if (menc)
 			account_set_mediaenc(ba, menc);
 	}
@@ -402,7 +402,7 @@ static void configure_baresip_account(struct echosdk_account *acct)
 
 		/* Nothing configured anywhere, or every configured name was empty */
 		if (!codecs[0]) {
-			str_ncpy(codecs, BSDK_DEFAULT_AUDIO_CODECS,
+			str_ncpy(codecs, VOX_DEFAULT_AUDIO_CODECS,
 			         sizeof(codecs));
 		}
 
@@ -415,7 +415,7 @@ static void configure_baresip_account(struct echosdk_account *acct)
 			 * of the restriction that was asked for. Detect that by the
 			 * fallback identity and say so. */
 			if (account_aucodecl(ba) == baresip_aucodecl()) {
-				warning("EchoSDK/account: codec list \"%s\" matched no "
+				warning("VoxSDK/account: codec list \"%s\" matched no "
 				        "loaded codec — offering all codecs instead\n",
 				        codecs);
 			}
@@ -425,12 +425,12 @@ static void configure_baresip_account(struct echosdk_account *acct)
 	/* DTMF via RTP events */
 	{
 		static const enum dtmfmode dtmf_map[] = {
-			[ECHOSDK_DTMF_RFC4733]  = DTMFMODE_RTP_EVENT,
-			[ECHOSDK_DTMF_SIP_INFO] = DTMFMODE_SIP_INFO,
-			[ECHOSDK_DTMF_AUTO]     = DTMFMODE_AUTO,
+			[VOXSDK_DTMF_RFC4733]  = DTMFMODE_RTP_EVENT,
+			[VOXSDK_DTMF_SIP_INFO] = DTMFMODE_SIP_INFO,
+			[VOXSDK_DTMF_AUTO]     = DTMFMODE_AUTO,
 		};
-		echosdk_dtmf_mode_t m = acct->cfg.dtmf_mode;
-		if ((unsigned)m <= ECHOSDK_DTMF_AUTO)
+		voxsdk_dtmf_mode_t m = acct->cfg.dtmf_mode;
+		if ((unsigned)m <= VOXSDK_DTMF_AUTO)
 			account_set_dtmfmode(ba, dtmf_map[m]);
 		else
 			account_set_dtmfmode(ba, DTMFMODE_RTP_EVENT);
@@ -456,30 +456,30 @@ static void configure_baresip_account(struct echosdk_account *acct)
  * watchdog and the keepalive probe — and they must agree.
  */
 
-static bool retry_budget_left(const struct echosdk_account *acct)
+static bool retry_budget_left(const struct voxsdk_account *acct)
 {
 	uint32_t max_attempts = acct->retry_policy_set
 	        ? acct->retry_max_attempts
-	        : g_bsdk.cfg.reg_retry_max_attempts;
+	        : g_vox.cfg.reg_retry_max_attempts;
 
 	return max_attempts == 0 || acct->retry_attempt < max_attempts;
 }
 
-echosdk_reg_state_t bsdk_account_reg_fail_state(struct echosdk_account *acct,
-                                                echosdk_error_t err)
+voxsdk_reg_state_t vox_account_reg_fail_state(struct voxsdk_account *acct,
+                                                voxsdk_error_t err)
 {
 	/* An armed retry settles it: that attempt is going out whatever the
 	 * budget now says, and schedule_retry() already counted it. */
 	bool will_retry = acct->reg_wanted && !acct->destroyed &&
-	        err != ECHOSDK_ERR_AUTH &&
+	        err != VOXSDK_ERR_AUTH &&
 	        (tmr_isrunning(&acct->retry_tmr) || retry_budget_left(acct));
 
 	acct->reconnecting = will_retry;
 
-	return will_retry ? ECHOSDK_REG_RECONNECTING : ECHOSDK_REG_FAILED;
+	return will_retry ? VOXSDK_REG_RECONNECTING : VOXSDK_REG_FAILED;
 }
 
-void bsdk_account_reconnect_reset(struct echosdk_account *acct)
+void vox_account_reconnect_reset(struct voxsdk_account *acct)
 {
 	if (!acct)
 		return;
@@ -488,8 +488,8 @@ void bsdk_account_reconnect_reset(struct echosdk_account *acct)
 	acct->retry_delay_ms = 0;
 }
 
-bool bsdk_account_reg_ev_prepare(struct echosdk_account *acct,
-                                 echosdk_event_t *ev)
+bool vox_account_reg_ev_prepare(struct voxsdk_account *acct,
+                                 voxsdk_event_t *ev)
 {
 	if (!acct || !ev)
 		return true;
@@ -499,13 +499,13 @@ bool bsdk_account_reg_ev_prepare(struct echosdk_account *acct,
 	 * retry that just succeeded would read as "reconnecting again in 2 s".
 	 * retry_attempt survives: on a terminal FAILED it is how many attempts
 	 * were spent, and REGISTERED has already zeroed it itself. */
-	if (ev->u.reg.state != ECHOSDK_REG_RECONNECTING)
-		bsdk_account_reconnect_reset(acct);
+	if (ev->u.reg.state != VOXSDK_REG_RECONNECTING)
+		vox_account_reconnect_reset(acct);
 
 	ev->u.reg.retry_attempt  = acct->retry_attempt;
 	ev->u.reg.retry_delay_ms = acct->retry_delay_ms;
 
-	if (ev->u.reg.state != ECHOSDK_REG_RECONNECTING)
+	if (ev->u.reg.state != VOXSDK_REG_RECONNECTING)
 		return true;
 
 	if (acct->last_rc_valid &&
@@ -521,9 +521,9 @@ bool bsdk_account_reg_ev_prepare(struct echosdk_account *acct,
 	return true;
 }
 
-void bsdk_account_reg_reconnecting(struct echosdk_account *acct)
+void vox_account_reg_reconnecting(struct voxsdk_account *acct)
 {
-	echosdk_event_t ev = {0};
+	voxsdk_event_t ev = {0};
 
 	if (!acct || acct->destroyed || !acct->reg_wanted)
 		return;
@@ -531,22 +531,22 @@ void bsdk_account_reg_reconnecting(struct echosdk_account *acct)
 	/* Only a registration that was up (or on its way up) has anything to
 	 * lose here.  One that is already RECONNECTING keeps the state it has,
 	 * and a terminal FAILED is not turned back into hope by a new link. */
-	if (acct->reg_state != ECHOSDK_REG_REGISTERED &&
-	    acct->reg_state != ECHOSDK_REG_REGISTERING)
+	if (acct->reg_state != VOXSDK_REG_REGISTERED &&
+	    acct->reg_state != VOXSDK_REG_REGISTERING)
 		return;
 
 	acct->reconnecting = true;
-	acct->reg_state    = ECHOSDK_REG_RECONNECTING;
+	acct->reg_state    = VOXSDK_REG_RECONNECTING;
 	/* The binding is stale and the path may be gone; probing it would only
 	 * report the outage we already know about.  The re-REGISTER re-arms. */
-	bsdk_account_keepalive_cancel(acct);
+	vox_account_keepalive_cancel(acct);
 
-	ev.type          = ECHOSDK_EV_REG_STATE;
-	ev.u.reg.state   = ECHOSDK_REG_RECONNECTING;
-	ev.u.reg.error   = ECHOSDK_OK;
+	ev.type          = VOXSDK_EV_REG_STATE;
+	ev.u.reg.state   = VOXSDK_REG_RECONNECTING;
+	ev.u.reg.error   = VOXSDK_OK;
 	ev.u.reg.account = acct;
-	if (bsdk_account_reg_ev_prepare(acct, &ev))
-		bsdk_event_post(&ev);
+	if (vox_account_reg_ev_prepare(acct, &ev))
+		vox_event_post(&ev);
 }
 
 /* ── Registration watchdog (fires on re_main) ───────────────────────────────
@@ -574,29 +574,29 @@ void bsdk_account_reg_reconnecting(struct echosdk_account *acct)
  * libre's own transaction timeout is a compile-time constant, so an app that
  * wants a REGISTER on a dead link to fail in eight seconds instead of
  * thirty-two has only this watchdog to say it with.  Both paths converge on
- * bsdk_account_schedule_retry(), which ignores a second request while a retry
+ * vox_account_schedule_retry(), which ignores a second request while a retry
  * is already armed, so whichever fires first wins and the other is a no-op.
  */
 
 enum {
-	BSDK_REG_WATCH_INTERVAL_MS = 500,
+	VOX_REG_WATCH_INTERVAL_MS = 500,
 };
 
 static uint32_t reg_watch_timeout_ms(void)
 {
-	return g_bsdk.cfg.sip_timer_f_ms;
+	return g_vox.cfg.sip_timer_f_ms;
 }
 
 static void reg_watch_handler(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 
 	if (acct->destroyed || !acct->ua || !acct->reg_wanted)
 		return;
 
 	/* The consumer already has a terminal answer — nothing owed. */
-	if (acct->reg_state == ECHOSDK_REG_REGISTERED ||
-	    acct->reg_state == ECHOSDK_REG_FAILED)
+	if (acct->reg_state == VOXSDK_REG_REGISTERED ||
+	    acct->reg_state == VOXSDK_REG_FAILED)
 		return;
 
 	/* A retry is armed, so this REGISTER has already been answered for as
@@ -611,9 +611,9 @@ static void reg_watch_handler(void *arg)
 		return;
 
 	if (ua_isregistered(acct->ua)) {
-		echosdk_event_t ev = {0};
+		voxsdk_event_t ev = {0};
 
-		warning("EchoSDK: account %s is registered but baresip emitted "
+		warning("VoxSDK: account %s is registered but baresip emitted "
 		        "no event; synthesising REGISTERED\n",
 		        acct->cfg_uri ? acct->cfg_uri : "(unknown)");
 
@@ -621,62 +621,62 @@ static void reg_watch_handler(void *arg)
 		                       "no event; state was synthesised from "
 		                       "ua_isregistered()");
 
-		acct->reg_state     = ECHOSDK_REG_REGISTERED;
+		acct->reg_state     = VOXSDK_REG_REGISTERED;
 		acct->retry_attempt = 0;
 		acct->reconnecting  = false;
-		bsdk_account_keepalive_arm(acct);
+		vox_account_keepalive_arm(acct);
 
-		ev.type          = ECHOSDK_EV_REG_STATE;
-		ev.u.reg.state   = ECHOSDK_REG_REGISTERED;
-		ev.u.reg.error   = ECHOSDK_OK;
+		ev.type          = VOXSDK_EV_REG_STATE;
+		ev.u.reg.state   = VOXSDK_REG_REGISTERED;
+		ev.u.reg.error   = VOXSDK_OK;
 		ev.u.reg.account = acct;
-		(void)bsdk_account_reg_ev_prepare(acct, &ev);
-		bsdk_event_post(&ev);
+		(void)vox_account_reg_ev_prepare(acct, &ev);
+		vox_event_post(&ev);
 		return;
 	}
 
-	acct->reg_watch_elapsed_ms += BSDK_REG_WATCH_INTERVAL_MS;
+	acct->reg_watch_elapsed_ms += VOX_REG_WATCH_INTERVAL_MS;
 
 	if (reg_watch_timeout_ms() &&
 	    acct->reg_watch_elapsed_ms >= reg_watch_timeout_ms()) {
-		echosdk_event_t ev = {0};
+		voxsdk_event_t ev = {0};
 
-		warning("EchoSDK: account %s got no registration answer in "
+		warning("VoxSDK: account %s got no registration answer in "
 		        "%u ms; reporting timeout\n",
 		        acct->cfg_uri ? acct->cfg_uri : "(unknown)",
 		        acct->reg_watch_elapsed_ms);
 
-		acct->reg_error = ECHOSDK_ERR_TIMEOUT;
-		acct->reg_state = bsdk_account_reg_fail_state(acct,
-		                                             ECHOSDK_ERR_TIMEOUT);
+		acct->reg_error = VOXSDK_ERR_TIMEOUT;
+		acct->reg_state = vox_account_reg_fail_state(acct,
+		                                             VOXSDK_ERR_TIMEOUT);
 		str_ncpy(acct->reg_error_str, "registration timed out",
 		         sizeof(acct->reg_error_str));
 
-		ev.type            = ECHOSDK_EV_REG_STATE;
+		ev.type            = VOXSDK_EV_REG_STATE;
 		ev.u.reg.state     = acct->reg_state;
-		ev.u.reg.error     = ECHOSDK_ERR_TIMEOUT;
+		ev.u.reg.error     = VOXSDK_ERR_TIMEOUT;
 		ev.u.reg.error_str = acct->reg_error_str;
 		ev.u.reg.account   = acct;
-		if (bsdk_account_reg_ev_prepare(acct, &ev))
-			bsdk_event_post(&ev);
+		if (vox_account_reg_ev_prepare(acct, &ev))
+			vox_event_post(&ev);
 
-		bsdk_account_schedule_retry(acct);
+		vox_account_schedule_retry(acct);
 		return;
 	}
 
-	tmr_start(&acct->reg_watch_tmr, BSDK_REG_WATCH_INTERVAL_MS,
+	tmr_start(&acct->reg_watch_tmr, VOX_REG_WATCH_INTERVAL_MS,
 	          reg_watch_handler, acct);
 }
 
 /* Arm the watchdog for a registration that was just requested. Call on
  * re_main, immediately after ua_register(). */
-void bsdk_account_watch_registration(struct echosdk_account *acct)
+void vox_account_watch_registration(struct voxsdk_account *acct)
 {
 	if (!acct || acct->destroyed || !acct->ua)
 		return;
 
 	acct->reg_watch_elapsed_ms = 0;
-	tmr_start(&acct->reg_watch_tmr, BSDK_REG_WATCH_INTERVAL_MS,
+	tmr_start(&acct->reg_watch_tmr, VOX_REG_WATCH_INTERVAL_MS,
 	          reg_watch_handler, acct);
 }
 
@@ -710,9 +710,9 @@ static bool host_is_ip_literal(const char *host)
 	return host && sa_set_str(&sa, host, 0) == 0;
 }
 
-static bool srv_failover_eligible(const struct echosdk_account *acct)
+static bool srv_failover_eligible(const struct voxsdk_account *acct)
 {
-	const echosdk_config_t *cfg = &g_bsdk.cfg;
+	const voxsdk_config_t *cfg = &g_vox.cfg;
 
 	if (!cfg->dns_srv_failover)
 		return false;
@@ -721,7 +721,7 @@ static bool srv_failover_eligible(const struct echosdk_account *acct)
 	/* Only a server_url the APP supplied is an operator decision that
 	 * overrides SRV.  auto_server_url is one WE synthesise (see the
 	 * "Auto-generate server_url for all transports" branch in
-	 * bsdk_account_create_h), and it is populated on every account that
+	 * vox_account_create_h), and it is populated on every account that
 	 * did not pass one — so testing it here made this predicate always
 	 * false and the whole RFC 3263 failover path below dead code: the
 	 * retry ladder re-sent to the same host forever, which is exactly
@@ -730,8 +730,8 @@ static bool srv_failover_eligible(const struct echosdk_account *acct)
 	 * auto-derived server_url stays valid while we walk the targets. */
 	if (acct->cfg.server_url)
 		return false;
-	if (acct->parsed_transport == ECHOSDK_TRANSPORT_WS ||
-	    acct->parsed_transport == ECHOSDK_TRANSPORT_WSS)
+	if (acct->parsed_transport == VOXSDK_TRANSPORT_WS ||
+	    acct->parsed_transport == VOXSDK_TRANSPORT_WSS)
 		return false;
 	if (acct->cfg.server_port || acct->parsed_port)
 		return false;
@@ -749,26 +749,26 @@ static bool srv_failover_eligible(const struct echosdk_account *acct)
 /* Is this account still in the live list?  The DNS callback can outlive an
  * account the app destroyed while the query was in flight, and the pointer
  * would then dangle. */
-static bool acct_is_live(const struct echosdk_account *acct)
+static bool acct_is_live(const struct voxsdk_account *acct)
 {
 	struct le *le;
 	bool found = false;
 
-	mtx_lock(&g_bsdk.acct_lock);
-	LIST_FOREACH(&g_bsdk.accounts, le) {
+	mtx_lock(&g_vox.acct_lock);
+	LIST_FOREACH(&g_vox.accounts, le) {
 		if (le->data == acct) {
 			found = true;
 			break;
 		}
 	}
-	mtx_unlock(&g_bsdk.acct_lock);
+	mtx_unlock(&g_vox.acct_lock);
 
 	return found && !acct->destroyed;
 }
 
-static void srv_done_handler(const struct bsdk_dns_result *res, void *arg)
+static void srv_done_handler(const struct vox_dns_result *res, void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 	size_t n, i;
 
 	if (!acct_is_live(acct))
@@ -776,19 +776,19 @@ static void srv_done_handler(const struct bsdk_dns_result *res, void *arg)
 
 	acct->srv_pending = false;
 
-	if (bsdk_dns_result_err(res))
+	if (vox_dns_result_err(res))
 		return;
 
-	n = bsdk_dns_result_count(res);
-	for (i = 0; i < n && acct->srv_count < BSDK_SRV_MAX_TARGETS; i++) {
-		echosdk_transport_t t;
+	n = vox_dns_result_count(res);
+	for (i = 0; i < n && acct->srv_count < VOX_SRV_MAX_TARGETS; i++) {
+		voxsdk_transport_t t;
 		char     host[256];
 		uint16_t port = 0;
 
-		if (bsdk_dns_result_get(res, i, &t, host, sizeof(host), &port))
+		if (vox_dns_result_get(res, i, &t, host, sizeof(host), &port))
 			continue;
 
-		bsdk_build_outbound(NULL, host, port, t,
+		vox_build_outbound(NULL, host, port, t,
 		                    acct->srv_uri[acct->srv_count],
 		                    sizeof(acct->srv_uri[0]));
 		if (acct->srv_uri[acct->srv_count][0])
@@ -796,11 +796,11 @@ static void srv_done_handler(const struct bsdk_dns_result *res, void *arg)
 	}
 
 	if (acct->srv_count > 1)
-		info("EchoSDK: %u SRV targets available for failover\n",
+		info("VoxSDK: %u SRV targets available for failover\n",
 		     acct->srv_count);
 }
 
-void bsdk_account_srv_resolve(struct echosdk_account *acct)
+void vox_account_srv_resolve(struct voxsdk_account *acct)
 {
 	const char *host;
 
@@ -817,7 +817,7 @@ void bsdk_account_srv_resolve(struct echosdk_account *acct)
 	acct->srv_pending = true;
 	/* port_hint 0 — eligibility already established there is no explicit
 	 * port, which is what makes the NAPTR/SRV chain applicable. */
-	if (bsdk_dns_resolve(host, acct->parsed_transport, 0,
+	if (vox_dns_resolve(host, acct->parsed_transport, 0,
 	                     srv_done_handler, acct))
 		acct->srv_pending = false;
 }
@@ -826,7 +826,7 @@ void bsdk_account_srv_resolve(struct echosdk_account *acct)
  * Point this account's outbound proxy at the next SRV target.
  * No-op unless there is more than one target to move between.
  */
-static void srv_advance(struct echosdk_account *acct)
+static void srv_advance(struct voxsdk_account *acct)
 {
 	struct account *ba;
 
@@ -840,19 +840,19 @@ static void srv_advance(struct echosdk_account *acct)
 		return;
 
 	if (account_set_outbound(ba, acct->srv_uri[acct->srv_idx], 0)) {
-		warning("EchoSDK: SRV failover: could not set outbound %s\n",
+		warning("VoxSDK: SRV failover: could not set outbound %s\n",
 		        acct->srv_uri[acct->srv_idx]);
 		return;
 	}
 
-	info("EchoSDK: SRV failover: trying proxy %u/%u (%s)\n",
+	info("VoxSDK: SRV failover: trying proxy %u/%u (%s)\n",
 	     acct->srv_idx + 1u, acct->srv_count,
 	     acct->srv_uri[acct->srv_idx]);
 }
 
 static void retry_timer_handler(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 	if (acct->destroyed || !acct->ua)
 		return;
 
@@ -862,10 +862,10 @@ static void retry_timer_handler(void *arg)
 
 	/* schedule_retry() already counted this one, and the RECONNECTING event
 	 * the app got carries the same number — do not print it one ahead. */
-	info("EchoSDK: re-registering account (attempt %u)\n",
+	info("VoxSDK: re-registering account (attempt %u)\n",
 	     acct->retry_attempt);
 	ua_register(acct->ua);
-	bsdk_account_watch_registration(acct);
+	vox_account_watch_registration(acct);
 }
 
 /* ── Keepalive / reachability probe ──────────────────────────────────────────
@@ -887,8 +887,8 @@ static void keepalive_handler(void *arg);
 static void keepalive_resp_handler(int err, const struct sip_msg *msg,
                                     void *arg)
 {
-	struct echosdk_account *acct = arg;
-	echosdk_event_t ev = {0};
+	struct voxsdk_account *acct = arg;
+	voxsdk_event_t ev = {0};
 
 	if (!acct_is_live(acct))
 		return;
@@ -908,33 +908,33 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 		if (acct->ka_failed) {
 			acct->ka_failed = false;
 
-			if (acct->reg_state == ECHOSDK_REG_RECONNECTING &&
+			if (acct->reg_state == VOXSDK_REG_RECONNECTING &&
 			    ua_isregistered(acct->ua)) {
-				echosdk_event_t ok = {0};
+				voxsdk_event_t ok = {0};
 
-				info("EchoSDK: keepalive probe answered again; "
+				info("VoxSDK: keepalive probe answered again; "
 				     "path to proxy recovered\n");
 
-				acct->reg_state     = ECHOSDK_REG_REGISTERED;
-				acct->reg_error     = ECHOSDK_OK;
+				acct->reg_state     = VOXSDK_REG_REGISTERED;
+				acct->reg_error     = VOXSDK_OK;
 				acct->retry_attempt = 0;
 				acct->reconnecting  = false;
 				acct->reg_error_str[0] = '\0';
 
-				ok.type          = ECHOSDK_EV_REG_STATE;
-				ok.u.reg.state   = ECHOSDK_REG_REGISTERED;
-				ok.u.reg.error   = ECHOSDK_OK;
+				ok.type          = VOXSDK_EV_REG_STATE;
+				ok.u.reg.state   = VOXSDK_REG_REGISTERED;
+				ok.u.reg.error   = VOXSDK_OK;
 				ok.u.reg.account = acct;
-				(void)bsdk_account_reg_ev_prepare(acct, &ok);
-				bsdk_event_post(&ok);
+				(void)vox_account_reg_ev_prepare(acct, &ok);
+				vox_event_post(&ok);
 			}
 		}
 
-		bsdk_account_keepalive_arm(acct);
+		vox_account_keepalive_arm(acct);
 		return;
 	}
 
-	warning("EchoSDK: keepalive probe failed (%m); path to proxy is "
+	warning("VoxSDK: keepalive probe failed (%m); path to proxy is "
 	        "unreachable\n", err ? err : ETIMEDOUT);
 
 	/* The registrar answered our last REGISTER and has not refused
@@ -947,47 +947,47 @@ static void keepalive_resp_handler(int err, const struct sip_msg *msg,
 	                       err ? err : ETIMEDOUT);
 
 	acct->ka_failed = true;
-	acct->reg_error = ECHOSDK_ERR_TIMEOUT;
+	acct->reg_error = VOXSDK_ERR_TIMEOUT;
 
 	/* Unreachable, not refused.  With keepalive_reregister the retry policy
 	 * decides whether this is still recoverable; without it we keep probing,
 	 * so an account the app wants registered is recovering either way and a
 	 * later answer (above) is what ends it. */
-	if (g_bsdk.cfg.keepalive_reregister && acct->reg_wanted) {
-		acct->reg_state = bsdk_account_reg_fail_state(acct,
-		                                             ECHOSDK_ERR_TIMEOUT);
+	if (g_vox.cfg.keepalive_reregister && acct->reg_wanted) {
+		acct->reg_state = vox_account_reg_fail_state(acct,
+		                                             VOXSDK_ERR_TIMEOUT);
 	}
 	else {
-		acct->reg_state    = acct->reg_wanted ? ECHOSDK_REG_RECONNECTING
-		                                      : ECHOSDK_REG_FAILED;
+		acct->reg_state    = acct->reg_wanted ? VOXSDK_REG_RECONNECTING
+		                                      : VOXSDK_REG_FAILED;
 		acct->reconnecting = acct->reg_wanted;
 	}
 
 	str_ncpy(acct->reg_error_str, "keepalive probe timed out",
 	         sizeof(acct->reg_error_str));
 
-	ev.type            = ECHOSDK_EV_REG_STATE;
+	ev.type            = VOXSDK_EV_REG_STATE;
 	ev.u.reg.state     = acct->reg_state;
-	ev.u.reg.error     = ECHOSDK_ERR_TIMEOUT;
+	ev.u.reg.error     = VOXSDK_ERR_TIMEOUT;
 	ev.u.reg.error_str = acct->reg_error_str;
 	ev.u.reg.account   = acct;
-	if (bsdk_account_reg_ev_prepare(acct, &ev))
-		bsdk_event_post(&ev);
+	if (vox_account_reg_ev_prepare(acct, &ev))
+		vox_event_post(&ev);
 
-	if (g_bsdk.cfg.keepalive_reregister && acct->reg_wanted) {
+	if (g_vox.cfg.keepalive_reregister && acct->reg_wanted) {
 		/* Straight to a retry rather than an immediate ua_register(): the
 		 * retry path is what walks the SRV list and applies the backoff, and
 		 * a proxy that just stopped answering is exactly when both matter. */
-		bsdk_account_schedule_retry(acct);
+		vox_account_schedule_retry(acct);
 	}
 	else {
-		bsdk_account_keepalive_arm(acct);
+		vox_account_keepalive_arm(acct);
 	}
 }
 
 static void keepalive_handler(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 	char uri[320];
 	const char *host;
 
@@ -1000,7 +1000,7 @@ static void keepalive_handler(void *arg)
 	 * OPTIONS competing with media for a congested uplink is exactly the
 	 * wrong request to add.  Skip this round. */
 	if (!list_isempty(ua_calls(acct->ua))) {
-		bsdk_account_keepalive_arm(acct);
+		vox_account_keepalive_arm(acct);
 		return;
 	}
 
@@ -1017,25 +1017,25 @@ static void keepalive_handler(void *arg)
 	acct->ka_in_flight = true;
 	if (ua_options_send(acct->ua, uri, keepalive_resp_handler, acct)) {
 		acct->ka_in_flight = false;
-		bsdk_account_keepalive_arm(acct);
+		vox_account_keepalive_arm(acct);
 	}
 }
 
-void bsdk_account_keepalive_arm(struct echosdk_account *acct)
+void vox_account_keepalive_arm(struct voxsdk_account *acct)
 {
 	uint32_t iv;
 
 	if (!acct || acct->destroyed || !acct->reg_wanted)
 		return;
 
-	iv = g_bsdk.cfg.keepalive_interval;
+	iv = g_vox.cfg.keepalive_interval;
 	if (!iv)
 		return;
 
 	tmr_start(&acct->ka_tmr, iv, keepalive_handler, acct);
 }
 
-void bsdk_account_keepalive_cancel(struct echosdk_account *acct)
+void vox_account_keepalive_cancel(struct voxsdk_account *acct)
 {
 	if (acct)
 		tmr_cancel(&acct->ka_tmr);
@@ -1077,9 +1077,9 @@ static uint32_t apply_jitter(uint32_t delay, float jitter)
 	return (uint32_t)((int32_t)delay + offset);
 }
 
-void bsdk_account_schedule_retry(struct echosdk_account *acct)
+void vox_account_schedule_retry(struct voxsdk_account *acct)
 {
-	const echosdk_config_t *cfg = &g_bsdk.cfg;
+	const voxsdk_config_t *cfg = &g_vox.cfg;
 
 	uint32_t initial_ms   = acct->retry_policy_set ? acct->retry_initial_ms   : cfg->reg_retry_initial_ms;
 	uint32_t max_ms       = acct->retry_policy_set ? acct->retry_max_ms       : cfg->reg_retry_max_ms;
@@ -1095,9 +1095,9 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 		return;
 
 	if (!retry_budget_left(acct)) {
-		echosdk_event_t done = {0};
+		voxsdk_event_t done = {0};
 
-		info("EchoSDK: max retry attempts reached for account\n");
+		info("VoxSDK: max retry attempts reached for account\n");
 
 		acct->reconnecting = false;
 
@@ -1105,21 +1105,21 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 		 * promises another attempt: going quiet on that would leave it
 		 * rendering "Reconnecting…" for ever with nothing left to reconnect
 		 * it.  A caller that already reported FAILED (an exhausted budget is
-		 * visible to bsdk_account_reg_fail_state() too) needs no second
+		 * visible to vox_account_reg_fail_state() too) needs no second
 		 * event. */
-		if (acct->reg_state != ECHOSDK_REG_RECONNECTING)
+		if (acct->reg_state != VOXSDK_REG_RECONNECTING)
 			return;
 
-		acct->reg_state = ECHOSDK_REG_FAILED;
+		acct->reg_state = VOXSDK_REG_FAILED;
 
-		done.type            = ECHOSDK_EV_REG_STATE;
-		done.u.reg.state     = ECHOSDK_REG_FAILED;
+		done.type            = VOXSDK_EV_REG_STATE;
+		done.u.reg.state     = VOXSDK_REG_FAILED;
 		done.u.reg.error     = acct->reg_error;
 		done.u.reg.error_str = acct->reg_error_str[0]
 		        ? acct->reg_error_str : NULL;
 		done.u.reg.account   = acct;
-		(void)bsdk_account_reg_ev_prepare(acct, &done);
-		bsdk_event_post(&done);
+		(void)vox_account_reg_ev_prepare(acct, &done);
+		vox_event_post(&done);
 		return;
 	}
 
@@ -1132,7 +1132,7 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 		}
 	}
 
-	/* Jitter is global only: echosdk_account_set_retry_policy() predates it
+	/* Jitter is global only: voxsdk_account_set_retry_policy() predates it
 	 * and has no parameter for it, so there is no per-account value to
 	 * prefer here. */
 	delay = apply_jitter(delay, cfg->reg_retry_jitter);
@@ -1146,17 +1146,17 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 	 * attempt and the delay: an attempt is armed, so this is a countdown and
 	 * not a failure the app has to act on. */
 	acct->reconnecting = true;
-	acct->reg_state    = ECHOSDK_REG_RECONNECTING;
+	acct->reg_state    = VOXSDK_REG_RECONNECTING;
 
-	echosdk_event_t ev = {0};
-	ev.type            = ECHOSDK_EV_REG_STATE;
-	ev.u.reg.state     = ECHOSDK_REG_RECONNECTING;
+	voxsdk_event_t ev = {0};
+	ev.type            = VOXSDK_EV_REG_STATE;
+	ev.u.reg.state     = VOXSDK_REG_RECONNECTING;
 	ev.u.reg.error     = acct->reg_error;
 	ev.u.reg.error_str = acct->reg_error_str[0]
 	        ? acct->reg_error_str : NULL;
 	ev.u.reg.account   = acct;
-	if (bsdk_account_reg_ev_prepare(acct, &ev))
-		bsdk_event_post(&ev);
+	if (vox_account_reg_ev_prepare(acct, &ev))
+		vox_event_post(&ev);
 
 	tmr_start(&acct->retry_tmr, delay, retry_timer_handler, acct);
 }
@@ -1165,46 +1165,46 @@ void bsdk_account_schedule_retry(struct echosdk_account *acct)
 
 static void account_destructor(void *data)
 {
-	struct echosdk_account *acct = data;
+	struct voxsdk_account *acct = data;
 	tmr_cancel(&acct->retry_tmr);
 	tmr_cancel(&acct->reg_watch_tmr);
 	tmr_cancel(&acct->ka_tmr);
 	if (acct->ws_port) {
-		bsdk_ws_unset_server(acct->parsed_transport, acct->ws_host,
+		vox_ws_unset_server(acct->parsed_transport, acct->ws_host,
 		                     acct->ws_port, acct->ws_pin_path);
 		acct->ws_port = 0;
 	}
 	struct le *le, *le_tmp;
 	LIST_FOREACH_SAFE(&acct->custom_hdrs, le, le_tmp) {
-		struct bsdk_custom_hdr *hdr = le->data;
+		struct vox_custom_hdr *hdr = le->data;
 		list_unlink(&hdr->le);
 		mem_deref(hdr);
 	}
-	bsdk_acct_cfg_deep_free(acct);
+	vox_acct_cfg_deep_free(acct);
 }
 
-/* ── bsdk_account_find_by_ua ─────────────────────────────────────────────── */
+/* ── vox_account_find_by_ua ─────────────────────────────────────────────── */
 
-struct echosdk_account *bsdk_account_find_by_ua(const struct ua *ua)
+struct voxsdk_account *vox_account_find_by_ua(const struct ua *ua)
 {
 	struct le *le;
-	mtx_lock(&g_bsdk.acct_lock);
-	LIST_FOREACH(&g_bsdk.accounts, le) {
-		struct echosdk_account *acct = le->data;
+	mtx_lock(&g_vox.acct_lock);
+	LIST_FOREACH(&g_vox.accounts, le) {
+		struct voxsdk_account *acct = le->data;
 		if (acct->ua == ua) {
-			mtx_unlock(&g_bsdk.acct_lock);
+			mtx_unlock(&g_vox.acct_lock);
 			return acct;
 		}
 	}
-	mtx_unlock(&g_bsdk.acct_lock);
+	mtx_unlock(&g_vox.acct_lock);
 	return NULL;
 }
 
 /* ── Public API — dispatch wrappers ─────────────────────────────────────── */
 
 typedef struct {
-	echosdk_account_config_t  cfg;
-	echosdk_account_handle_t *out;
+	voxsdk_account_config_t  cfg;
+	voxsdk_account_handle_t *out;
 	int                       result;
 } create_ctx_t;
 
@@ -1213,7 +1213,7 @@ static void create_fn(void *arg)
 	create_ctx_t *ctx = arg;
 	int err;
 
-	struct echosdk_account *acct = mem_alloc(sizeof(*acct), account_destructor);
+	struct voxsdk_account *acct = mem_alloc(sizeof(*acct), account_destructor);
 	if (!acct) { ctx->result = ENOMEM; return; }
 	memset(acct, 0, sizeof(*acct));
 	tmr_init(&acct->retry_tmr);
@@ -1221,12 +1221,12 @@ static void create_fn(void *arg)
 	tmr_init(&acct->ka_tmr);
 	list_init(&acct->custom_hdrs);
 
-	bsdk_acct_cfg_deep_copy(&acct->cfg, &ctx->cfg, acct);
-	acct->reg_state = ECHOSDK_REG_UNREGISTERED;
+	vox_acct_cfg_deep_copy(&acct->cfg, &ctx->cfg, acct);
+	acct->reg_state = VOXSDK_REG_UNREGISTERED;
 
 	if (!acct->cfg.uri) {
 		mem_deref(acct);
-		ctx->result = ECHOSDK_ERR_INVAL;
+		ctx->result = VOXSDK_ERR_INVAL;
 		return;
 	}
 
@@ -1237,7 +1237,7 @@ static void create_fn(void *arg)
 	                  &acct->parsed_port);
 
 	/* Determine transport: server_url → account transport → global default */
-	echosdk_transport_t tp = acct->cfg.transport;
+	voxsdk_transport_t tp = acct->cfg.transport;
 	char ws_path[256] = ""; /* set only if server_url contains an explicit path */
 	char ws_host[256] = ""; /* WS server authority — pinned in ws_path.c */
 	uint16_t ws_port = 0;
@@ -1245,7 +1245,7 @@ static void create_fn(void *arg)
 	if (acct->cfg.server_url) {
 		char sv_host[256];
 		uint16_t sv_port;
-		bsdk_parse_server_url(acct->cfg.server_url, &tp,
+		vox_parse_server_url(acct->cfg.server_url, &tp,
 		                      sv_host, sizeof(sv_host),
 		                      &sv_port, ws_path, sizeof(ws_path));
 		if (!acct->parsed_host[0])
@@ -1260,22 +1260,22 @@ static void create_fn(void *arg)
 		uint16_t port = acct->parsed_port;
 		if (!port) {
 			switch (tp) {
-			/* WebSocket defaults, as in bsdk_parse_server_url. */
-			case ECHOSDK_TRANSPORT_WSS: port = 443; break;
-			case ECHOSDK_TRANSPORT_WS:  port = 80; break;
-			case ECHOSDK_TRANSPORT_TLS: port = 5061; break;
-			case ECHOSDK_TRANSPORT_TCP: port = 5060; break;
-			case ECHOSDK_TRANSPORT_UDP:
+			/* WebSocket defaults, as in vox_parse_server_url. */
+			case VOXSDK_TRANSPORT_WSS: port = 443; break;
+			case VOXSDK_TRANSPORT_WS:  port = 80; break;
+			case VOXSDK_TRANSPORT_TLS: port = 5061; break;
+			case VOXSDK_TRANSPORT_TCP: port = 5060; break;
+			case VOXSDK_TRANSPORT_UDP:
 			default:                     port = 5060; break;
 			}
 		}
 		const char *scheme;
 		switch (tp) {
-		case ECHOSDK_TRANSPORT_WSS: scheme = "wss"; break;
-		case ECHOSDK_TRANSPORT_WS:  scheme = "ws";  break;
-		case ECHOSDK_TRANSPORT_TLS: scheme = "sips"; break;
-		case ECHOSDK_TRANSPORT_TCP: scheme = "sip";  break;
-		case ECHOSDK_TRANSPORT_UDP:
+		case VOXSDK_TRANSPORT_WSS: scheme = "wss"; break;
+		case VOXSDK_TRANSPORT_WS:  scheme = "ws";  break;
+		case VOXSDK_TRANSPORT_TLS: scheme = "sips"; break;
+		case VOXSDK_TRANSPORT_TCP: scheme = "sip";  break;
+		case VOXSDK_TRANSPORT_UDP:
 		default:                     scheme = "sip"; break;
 		}
 
@@ -1290,11 +1290,11 @@ static void create_fn(void *arg)
 	/* Claim the server + explicit path for __wrap_websock_connect
 	 * (ws_path.c).  Released in account_destructor, so a destroyed account
 	 * stops counting against connection pinning. */
-	if (tp == ECHOSDK_TRANSPORT_WS || tp == ECHOSDK_TRANSPORT_WSS) {
+	if (tp == VOXSDK_TRANSPORT_WS || tp == VOXSDK_TRANSPORT_WSS) {
 		str_ncpy(acct->ws_host, ws_host, sizeof(acct->ws_host));
 		str_ncpy(acct->ws_pin_path, ws_path, sizeof(acct->ws_pin_path));
 		acct->ws_port = ws_port;
-		bsdk_ws_set_server(tp, acct->ws_host, acct->ws_port,
+		vox_ws_set_server(tp, acct->ws_host, acct->ws_port,
 		                   acct->ws_pin_path);
 	}
 
@@ -1303,7 +1303,7 @@ static void create_fn(void *arg)
 	char aor[512];
 	bool ipv6 = strchr(acct->parsed_host, ':') != NULL;
 	/* cfg.reg_refresh_pct is the documented "refresh at N% of expires" knob
-	 * (default 75).  It used to be written by echosdk_config_init() and read
+	 * (default 75).  It used to be written by voxsdk_config_init() and read
 	 * NOWHERE, so an app tuning it silently got libre's built-in 90% —
 	 * worse than absent, because the config, the docs and four bindings all
 	 * advertise it.  baresip takes this as the AOR ";rwait=" parameter
@@ -1312,23 +1312,23 @@ static void create_fn(void *arg)
 	 * default alone", so an out-of-range value is dropped rather than
 	 * silently clamped to something the app did not ask for. */
 	char rwait[24] = "";
-	if (g_bsdk.cfg.reg_refresh_pct >= 5 && g_bsdk.cfg.reg_refresh_pct <= 95) {
+	if (g_vox.cfg.reg_refresh_pct >= 5 && g_vox.cfg.reg_refresh_pct <= 95) {
 		re_snprintf(rwait, sizeof(rwait), ";rwait=%u",
-		            (unsigned)g_bsdk.cfg.reg_refresh_pct);
+		            (unsigned)g_vox.cfg.reg_refresh_pct);
 	}
 	if (acct->parsed_port) {
 		re_snprintf(aor, sizeof(aor),
 		            ipv6 ? "sip:%s@[%s]:%u;transport=%s%s"
 		                 : "sip:%s@%s:%u;transport=%s%s",
 		            acct->parsed_user, acct->parsed_host,
-		            (unsigned)acct->parsed_port, bsdk_transport_str(tp),
+		            (unsigned)acct->parsed_port, vox_transport_str(tp),
 		            rwait);
 	} else {
 		re_snprintf(aor, sizeof(aor),
 		            ipv6 ? "sip:%s@[%s];transport=%s%s"
 		                 : "sip:%s@%s;transport=%s%s",
 		            acct->parsed_user, acct->parsed_host,
-		            bsdk_transport_str(tp), rwait);
+		            vox_transport_str(tp), rwait);
 	}
 
 	err = ua_alloc(&acct->ua, aor);
@@ -1336,28 +1336,28 @@ static void create_fn(void *arg)
 
 	configure_baresip_account(acct);
 
-	mtx_lock(&g_bsdk.acct_lock);
-	list_append(&g_bsdk.accounts, &acct->le, acct);
-	mtx_unlock(&g_bsdk.acct_lock);
+	mtx_lock(&g_vox.acct_lock);
+	list_append(&g_vox.accounts, &acct->le, acct);
+	mtx_unlock(&g_vox.acct_lock);
 
 	*ctx->out = acct;
 	ctx->result = 0;
 }
 
-int echosdk_account_create(const echosdk_account_config_t *cfg,
-                            echosdk_account_handle_t *out)
+int voxsdk_account_create(const voxsdk_account_config_t *cfg,
+                            voxsdk_account_handle_t *out)
 {
 	if (!cfg || !cfg->uri || !out)
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
 
 	create_ctx_t ctx = { .cfg = *cfg, .out = out, .result = 0 };
-	int err = bsdk_dispatch_sync(create_fn, &ctx);
+	int err = vox_dispatch_sync(create_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
 static void destroy_fn(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 	acct->destroyed = true;
 	tmr_cancel(&acct->retry_tmr);
 	tmr_cancel(&acct->reg_watch_tmr);
@@ -1366,38 +1366,38 @@ static void destroy_fn(void *arg)
 		mem_deref(acct->ua);
 		acct->ua = NULL;
 	}
-	mtx_lock(&g_bsdk.acct_lock);
+	mtx_lock(&g_vox.acct_lock);
 	list_unlink(&acct->le);
-	mtx_unlock(&g_bsdk.acct_lock);
+	mtx_unlock(&g_vox.acct_lock);
 	mem_deref(acct);
 }
 
-void echosdk_account_destroy(echosdk_account_handle_t acct)
+void voxsdk_account_destroy(voxsdk_account_handle_t acct)
 {
 	if (!acct) return;
-	bsdk_dispatch_sync(destroy_fn, acct);
+	vox_dispatch_sync(destroy_fn, acct);
 }
 
 /* ── Enumeration & state readers ─────────────────────────────────────────── */
 
-void echosdk_account_foreach(echosdk_account_iter_fn fn, void *arg)
+void voxsdk_account_foreach(voxsdk_account_iter_fn fn, void *arg)
 {
 	if (!fn) return;
 
-	mtx_lock(&g_bsdk.acct_lock);
+	mtx_lock(&g_vox.acct_lock);
 	struct le *le;
-	LIST_FOREACH(&g_bsdk.accounts, le) {
-		struct echosdk_account *acct = le->data;
+	LIST_FOREACH(&g_vox.accounts, le) {
+		struct voxsdk_account *acct = le->data;
 		if (!acct->destroyed)
-			fn((echosdk_account_handle_t)acct, arg);
+			fn((voxsdk_account_handle_t)acct, arg);
 	}
-	mtx_unlock(&g_bsdk.acct_lock);
+	mtx_unlock(&g_vox.acct_lock);
 }
 
-int echosdk_account_get_aor(echosdk_account_handle_t acct, char *buf, size_t sz)
+int voxsdk_account_get_aor(voxsdk_account_handle_t acct, char *buf, size_t sz)
 {
 	if (!acct || !buf || sz == 0)
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
 
 	/* parsed_user/parsed_host are set once at create time and never
 	 * mutated, so no lock is needed. */
@@ -1406,20 +1406,20 @@ int echosdk_account_get_aor(echosdk_account_handle_t acct, char *buf, size_t sz)
 	                    acct->parsed_user, acct->parsed_host);
 	if (n < 0) {
 		buf[0] = '\0';
-		return ECHOSDK_ERR_NOMEM;
+		return VOXSDK_ERR_NOMEM;
 	}
-	return ECHOSDK_OK;
+	return VOXSDK_OK;
 }
 
-echosdk_reg_state_t echosdk_account_get_reg_state(echosdk_account_handle_t acct)
+voxsdk_reg_state_t voxsdk_account_get_reg_state(voxsdk_account_handle_t acct)
 {
-	if (!acct) return ECHOSDK_REG_UNREGISTERED;
+	if (!acct) return VOXSDK_REG_UNREGISTERED;
 	return acct->reg_state;
 }
 
 static void register_fn(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 	if (acct->ua) {
 		acct->reg_wanted = true;   /* netmon.c re-REGISTERs on handover */
 		/* An explicit register() is a fresh intent, not the tail of a
@@ -1430,41 +1430,41 @@ static void register_fn(void *arg)
 		 * before it: the answer is only needed if this attempt fails, and
 		 * delaying the REGISTER on a DNS round-trip would slow down every
 		 * successful registration to help the rare failing one. */
-		bsdk_account_srv_resolve(acct);
+		vox_account_srv_resolve(acct);
 		ua_register(acct->ua);
-		bsdk_account_watch_registration(acct);
+		vox_account_watch_registration(acct);
 	}
 }
 
-int echosdk_account_register(echosdk_account_handle_t acct)
+int voxsdk_account_register(voxsdk_account_handle_t acct)
 {
-	if (!acct) return ECHOSDK_ERR_INVAL;
-	return bsdk_dispatch(register_fn, acct);
+	if (!acct) return VOXSDK_ERR_INVAL;
+	return vox_dispatch(register_fn, acct);
 }
 
 static void unregister_fn(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 	if (acct->ua) {
 		acct->reg_wanted   = false;
 		acct->reconnecting = false;
 		acct->ka_failed    = false;
-		acct->reg_state = ECHOSDK_REG_UNREGISTERING;
+		acct->reg_state = VOXSDK_REG_UNREGISTERING;
 		tmr_cancel(&acct->reg_watch_tmr);
-		bsdk_account_keepalive_cancel(acct);
+		vox_account_keepalive_cancel(acct);
 		ua_unregister(acct->ua);
 	}
 }
 
-int echosdk_account_unregister(echosdk_account_handle_t acct)
+int voxsdk_account_unregister(voxsdk_account_handle_t acct)
 {
-	if (!acct) return ECHOSDK_ERR_INVAL;
-	return bsdk_dispatch(unregister_fn, acct);
+	if (!acct) return VOXSDK_ERR_INVAL;
+	return vox_dispatch(unregister_fn, acct);
 }
 
 static void keepalive_now_fn(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 
 	/* Cancel the pending tick first: keepalive_handler() re-arms on every
 	 * exit path, so firing it early without this would leave the schedule
@@ -1473,20 +1473,20 @@ static void keepalive_now_fn(void *arg)
 	keepalive_handler(acct);
 }
 
-int echosdk_account_keepalive_now(echosdk_account_handle_t acct)
+int voxsdk_account_keepalive_now(voxsdk_account_handle_t acct)
 {
 	if (!acct)
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
 	if (!acct->ua || acct->destroyed || !acct->reg_wanted)
-		return ECHOSDK_ERR_STATE;
+		return VOXSDK_ERR_STATE;
 
-	return bsdk_dispatch(keepalive_now_fn, acct);
+	return vox_dispatch(keepalive_now_fn, acct);
 }
 
 /* ── Retry control ───────────────────────────────────────────────────────── */
 
 typedef struct {
-	echosdk_account_handle_t acct;
+	voxsdk_account_handle_t acct;
 	uint32_t initial_ms;
 	uint32_t max_ms;
 	float    backoff;
@@ -1496,7 +1496,7 @@ typedef struct {
 static void set_retry_policy_fn(void *arg)
 {
 	retry_policy_ctx_t *ctx = arg;
-	struct echosdk_account *acct = ctx->acct;
+	struct voxsdk_account *acct = ctx->acct;
 	acct->retry_policy_set   = true;
 	acct->retry_initial_ms   = ctx->initial_ms;
 	acct->retry_max_ms       = ctx->max_ms;
@@ -1504,18 +1504,18 @@ static void set_retry_policy_fn(void *arg)
 	acct->retry_max_attempts = ctx->max_attempts;
 }
 
-int echosdk_account_set_retry_policy(echosdk_account_handle_t acct,
+int voxsdk_account_set_retry_policy(voxsdk_account_handle_t acct,
                                       uint32_t initial_ms, uint32_t max_ms,
                                       float backoff, uint32_t max_attempts)
 {
-	if (!acct) return ECHOSDK_ERR_INVAL;
+	if (!acct) return VOXSDK_ERR_INVAL;
 	retry_policy_ctx_t ctx = { acct, initial_ms, max_ms, backoff, max_attempts };
-	return bsdk_dispatch_sync(set_retry_policy_fn, &ctx);
+	return vox_dispatch_sync(set_retry_policy_fn, &ctx);
 }
 
 static void cancel_retry_fn(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 
 	tmr_cancel(&acct->retry_tmr);
 	tmr_cancel(&acct->reg_watch_tmr);
@@ -1525,53 +1525,53 @@ static void cancel_retry_fn(void *arg)
 	 * registration is now down for good as far as the SDK is concerned.
 	 * Report it, or the app is left rendering "Reconnecting…" against a
 	 * retry it cancelled itself. */
-	if (acct->reg_state == ECHOSDK_REG_RECONNECTING) {
-		echosdk_event_t ev = {0};
+	if (acct->reg_state == VOXSDK_REG_RECONNECTING) {
+		voxsdk_event_t ev = {0};
 
 		acct->reconnecting = false;
-		acct->reg_state    = ECHOSDK_REG_FAILED;
+		acct->reg_state    = VOXSDK_REG_FAILED;
 
-		ev.type            = ECHOSDK_EV_REG_STATE;
-		ev.u.reg.state     = ECHOSDK_REG_FAILED;
+		ev.type            = VOXSDK_EV_REG_STATE;
+		ev.u.reg.state     = VOXSDK_REG_FAILED;
 		ev.u.reg.error     = acct->reg_error;
 		ev.u.reg.error_str = acct->reg_error_str[0]
 		        ? acct->reg_error_str : NULL;
 		ev.u.reg.account   = acct;
-		bsdk_event_post(&ev);
+		vox_event_post(&ev);
 	}
 }
 
-int echosdk_account_cancel_retry(echosdk_account_handle_t acct)
+int voxsdk_account_cancel_retry(voxsdk_account_handle_t acct)
 {
-	if (!acct) return ECHOSDK_ERR_INVAL;
-	return bsdk_dispatch_sync(cancel_retry_fn, acct);
+	if (!acct) return VOXSDK_ERR_INVAL;
+	return vox_dispatch_sync(cancel_retry_fn, acct);
 }
 
 static void retry_now_fn(void *arg)
 {
-	struct echosdk_account *acct = arg;
+	struct voxsdk_account *acct = arg;
 	tmr_cancel(&acct->retry_tmr);
 	acct->retry_attempt = 0;
 	if (!acct->destroyed && acct->ua) {
 		acct->reg_wanted = true;
 		ua_register(acct->ua);
-		bsdk_account_watch_registration(acct);
+		vox_account_watch_registration(acct);
 	}
 }
 
-int echosdk_account_retry_now(echosdk_account_handle_t acct)
+int voxsdk_account_retry_now(voxsdk_account_handle_t acct)
 {
-	if (!acct) return ECHOSDK_ERR_INVAL;
-	return bsdk_dispatch_sync(retry_now_fn, acct);
+	if (!acct) return VOXSDK_ERR_INVAL;
+	return vox_dispatch_sync(retry_now_fn, acct);
 }
 
 /* ── Push token runtime update ──────────────────────────────────────────── */
 
 typedef struct {
-	echosdk_account_handle_t  acct;
-	/* Caller-owned string pointer. Safe because bsdk_dispatch_sync blocks
+	voxsdk_account_handle_t  acct;
+	/* Caller-owned string pointer. Safe because vox_dispatch_sync blocks
 	 * the caller until set_push_token_fn returns, so the string cannot be
-	 * freed before bsdk_strdup() copies it. */
+	 * freed before vox_strdup() copies it. */
 	const char               *push_token;
 	int                       result;
 } push_token_ctx_t;
@@ -1579,21 +1579,21 @@ typedef struct {
 static void set_push_token_fn(void *arg)
 {
 	push_token_ctx_t *ctx = arg;
-	struct echosdk_account *acct = ctx->acct;
+	struct voxsdk_account *acct = ctx->acct;
 
 	if (!acct->ua) {
-		ctx->result = ECHOSDK_ERR_STATE;
+		ctx->result = VOXSDK_ERR_STATE;
 		return;
 	}
 
 	mem_deref(acct->cfg_push_token);
-	acct->cfg_push_token = bsdk_strdup(ctx->push_token);
+	acct->cfg_push_token = vox_strdup(ctx->push_token);
 	acct->cfg.push_token = acct->cfg_push_token;
 
-	char pn_params[BSDK_PUSH_PARAMS_BUFSZ];
+	char pn_params[VOX_PUSH_PARAMS_BUFSZ];
 	int n = build_push_contact_params(acct, pn_params, sizeof(pn_params));
 	if (n < 0) {
-		ctx->result = ECHOSDK_ERR_INVAL;  /* token too long */
+		ctx->result = VOXSDK_ERR_INVAL;  /* token too long */
 		return;
 	}
 
@@ -1602,21 +1602,21 @@ static void set_push_token_fn(void *arg)
 	/* Re-register only when safe: skip if mid-transaction or mid-retry.
 	 * The new cparams are already stored on the UA; the next natural
 	 * ua_register() call will pick them up. */
-	bool reg_in_flight = (acct->reg_state == ECHOSDK_REG_REGISTERING ||
-	                      acct->reg_state == ECHOSDK_REG_UNREGISTERING ||
-	                      acct->reg_state == ECHOSDK_REG_RECONNECTING);
+	bool reg_in_flight = (acct->reg_state == VOXSDK_REG_REGISTERING ||
+	                      acct->reg_state == VOXSDK_REG_UNREGISTERING ||
+	                      acct->reg_state == VOXSDK_REG_RECONNECTING);
 	bool retry_pending = tmr_isrunning(&acct->retry_tmr);
 
 	if (!reg_in_flight && !retry_pending)
 		ua_register(acct->ua);
 }
 
-int echosdk_account_set_push_token(echosdk_account_handle_t acct,
+int voxsdk_account_set_push_token(voxsdk_account_handle_t acct,
                                     const char *push_token)
 {
-	if (!acct) return ECHOSDK_ERR_INVAL;
+	if (!acct) return VOXSDK_ERR_INVAL;
 	push_token_ctx_t ctx = { .acct = acct, .push_token = push_token,
 	                          .result = 0 };
-	int err = bsdk_dispatch_sync(set_push_token_fn, &ctx);
+	int err = vox_dispatch_sync(set_push_token_fn, &ctx);
 	return err ? err : ctx.result;
 }

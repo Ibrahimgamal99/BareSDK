@@ -17,7 +17,7 @@
  *
  *      detect → settle → [transports] → [REGISTER] → [re-INVITE] → verify
  *
- * Detection is either pushed by the app (echosdk_network_changed(), driven
+ * Detection is either pushed by the app (voxsdk_network_changed(), driven
  * from ConnectivityManager / NWPathMonitor) or pulled by a poll timer.  Both
  * feed the same debounce: an interface coming up produces a burst of address
  * changes, and acting on the first one wastes a full REGISTER round-trip.
@@ -41,7 +41,7 @@
  * rewrites (RFC 4566 §5.7); nothing re-gathers either, so the offer would carry
  * the address and the candidate list of the network the call just left.  Those
  * calls are migrated with an RFC 8445 §9 ICE restart instead —
- * bsdk_ice_restart(), whose re-INVITE carries new credentials, freshly gathered
+ * vox_ice_restart(), whose re-INVITE carries new credentials, freshly gathered
  * candidates and the new address at both levels.  See ice_shim.c.
  *
  * A restart is only attempted when the local address actually moved.  A
@@ -49,7 +49,7 @@
  * (to re-bind the dialog to the new connection — see call_signals_over_ws), and
  * putting working media through an ICE restart for that would cost audio.
  *
- * ECHOSDK_NET_CALL_ICE_STALE is still emitted, but now only for an ICE call the
+ * VOXSDK_NET_CALL_ICE_STALE is still emitted, but now only for an ICE call the
  * restart could not be performed for; cfg.net_ice_handover then decides how long
  * to keep trying, as before: BEST_EFFORT runs the normal verify/retry budget,
  * FAIL_FAST gives up after a single attempt so the app gets a prompt
@@ -57,20 +57,20 @@
  * user holding a silent handset for net_verify_ms × net_max_attempts.
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* Upper bound on accounts/calls processed per handover. Both lists are
  * snapshotted under their lock and walked afterwards, because migrating a
  * call re-enters baresip's event handler (which takes the same locks). */
-#define BSDK_NET_MAX_SNAP    64
+#define VOX_NET_MAX_SNAP    64
 
 /* Bound on address add/remove passes per scan — a guard against spinning on
  * an address the kernel reports but baresip refuses to accept. */
-#define BSDK_NET_SCAN_MAX    32
+#define VOX_NET_SCAN_MAX    32
 
-#define BSDK_NET_SETTLE_MS   1500
-#define BSDK_NET_VERIFY_MS   4000
-#define BSDK_NET_MAX_ATTEMPT 6
+#define VOX_NET_SETTLE_MS   1500
+#define VOX_NET_VERIFY_MS   4000
+#define VOX_NET_MAX_ATTEMPT 6
 
 /* ── Stall repair ─────────────────────────────────────────────────────────
  *
@@ -97,12 +97,12 @@
  * media_stall_ms.  ROUNDS is the harder stop — after that many episodes the
  * problem is not one we can offer our way out of, and the MEDIA_STALL alert
  * is left to speak for itself. */
-#define BSDK_NET_STALL_VERIFY_MS   1500
-#define BSDK_NET_STALL_COOLDOWN_MS 10000
-#define BSDK_NET_STALL_ATTEMPTS        3
-#define BSDK_NET_STALL_ROUNDS          3
+#define VOX_NET_STALL_VERIFY_MS   1500
+#define VOX_NET_STALL_COOLDOWN_MS 10000
+#define VOX_NET_STALL_ATTEMPTS        3
+#define VOX_NET_STALL_ROUNDS          3
 
-struct bsdk_netmon {
+struct vox_netmon {
 	struct tmr tmr_poll;    /* periodic interface scan                     */
 	struct tmr tmr_settle;  /* debounce / retry of the handover itself     */
 	struct tmr tmr_verify;  /* per-call migration progress tick            */
@@ -124,28 +124,28 @@ struct bsdk_netmon {
 	uint32_t max_attempts;
 	bool     reinvite_calls;
 	bool     hangup_on_fail;
-	echosdk_ice_handover_t ice_handover;
+	voxsdk_ice_handover_t ice_handover;
 
 	char     cur_laddr[64];
 };
 
-static struct bsdk_netmon g_nm;
+static struct vox_netmon g_nm;
 
 static void settle_handler(void *arg);
 static void verify_handler(void *arg);
-static void send_migration(struct echosdk_call *lc);
-static uint32_t max_attempts_for(const struct echosdk_call *lc);
+static void send_migration(struct voxsdk_call *lc);
+static uint32_t max_attempts_for(const struct voxsdk_call *lc);
 
 /* ── Events ──────────────────────────────────────────────────────────────── */
 
-static echosdk_error_t map_err(int err)
+static voxsdk_error_t map_err(int err)
 {
 	switch (err) {
-	case 0:        return ECHOSDK_OK;
-	case ENOMEM:   return ECHOSDK_ERR_NOMEM;
-	case EINVAL:   return ECHOSDK_ERR_INVAL;
-	case ETIMEDOUT: return ECHOSDK_ERR_TIMEOUT;
-	default:       return ECHOSDK_ERR_TRANSPORT;
+	case 0:        return VOXSDK_OK;
+	case ENOMEM:   return VOXSDK_ERR_NOMEM;
+	case EINVAL:   return VOXSDK_ERR_INVAL;
+	case ETIMEDOUT: return VOXSDK_ERR_TIMEOUT;
+	default:       return VOXSDK_ERR_TRANSPORT;
 	}
 }
 
@@ -163,13 +163,13 @@ static echosdk_error_t map_err(int err)
  *
  * Address-routed transports do not have this problem: if the path is unchanged
  * their Contact still resolves. */
-static bool call_signals_over_ws(const struct echosdk_call *lc)
+static bool call_signals_over_ws(const struct voxsdk_call *lc)
 {
 	if (!lc || !lc->acct)
 		return false;
 
-	return lc->acct->parsed_transport == ECHOSDK_TRANSPORT_WS ||
-	       lc->acct->parsed_transport == ECHOSDK_TRANSPORT_WSS;
+	return lc->acct->parsed_transport == VOXSDK_TRANSPORT_WS ||
+	       lc->acct->parsed_transport == VOXSDK_TRANSPORT_WSS;
 }
 
 /* Does this call have ICE?
@@ -179,27 +179,27 @@ static bool call_signals_over_ws(const struct echosdk_call *lc)
  * plain-RTP call when the peer offers no candidates, and that call migrates like
  * any other.  Falls back to the config for a call that has already gone, which
  * is only ever a reporting path. */
-static bool call_uses_ice(const struct echosdk_call *lc)
+static bool call_uses_ice(const struct voxsdk_call *lc)
 {
 	if (!lc || !lc->acct)
-		return g_bsdk.cfg.ice_enabled;
+		return g_vox.cfg.ice_enabled;
 
 	if (lc->bc)
-		return bsdk_ice_call_active(lc->bc);
+		return vox_ice_call_active(lc->bc);
 
-	return lc->acct->cfg.ice_enabled || g_bsdk.cfg.ice_enabled;
+	return lc->acct->cfg.ice_enabled || g_vox.cfg.ice_enabled;
 }
 
-static void netmon_emit(echosdk_net_event_t what,
-                         struct echosdk_call *lc,
-                         struct echosdk_account *acct,
+static void netmon_emit(voxsdk_net_event_t what,
+                         struct voxsdk_call *lc,
+                         struct voxsdk_account *acct,
                          int err, uint32_t attempt)
 {
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type                   = ECHOSDK_EV_NETWORK;
+	qev->ev.type                   = VOXSDK_EV_NETWORK;
 	qev->ev.u.network.event        = what;
 	qev->ev.u.network.call         = lc;
 	qev->ev.u.network.account      = acct;
@@ -227,7 +227,7 @@ static void netmon_emit(echosdk_net_event_t what,
 	str_ncpy(qev->buf, g_nm.cur_laddr, sizeof(qev->buf));
 	qev->ev.u.network.local_addr = qev->buf;
 
-	bsdk_event_post_qev(qev);   /* warns and frees qev when the queue is full */
+	vox_event_post_qev(qev);   /* warns and frees qev when the queue is full */
 }
 
 /* ── Address-set scanning ────────────────────────────────────────────────── */
@@ -329,7 +329,7 @@ static unsigned scan_addresses(void)
 	unsigned changed = 0;
 	int i;
 
-	for (i = 0; i < BSDK_NET_SCAN_MAX; i++) {
+	for (i = 0; i < VOX_NET_SCAN_MAX; i++) {
 		struct scan_ctx c;
 		memset(&c, 0, sizeof(c));
 		(void)net_if_apply(if_missing_h, &c);
@@ -340,7 +340,7 @@ static unsigned scan_addresses(void)
 		changed++;
 	}
 
-	for (i = 0; i < BSDK_NET_SCAN_MAX; i++) {
+	for (i = 0; i < VOX_NET_SCAN_MAX; i++) {
 		struct scan_ctx c;
 		memset(&c, 0, sizeof(c));
 		(void)net_laddr_apply(net, laddr_gone_h, &c);
@@ -376,9 +376,9 @@ static void update_cur_laddr(void)
 	 * net_laddr_af(AF_UNSPEC) matches nothing — try each family in turn. */
 	sa = net_laddr_af(net, net_af(net));
 	if (!sa || !sa_isset(sa, SA_ADDR))
-		sa = net_laddr_af(net, g_bsdk.cfg.prefer_ipv6 ? AF_INET6 : AF_INET);
+		sa = net_laddr_af(net, g_vox.cfg.prefer_ipv6 ? AF_INET6 : AF_INET);
 	if (!sa || !sa_isset(sa, SA_ADDR))
-		sa = net_laddr_af(net, g_bsdk.cfg.prefer_ipv6 ? AF_INET : AF_INET6);
+		sa = net_laddr_af(net, g_vox.cfg.prefer_ipv6 ? AF_INET : AF_INET6);
 
 	if (sa && sa_isset(sa, SA_ADDR)) {
 		(void)re_snprintf(g_nm.cur_laddr, sizeof(g_nm.cur_laddr), "%j", sa);
@@ -399,43 +399,43 @@ static void update_cur_laddr(void)
 	}
 }
 
-/* ── Snapshots (see BSDK_NET_MAX_SNAP comment) ───────────────────────────── */
+/* ── Snapshots (see VOX_NET_MAX_SNAP comment) ───────────────────────────── */
 
 struct call_snap {
-	struct echosdk_call **v;
+	struct voxsdk_call **v;
 	size_t                max;
 	size_t                n;
 };
 
-static void call_snap_cb(struct echosdk_call *lc, void *arg)
+static void call_snap_cb(struct voxsdk_call *lc, void *arg)
 {
 	struct call_snap *s = arg;
 	if (s->n < s->max)
 		s->v[s->n++] = lc;
 }
 
-static size_t snapshot_calls(struct echosdk_call **v, size_t max)
+static size_t snapshot_calls(struct voxsdk_call **v, size_t max)
 {
 	struct call_snap s = { .v = v, .max = max, .n = 0 };
-	bsdk_call_foreach(call_snap_cb, &s);
+	vox_call_foreach(call_snap_cb, &s);
 	return s.n;
 }
 
-static size_t snapshot_accounts(struct echosdk_account **v, size_t max)
+static size_t snapshot_accounts(struct voxsdk_account **v, size_t max)
 {
 	struct le *le;
 	size_t n = 0;
 
-	mtx_lock(&g_bsdk.acct_lock);
-	LIST_FOREACH(&g_bsdk.accounts, le) {
-		struct echosdk_account *a = le->data;
+	mtx_lock(&g_vox.acct_lock);
+	LIST_FOREACH(&g_vox.accounts, le) {
+		struct voxsdk_account *a = le->data;
 		if (n >= max)
 			break;
 		if (a->destroyed || !a->ua || !a->reg_wanted)
 			continue;
 		v[n++] = a;
 	}
-	mtx_unlock(&g_bsdk.acct_lock);
+	mtx_unlock(&g_vox.acct_lock);
 
 	return n;
 }
@@ -457,11 +457,11 @@ static size_t snapshot_accounts(struct echosdk_account **v, size_t max)
  */
 static void mark_accounts_reconnecting(void)
 {
-	struct echosdk_account *snap[BSDK_NET_MAX_SNAP];
+	struct voxsdk_account *snap[VOX_NET_MAX_SNAP];
 	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++)
-		bsdk_account_reg_reconnecting(snap[i]);
+		vox_account_reg_reconnecting(snap[i]);
 }
 
 /* Give up driving the re-REGISTER from here and let each account's own retry
@@ -473,18 +473,18 @@ static void mark_accounts_reconnecting(void)
  * given a retry it never asked for. */
 static void handover_accounts_to_retry(void)
 {
-	struct echosdk_account *snap[BSDK_NET_MAX_SNAP];
+	struct voxsdk_account *snap[VOX_NET_MAX_SNAP];
 	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		if (snap[i]->reg_state == ECHOSDK_REG_RECONNECTING)
-			bsdk_account_schedule_retry(snap[i]);
+		if (snap[i]->reg_state == VOXSDK_REG_RECONNECTING)
+			vox_account_schedule_retry(snap[i]);
 	}
 }
 
 /* ── Per-call migration ──────────────────────────────────────────────────── */
 
-static uint32_t rx_packets(const struct echosdk_call *lc)
+static uint32_t rx_packets(const struct voxsdk_call *lc)
 {
 	struct audio  *au;
 	struct stream *strm;
@@ -513,22 +513,22 @@ static uint32_t rx_packets(const struct echosdk_call *lc)
  * staleness.  Capping them at one would fail a FAIL_FAST call on the first
  * verify tick without ever sending the single offer it is promised.
  */
-static uint32_t max_attempts_for(const struct echosdk_call *lc)
+static uint32_t max_attempts_for(const struct voxsdk_call *lc)
 {
 	/* A stall repair rotates local addresses rather than waiting out the
 	 * same one, so its budget is a rotation, not a patience setting.  Taken
 	 * before the FAIL_FAST shortcut below: that one is about offering stale
 	 * ICE candidates after a handover, which is not what happened here. */
 	if (lc->net_mig_stall) {
-		return g_nm.max_attempts < BSDK_NET_STALL_ATTEMPTS
-		     ? g_nm.max_attempts : BSDK_NET_STALL_ATTEMPTS;
+		return g_nm.max_attempts < VOX_NET_STALL_ATTEMPTS
+		     ? g_nm.max_attempts : VOX_NET_STALL_ATTEMPTS;
 	}
 
 	/* A call whose ICE was restarted is not offering the wrong candidates any
 	 * more, so the shortcut does not apply to it: it deserves the same retry
 	 * budget as a direct-RTP call, because what it is now waiting on is the
 	 * peer's NAT rebinding, exactly like one. */
-	if (g_nm.ice_handover == ECHOSDK_ICE_HANDOVER_FAIL_FAST &&
+	if (g_nm.ice_handover == VOXSDK_ICE_HANDOVER_FAIL_FAST &&
 	    call_uses_ice(lc) && !lc->net_ice_restarted)
 		return 1;
 
@@ -547,13 +547,13 @@ static uint32_t verify_tick_ms(void)
  * confirmation", and that decision belongs to the app for a stall repair
  * exactly as it does for a handover — so the stall clock only applies where
  * verification is on at all. */
-static uint32_t verify_tick_for(const struct echosdk_call *lc)
+static uint32_t verify_tick_for(const struct voxsdk_call *lc)
 {
 	if (!g_nm.verify_ms || !lc || !lc->net_mig_stall)
 		return verify_tick_ms();
 
-	return BSDK_NET_STALL_VERIFY_MS < verify_tick_ms()
-	     ? BSDK_NET_STALL_VERIFY_MS : verify_tick_ms();
+	return VOX_NET_STALL_VERIFY_MS < verify_tick_ms()
+	     ? VOX_NET_STALL_VERIFY_MS : verify_tick_ms();
 }
 
 /* ── Local-address rotation ───────────────────────────────────────────────
@@ -571,7 +571,7 @@ static uint32_t verify_tick_for(const struct echosdk_call *lc)
  * peer accepts media *from* is exactly what fails in the captures — but a real
  * second path needs the socket bound to the network
  * (android_setsocknetwork / SO_BINDTODEVICE), which is not done here. */
-static bool laddr_tried(const struct echosdk_call *lc, const struct sa *sa)
+static bool laddr_tried(const struct voxsdk_call *lc, const struct sa *sa)
 {
 	for (unsigned i = 0; i < lc->net_mig_ntried; i++) {
 		if (sa_cmp(&lc->net_mig_tried[i], sa, SA_ADDR))
@@ -580,18 +580,18 @@ static bool laddr_tried(const struct echosdk_call *lc, const struct sa *sa)
 	return false;
 }
 
-static void laddr_remember(struct echosdk_call *lc, const struct sa *sa)
+static void laddr_remember(struct voxsdk_call *lc, const struct sa *sa)
 {
 	if (!sa_isset(sa, SA_ADDR) || laddr_tried(lc, sa))
 		return;
-	if (lc->net_mig_ntried >= BSDK_NET_MAX_CAND)
+	if (lc->net_mig_ntried >= VOX_NET_MAX_CAND)
 		return;
 
 	sa_cpy(&lc->net_mig_tried[lc->net_mig_ntried++], sa);
 }
 
 struct laddr_pick {
-	const struct echosdk_call *lc;
+	const struct voxsdk_call *lc;
 	struct sa                  pick;
 	int                        af;
 	bool                       found;
@@ -621,7 +621,7 @@ static bool laddr_pick_handler(const char *ifname, const struct sa *sa,
  * moving addresses under that spends the attempt that would have worked.  A
  * stall repair rotates a step sooner — nothing about the route changed, so the
  * routing table's answer is precisely the one that has already failed. */
-static bool rotate_laddr(const struct echosdk_call *lc)
+static bool rotate_laddr(const struct voxsdk_call *lc)
 {
 	return lc->net_mig_tries >= (lc->net_mig_stall ? 1u : 2u);
 }
@@ -631,7 +631,7 @@ static bool rotate_laddr(const struct echosdk_call *lc)
  * Once every interface has had a turn the record is cleared and the rotation
  * starts again, so a two-interface phone alternates for as long as the budget
  * lasts instead of settling on whichever one it tried last. */
-static bool next_laddr(struct echosdk_call *lc, int af, struct sa *out)
+static bool next_laddr(struct voxsdk_call *lc, int af, struct sa *out)
 {
 	struct laddr_pick p = { .lc = lc, .af = af, .found = false };
 
@@ -659,15 +659,15 @@ static bool next_laddr(struct echosdk_call *lc, int af, struct sa *out)
  * burning the budget on a migration that was still on its way. */
 static uint32_t restart_grace_ms(void)
 {
-	return g_bsdk.cfg.ice_gathering_timeout_ms
-	     ? g_bsdk.cfg.ice_gathering_timeout_ms
+	return g_vox.cfg.ice_gathering_timeout_ms
+	     ? g_vox.cfg.ice_gathering_timeout_ms
 	     : 3000;   /* ice_shim.c's own restart deadline */
 }
 
-static void fail_migration(struct echosdk_call *lc, int err)
+static void fail_migration(struct voxsdk_call *lc, int err)
 {
-	lc->net_mig_state = BSDK_MIG_FAILED;
-	netmon_emit(ECHOSDK_NET_CALL_MIGRATION_FAILED, lc, lc->acct, err,
+	lc->net_mig_state = VOX_MIG_FAILED;
+	netmon_emit(VOXSDK_NET_CALL_MIGRATION_FAILED, lc, lc->acct, err,
 	            lc->net_mig_tries);
 
 	/* Leaving a call up with dead audio is usually worse than ending it,
@@ -682,20 +682,20 @@ static void fail_migration(struct echosdk_call *lc, int err)
  * pending call asks for. */
 static bool migration_pending(uint32_t *tick_ms)
 {
-	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct voxsdk_call *snap[VOX_NET_MAX_SNAP];
 	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 	uint32_t tick = verify_tick_ms();
 	bool pending = false;
 
 	for (size_t i = 0; i < n; i++) {
-		struct echosdk_call *lc = snap[i];
+		struct voxsdk_call *lc = snap[i];
 
 		if (lc->net_mig_gen != g_nm.gen)
 			continue;
-		if (lc->net_mig_state != BSDK_MIG_STALLED &&
-		    lc->net_mig_state != BSDK_MIG_WAIT_ADDR &&
-		    lc->net_mig_state != BSDK_MIG_DEFERRED &&
-		    lc->net_mig_state != BSDK_MIG_SENT)
+		if (lc->net_mig_state != VOX_MIG_STALLED &&
+		    lc->net_mig_state != VOX_MIG_WAIT_ADDR &&
+		    lc->net_mig_state != VOX_MIG_DEFERRED &&
+		    lc->net_mig_state != VOX_MIG_SENT)
 			continue;
 
 		pending = true;
@@ -718,12 +718,12 @@ static void arm_verify(void)
 }
 
 /* Send (or re-send) the re-INVITE that moves this call's media. */
-static void send_migration(struct echosdk_call *lc)
+static void send_migration(struct voxsdk_call *lc)
 {
 	int err;
 
 	if (!lc->bc) {
-		lc->net_mig_state = BSDK_MIG_IDLE;
+		lc->net_mig_state = VOX_MIG_IDLE;
 		return;
 	}
 
@@ -732,9 +732,9 @@ static void send_migration(struct echosdk_call *lc)
 	 * Both resolve themselves — wait and retry rather than tearing the call
 	 * down, which is what baresip's own uag_reset_transp() would do here. */
 	if (!call_refresh_allowed(lc->bc)) {
-		if (lc->net_mig_state != BSDK_MIG_DEFERRED) {
-			lc->net_mig_state = BSDK_MIG_DEFERRED;
-			netmon_emit(ECHOSDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
+		if (lc->net_mig_state != VOX_MIG_DEFERRED) {
+			lc->net_mig_state = VOX_MIG_DEFERRED;
+			netmon_emit(VOXSDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
 			            lc->net_mig_tries + 1u);
 		}
 		return;
@@ -760,7 +760,7 @@ static void send_migration(struct echosdk_call *lc)
 	 * connection (see call_signals_over_ws), and putting the media through an
 	 * ICE restart for that would interrupt audio that is working. */
 	if (lc->net_mig_path_moved) {
-		err = bsdk_ice_restart(lc->bc, &lc->net_mig_laddr);
+		err = vox_ice_restart(lc->bc, &lc->net_mig_laddr);
 
 		if (!err || err == EALREADY) {
 			/* EALREADY: a restart from an earlier attempt is still
@@ -768,10 +768,10 @@ static void send_migration(struct echosdk_call *lc)
 			 * the gathering deadline, so wait for it rather than
 			 * sending a second, worse offer on top. */
 			lc->net_ice_restarted = true;
-			lc->net_mig_state     = BSDK_MIG_SENT;
+			lc->net_mig_state     = VOX_MIG_SENT;
 			lc->net_mig_due       = tmr_jiffies() + restart_grace_ms()
 			                      + verify_tick_for(lc);
-			netmon_emit(ECHOSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
+			netmon_emit(VOXSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
 			            lc->net_mig_tries);
 			return;
 		}
@@ -783,7 +783,7 @@ static void send_migration(struct echosdk_call *lc)
 		 * before the app has to sit through the retries. */
 		if (err != ENOENT && !lc->net_ice_stale_sent) {
 			lc->net_ice_stale_sent = true;
-			netmon_emit(ECHOSDK_NET_CALL_ICE_STALE, lc, lc->acct,
+			netmon_emit(VOXSDK_NET_CALL_ICE_STALE, lc, lc->acct,
 			            err, lc->net_mig_tries);
 		}
 	}
@@ -795,18 +795,18 @@ static void send_migration(struct echosdk_call *lc)
 		if (lc->net_mig_tries >= max_attempts_for(lc))
 			fail_migration(lc, err);
 		else
-			lc->net_mig_state = BSDK_MIG_DEFERRED;
+			lc->net_mig_state = VOX_MIG_DEFERRED;
 		return;
 	}
 
-	lc->net_mig_state = BSDK_MIG_SENT;
+	lc->net_mig_state = VOX_MIG_SENT;
 	lc->net_mig_due   = tmr_jiffies() + verify_tick_for(lc);
-	netmon_emit(ECHOSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
+	netmon_emit(VOXSDK_NET_CALL_MIGRATING, lc, lc->acct, 0,
 	            lc->net_mig_tries);
 
 	if (!g_nm.verify_ms) {
-		lc->net_mig_state = BSDK_MIG_DONE;
-		netmon_emit(ECHOSDK_NET_CALL_MIGRATED, lc, lc->acct, 0,
+		lc->net_mig_state = VOX_MIG_DONE;
+		netmon_emit(VOXSDK_NET_CALL_MIGRATED, lc, lc->acct, 0,
 		            lc->net_mig_tries);
 	}
 }
@@ -817,7 +817,7 @@ static void send_migration(struct echosdk_call *lc)
  * just used has been given its chance and did not carry RTP, so the next
  * attempt takes the next local address rather than the same one.  When there
  * is only one address to choose from this is exactly the old behaviour. */
-static void retry_migration(struct echosdk_call *lc)
+static void retry_migration(struct voxsdk_call *lc)
 {
 	struct sa next;
 
@@ -827,7 +827,7 @@ static void retry_migration(struct echosdk_call *lc)
 	    next_laddr(lc, sa_af(&lc->net_mig_laddr), &next) &&
 	    !sa_cmp(&next, &lc->net_mig_laddr, SA_ADDR)) {
 
-		info("EchoSDK/netmon: no media on %j after %u ms —"
+		info("VoxSDK/netmon: no media on %j after %u ms —"
 		     " re-offering from %j\n",
 		     &lc->net_mig_laddr, verify_tick_for(lc), &next);
 
@@ -846,24 +846,24 @@ static void retry_migration(struct echosdk_call *lc)
  * stamped with the current generation, otherwise verify_handler() skips it and
  * the call is stranded on its old SDP address with nothing to notice.
  */
-static void wait_for_addr(struct echosdk_call *lc)
+static void wait_for_addr(struct voxsdk_call *lc)
 {
-	if (lc->net_mig_state == BSDK_MIG_WAIT_ADDR)
+	if (lc->net_mig_state == VOX_MIG_WAIT_ADDR)
 		return;
 
-	lc->net_mig_state = BSDK_MIG_WAIT_ADDR;
-	netmon_emit(ECHOSDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
+	lc->net_mig_state = VOX_MIG_WAIT_ADDR;
+	netmon_emit(VOXSDK_NET_CALL_DEFERRED, lc, lc->acct, 0,
 	            lc->net_mig_tries + 1u);
 }
 
-static void start_migration(struct echosdk_call *lc)
+static void start_migration(struct voxsdk_call *lc)
 {
 	struct stream   *strm;
 	const struct sa *raddr, *old;
 	struct sa        laddr;
 
 	if (!lc->bc) {
-		lc->net_mig_state = BSDK_MIG_IDLE;
+		lc->net_mig_state = VOX_MIG_IDLE;
 		return;
 	}
 
@@ -923,7 +923,7 @@ static void start_migration(struct echosdk_call *lc)
 
 		if (next_laddr(lc, sa_af(&laddr), &next) &&
 		    !sa_cmp(&next, &laddr, SA_ADDR)) {
-			info("EchoSDK/netmon: %j did not carry media —"
+			info("VoxSDK/netmon: %j did not carry media —"
 			     " offering from %j instead\n", &laddr, &next);
 			sa_cpy(&laddr, &next);
 		}
@@ -932,7 +932,7 @@ static void start_migration(struct echosdk_call *lc)
 	old = call_laddr(lc->bc);
 	if (old && sa_cmp(&laddr, old, SA_ADDR) && !call_signals_over_ws(lc) &&
 	    !lc->net_mig_stall) {
-		lc->net_mig_state = BSDK_MIG_IDLE;   /* same path — no re-INVITE */
+		lc->net_mig_state = VOX_MIG_IDLE;   /* same path — no re-INVITE */
 		return;
 	}
 
@@ -953,7 +953,7 @@ static void start_migration(struct echosdk_call *lc)
 		lc->net_mig_path_moved = true;
 	}
 	else if (old && sa_cmp(&laddr, old, SA_ADDR)) {
-		debug("EchoSDK/netmon: same path but WS transport was reset —"
+		debug("VoxSDK/netmon: same path but WS transport was reset —"
 		      " re-INVITE to refresh the Contact\n");
 	}
 	else {
@@ -974,16 +974,16 @@ static void start_migration(struct echosdk_call *lc)
  * The app is told, and can redial or show the user something truthful. */
 static void fail_pending_migrations(int err)
 {
-	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct voxsdk_call *snap[VOX_NET_MAX_SNAP];
 	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		struct echosdk_call *lc = snap[i];
+		struct voxsdk_call *lc = snap[i];
 
 		/* Only calls that were live when this round started and have not
 		 * already reached a terminal migration state. */
-		if (!lc->bc || lc->net_mig_state == BSDK_MIG_DONE ||
-		    lc->net_mig_state == BSDK_MIG_FAILED)
+		if (!lc->bc || lc->net_mig_state == VOX_MIG_DONE ||
+		    lc->net_mig_state == VOX_MIG_FAILED)
 			continue;
 
 		/* A call the handover never got as far as stamping still needs the
@@ -997,7 +997,7 @@ static void fail_pending_migrations(int err)
 
 static void migrate_calls(void)
 {
-	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct voxsdk_call *snap[VOX_NET_MAX_SNAP];
 	size_t n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++)
@@ -1014,7 +1014,7 @@ static void migrate_calls(void)
  */
 static void verify_handler(void *arg)
 {
-	struct echosdk_call *snap[BSDK_NET_MAX_SNAP];
+	struct voxsdk_call *snap[VOX_NET_MAX_SNAP];
 	size_t n;
 	(void)arg;
 
@@ -1024,27 +1024,27 @@ static void verify_handler(void *arg)
 	n = snapshot_calls(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		struct echosdk_call *lc = snap[i];
+		struct voxsdk_call *lc = snap[i];
 
 		if (lc->net_mig_gen != g_nm.gen)
 			continue;
 
 		if (!lc->bc) {
-			lc->net_mig_state = BSDK_MIG_IDLE;
+			lc->net_mig_state = VOX_MIG_IDLE;
 			continue;
 		}
 
 		switch (lc->net_mig_state) {
 
-		case BSDK_MIG_STALLED:
-			/* Asked for from the stats tick (bsdk_netmon_call_stalled).
+		case VOX_MIG_STALLED:
+			/* Asked for from the stats tick (vox_netmon_call_stalled).
 			 * The work happens here so the offer is never built inside
 			 * another handler's stack — the same reason
-			 * bsdk_netmon_call_refreshable() bounces off this timer. */
+			 * vox_netmon_call_refreshable() bounces off this timer. */
 			start_migration(lc);
 			break;
 
-		case BSDK_MIG_WAIT_ADDR:
+		case VOX_MIG_WAIT_ADDR:
 			/* Re-run discovery, not send_migration(): net_mig_laddr was
 			 * never resolved, so there is nothing valid to offer yet.
 			 * Full budget — see max_attempts_for(). */
@@ -1054,14 +1054,14 @@ static void verify_handler(void *arg)
 				start_migration(lc);
 			break;
 
-		case BSDK_MIG_DEFERRED:
+		case VOX_MIG_DEFERRED:
 			if (call_refresh_allowed(lc->bc))
 				send_migration(lc);
 			else if (++lc->net_mig_tries >= g_nm.max_attempts)
 				fail_migration(lc, ETIMEDOUT);
 			break;
 
-		case BSDK_MIG_SENT:
+		case VOX_MIG_SENT:
 			/* Not yet judgeable: the offer is still in flight, or (for
 			 * an ICE restart) still being gathered.  The 100 ms of
 			 * slack is so a tick that fires a hair early — timer
@@ -1077,8 +1077,8 @@ static void verify_handler(void *arg)
 			 * lands here instead — and must be taken at its word the
 			 * same way, without inspecting RTP or retrying. */
 			if (!g_nm.verify_ms) {
-				lc->net_mig_state = BSDK_MIG_DONE;
-				netmon_emit(ECHOSDK_NET_CALL_MIGRATED, lc,
+				lc->net_mig_state = VOX_MIG_DONE;
+				netmon_emit(VOXSDK_NET_CALL_MIGRATED, lc,
 				            lc->acct, 0, lc->net_mig_tries);
 				break;
 			}
@@ -1086,11 +1086,11 @@ static void verify_handler(void *arg)
 			/* A held call carries no RTP, so the counter can never
 			 * advance — the answered re-INVITE is all the confirmation
 			 * available. */
-			if (lc->state == ECHOSDK_CALL_HELD ||
+			if (lc->state == VOXSDK_CALL_HELD ||
 			    call_is_onhold(lc->bc) ||
 			    rx_packets(lc) > lc->net_rx_at_mig) {
-				lc->net_mig_state = BSDK_MIG_DONE;
-				netmon_emit(ECHOSDK_NET_CALL_MIGRATED, lc, lc->acct,
+				lc->net_mig_state = VOX_MIG_DONE;
+				netmon_emit(VOXSDK_NET_CALL_MIGRATED, lc, lc->acct,
 				            0, lc->net_mig_tries);
 			}
 			else if (lc->net_mig_tries >= max_attempts_for(lc))
@@ -1110,9 +1110,9 @@ static void verify_handler(void *arg)
 /**
  * Inbound RTP has stopped on an established call.
  *
- * adapt.c raises ECHOSDK_QUALITY_MEDIA_STALL when the receive counter has not
+ * adapt.c raises VOXSDK_QUALITY_MEDIA_STALL when the receive counter has not
  * moved for cfg.media_stall_ms — and not while the media encryption is still
- * handshaking (BSDK_MEDIA_SETUP_GRACE_MS there, because the re-INVITE this
+ * handshaking (VOX_MEDIA_SETUP_GRACE_MS there, because the re-INVITE this
  * repair ends in would break the handshake it is waiting for).  This is the
  * repair that used to be missing behind that alert.  Everything the handover
  * path does applies — ask the routing table which source address reaches the
@@ -1131,7 +1131,7 @@ static void verify_handler(void *arg)
  * call is marked and the shared verify timer picks it up, so nothing
  * re-enters baresip from inside another handler.
  */
-void bsdk_netmon_call_stalled(struct echosdk_call *lc)
+void vox_netmon_call_stalled(struct voxsdk_call *lc)
 {
 	uint64_t now;
 
@@ -1140,26 +1140,26 @@ void bsdk_netmon_call_stalled(struct echosdk_call *lc)
 
 	/* A repair (or a handover) is already running for this call. */
 	if (lc->net_mig_gen == g_nm.gen &&
-	    (lc->net_mig_state == BSDK_MIG_STALLED ||
-	     lc->net_mig_state == BSDK_MIG_WAIT_ADDR ||
-	     lc->net_mig_state == BSDK_MIG_DEFERRED ||
-	     lc->net_mig_state == BSDK_MIG_SENT))
+	    (lc->net_mig_state == VOX_MIG_STALLED ||
+	     lc->net_mig_state == VOX_MIG_WAIT_ADDR ||
+	     lc->net_mig_state == VOX_MIG_DEFERRED ||
+	     lc->net_mig_state == VOX_MIG_SENT))
 		return;
 
 	/* A held call carries no RTP by design.  adapt.c does not report a
 	 * stall for one, but hold can be entered between the two. */
-	if (lc->state == ECHOSDK_CALL_HELD || lc->local_hold ||
+	if (lc->state == VOXSDK_CALL_HELD || lc->local_hold ||
 	    call_is_onhold(lc->bc))
 		return;
 
 	now = tmr_jiffies();
 
 	if (lc->net_stall_repair_at &&
-	    now - lc->net_stall_repair_at < BSDK_NET_STALL_COOLDOWN_MS)
+	    now - lc->net_stall_repair_at < VOX_NET_STALL_COOLDOWN_MS)
 		return;
 
-	if (lc->net_stall_rounds >= BSDK_NET_STALL_ROUNDS) {
-		debug("EchoSDK/netmon: media stalled again after %u repairs —"
+	if (lc->net_stall_rounds >= VOX_NET_STALL_ROUNDS) {
+		debug("VoxSDK/netmon: media stalled again after %u repairs —"
 		      " leaving it to the app\n", lc->net_stall_rounds);
 		return;
 	}
@@ -1179,22 +1179,22 @@ void bsdk_netmon_call_stalled(struct echosdk_call *lc)
 	lc->net_mig_ntried     = 0;
 	lc->net_mig_stall      = true;
 	lc->net_mig_start      = now;
-	lc->net_mig_state      = BSDK_MIG_STALLED;
+	lc->net_mig_state      = VOX_MIG_STALLED;
 	sa_init(&lc->net_mig_laddr, AF_UNSPEC);
 
-	info("EchoSDK/netmon: media stalled on an established call —"
+	info("VoxSDK/netmon: media stalled on an established call —"
 	     " repairing (round %u/%u)\n",
-	     lc->net_stall_rounds, (unsigned)BSDK_NET_STALL_ROUNDS);
+	     lc->net_stall_rounds, (unsigned)VOX_NET_STALL_ROUNDS);
 
 	tmr_start(&g_nm.tmr_verify, 1, verify_handler, NULL);
 }
 
 
-void bsdk_netmon_call_refreshable(struct echosdk_call *lc)
+void vox_netmon_call_refreshable(struct voxsdk_call *lc)
 {
 	if (!g_nm.started || !lc)
 		return;
-	if (lc->net_mig_state != BSDK_MIG_DEFERRED || lc->net_mig_gen != g_nm.gen)
+	if (lc->net_mig_state != VOX_MIG_DEFERRED || lc->net_mig_gen != g_nm.gen)
 		return;
 
 	/* We are inside a baresip event emit right now; call_modify() would
@@ -1202,16 +1202,16 @@ void bsdk_netmon_call_refreshable(struct echosdk_call *lc)
 	tmr_start(&g_nm.tmr_verify, 1, verify_handler, NULL);
 }
 
-void bsdk_netmon_call_sdp_answer(struct echosdk_call *lc)
+void vox_netmon_call_sdp_answer(struct voxsdk_call *lc)
 {
 	if (!g_nm.started || !lc)
 		return;
-	if (lc->net_mig_state != BSDK_MIG_SENT || lc->net_mig_gen != g_nm.gen)
+	if (lc->net_mig_state != VOX_MIG_SENT || lc->net_mig_gen != g_nm.gen)
 		return;
 
 	/* The peer took our new address.  Media has not necessarily resumed —
 	 * that is what the verify tick is still watching for. */
-	netmon_emit(ECHOSDK_NET_CALL_MIGRATE_ACCEPTED, lc, lc->acct, 0,
+	netmon_emit(VOXSDK_NET_CALL_MIGRATE_ACCEPTED, lc, lc->acct, 0,
 	            lc->net_mig_tries);
 }
 
@@ -1219,11 +1219,11 @@ void bsdk_netmon_call_sdp_answer(struct echosdk_call *lc)
 
 static void reregister_accounts(void)
 {
-	struct echosdk_account *snap[BSDK_NET_MAX_SNAP];
+	struct voxsdk_account *snap[VOX_NET_MAX_SNAP];
 	size_t n = snapshot_accounts(snap, RE_ARRAY_SIZE(snap));
 
 	for (size_t i = 0; i < n; i++) {
-		struct echosdk_account *a = snap[i];
+		struct voxsdk_account *a = snap[i];
 
 		/* Credentials the registrar rejected are still wrong on the new
 		 * network, so this account is not part of the recovery.
@@ -1234,8 +1234,8 @@ static void reregister_accounts(void)
 		 * while carrying reconnecting = true internally.  Every other
 		 * failure — transport, timeout, 5xx — is exactly what a new network
 		 * might fix, so those do get the fresh attempt below. */
-		if (a->reg_state == ECHOSDK_REG_FAILED &&
-		    a->reg_error == ECHOSDK_ERR_AUTH)
+		if (a->reg_state == VOXSDK_REG_FAILED &&
+		    a->reg_error == VOXSDK_ERR_AUTH)
 			continue;
 
 		/* A new network deserves a fresh attempt: an account sitting in a
@@ -1249,9 +1249,9 @@ static void reregister_accounts(void)
 		 * re-bind).  Cleared when it is answered. */
 		a->reconnecting = true;
 
-		netmon_emit(ECHOSDK_NET_REREGISTERING, NULL, a, 0, 0);
+		netmon_emit(VOXSDK_NET_REREGISTERING, NULL, a, 0, 0);
 		(void)ua_register(a->ua);
-		bsdk_account_watch_registration(a);
+		vox_account_watch_registration(a);
 	}
 }
 
@@ -1280,7 +1280,7 @@ static void apply_handover(void)
 		if (!g_nm.down) {
 			g_nm.down = true;
 			g_nm.cur_laddr[0] = '\0';
-			netmon_emit(ECHOSDK_NET_DOWN, NULL, NULL, 0, 0);
+			netmon_emit(VOXSDK_NET_DOWN, NULL, NULL, 0, 0);
 			mark_accounts_reconnecting();
 		}
 		/* Backoff for the no-address wait uses its OWN counter.  Sharing
@@ -1300,14 +1300,14 @@ static void apply_handover(void)
 	if (!use.routable) {
 		if (!g_nm.down) {
 			g_nm.down = true;
-			netmon_emit(ECHOSDK_NET_DOWN, NULL, NULL, 0, 0);
+			netmon_emit(VOXSDK_NET_DOWN, NULL, NULL, 0, 0);
 			mark_accounts_reconnecting();
 		}
 	}
 	else if (g_nm.down) {
 		g_nm.down = false;
 		update_cur_laddr();
-		netmon_emit(ECHOSDK_NET_UP, NULL, NULL, 0, 0);
+		netmon_emit(VOXSDK_NET_UP, NULL, NULL, 0, 0);
 	}
 
 	/* Cellular and Wi-Fi hand out different resolvers; the old ones are
@@ -1325,7 +1325,7 @@ static void apply_handover(void)
 	err = uag_reset_transp(false, false);
 	if (err) {
 		g_nm.attempt++;
-		netmon_emit(ECHOSDK_NET_HANDOVER_FAILED, NULL, NULL, err,
+		netmon_emit(VOXSDK_NET_HANDOVER_FAILED, NULL, NULL, err,
 		            g_nm.attempt);
 		if (g_nm.attempt < g_nm.max_attempts) {
 			tmr_start(&g_nm.tmr_settle, backoff_ms(g_nm.attempt),
@@ -1333,7 +1333,7 @@ static void apply_handover(void)
 		}
 		else {
 			/* Out of attempts.  reset_pending stays true so the next real
-			 * address change or echosdk_network_changed() picks it up, but
+			 * address change or voxsdk_network_changed() picks it up, but
 			 * reset the counter — otherwise that next round would inherit an
 			 * exhausted budget and give up immediately.  The app sees
 			 * attempt == max_attempts on the final HANDOVER_FAILED. */
@@ -1375,7 +1375,7 @@ static void apply_handover(void)
 	g_nm.gen++;
 
 	update_cur_laddr();
-	netmon_emit(ECHOSDK_NET_TRANSPORT_RESET, NULL, NULL, 0, 0);
+	netmon_emit(VOXSDK_NET_TRANSPORT_RESET, NULL, NULL, 0, 0);
 
 	reregister_accounts();
 
@@ -1421,7 +1421,7 @@ static void netmon_trigger(bool forced)
 		g_nm.announced      = true;
 		g_nm.handover_start = tmr_jiffies();
 		update_cur_laddr();
-		netmon_emit(ECHOSDK_NET_CHANGE_DETECTED, NULL, NULL, 0, 0);
+		netmon_emit(VOXSDK_NET_CHANGE_DETECTED, NULL, NULL, 0, 0);
 		mark_accounts_reconnecting();
 	}
 
@@ -1443,9 +1443,9 @@ static void poll_handler(void *arg)
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bsdk_netmon_init(void)
+int vox_netmon_init(void)
 {
-	const echosdk_config_t *cfg = &g_bsdk.cfg;
+	const voxsdk_config_t *cfg = &g_vox.cfg;
 
 	memset(&g_nm, 0, sizeof(g_nm));
 	tmr_init(&g_nm.tmr_poll);
@@ -1454,10 +1454,10 @@ int bsdk_netmon_init(void)
 
 	g_nm.poll_s         = cfg->net_monitor_interval_s;
 	g_nm.settle_ms      = cfg->net_settle_ms ? cfg->net_settle_ms
-	                                         : BSDK_NET_SETTLE_MS;
+	                                         : VOX_NET_SETTLE_MS;
 	g_nm.verify_ms      = cfg->net_verify_ms;   /* 0 = media check disabled */
 	g_nm.max_attempts   = cfg->net_max_attempts ? cfg->net_max_attempts
-	                                            : BSDK_NET_MAX_ATTEMPT;
+	                                            : VOX_NET_MAX_ATTEMPT;
 	g_nm.reinvite_calls = cfg->net_reinvite_calls;
 	g_nm.hangup_on_fail = cfg->net_hangup_on_migration_failure;
 	g_nm.ice_handover   = cfg->net_ice_handover;
@@ -1472,17 +1472,17 @@ int bsdk_netmon_init(void)
 	return 0;
 }
 
-/* Two-step teardown.  bsdk_netmon_stop() is called from the app thread at the
- * top of echosdk_shutdown(), before UAs and calls are torn down: the handlers
+/* Two-step teardown.  vox_netmon_stop() is called from the app thread at the
+ * top of voxsdk_shutdown(), before UAs and calls are torn down: the handlers
  * bail on !started, so no timer that fires meanwhile touches a half-freed
  * account or call.  The timers themselves are cancelled from
- * bsdk_netmon_close() once the re loop has stopped and nothing can fire. */
-void bsdk_netmon_stop(void)
+ * vox_netmon_close() once the re loop has stopped and nothing can fire. */
+void vox_netmon_stop(void)
 {
 	g_nm.started = false;
 }
 
-void bsdk_netmon_close(void)
+void vox_netmon_close(void)
 {
 	g_nm.started = false;
 	tmr_cancel(&g_nm.tmr_poll);
@@ -1498,9 +1498,9 @@ static void changed_fn(void *arg)
 	netmon_trigger(true);
 }
 
-int echosdk_network_changed(void)
+int voxsdk_network_changed(void)
 {
-	return bsdk_dispatch(changed_fn, NULL);
+	return vox_dispatch(changed_fn, NULL);
 }
 
 typedef struct {
@@ -1517,10 +1517,10 @@ static void set_monitor_fn(void *arg)
 		tmr_start(&g_nm.tmr_poll, g_nm.poll_s * 1000, poll_handler, NULL);
 }
 
-int echosdk_network_set_monitor_interval(uint32_t seconds)
+int voxsdk_network_set_monitor_interval(uint32_t seconds)
 {
 	monitor_ctx_t ctx = { .seconds = seconds };
-	return bsdk_dispatch_sync(set_monitor_fn, &ctx);
+	return vox_dispatch_sync(set_monitor_fn, &ctx);
 }
 
 typedef struct {
@@ -1536,12 +1536,12 @@ static void set_policy_fn(void *arg)
 	g_nm.hangup_on_fail = ctx->hangup;
 }
 
-int echosdk_network_set_handover_policy(bool reinvite_calls,
+int voxsdk_network_set_handover_policy(bool reinvite_calls,
                                          bool hangup_on_failure)
 {
 	policy_ctx_t ctx = { .reinvite = reinvite_calls,
 	                     .hangup   = hangup_on_failure };
-	return bsdk_dispatch_sync(set_policy_fn, &ctx);
+	return vox_dispatch_sync(set_policy_fn, &ctx);
 }
 
 typedef struct {
@@ -1557,15 +1557,15 @@ static void local_addr_fn(void *arg)
 	str_ncpy(ctx->buf, g_nm.cur_laddr, ctx->sz);
 }
 
-int echosdk_network_local_addr(char *buf, size_t sz)
+int voxsdk_network_local_addr(char *buf, size_t sz)
 {
 	laddr_ctx_t ctx = { .buf = buf, .sz = sz };
 
 	if (!buf || sz == 0)
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
 
 	buf[0] = '\0';
-	return bsdk_dispatch_sync(local_addr_fn, &ctx);
+	return vox_dispatch_sync(local_addr_fn, &ctx);
 }
 
 static void is_up_fn(void *arg)
@@ -1574,11 +1574,11 @@ static void is_up_fn(void *arg)
 	*out = have_routable_addr();
 }
 
-bool echosdk_network_is_up(void)
+bool voxsdk_network_is_up(void)
 {
 	bool up = false;
 
-	if (bsdk_dispatch_sync(is_up_fn, &up))
+	if (vox_dispatch_sync(is_up_fn, &up))
 		return false;
 
 	return up;

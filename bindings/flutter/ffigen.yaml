@@ -1,47 +1,47 @@
-# ffigen configuration for EchoSDK
+# ffigen configuration for VoxSDK
 # Run: dart run ffigen --config ffigen.yaml
 # Output: lib/src/ffi_bindings.dart
 
-name: EchoSDKBindings
-description: 'Auto-generated Dart FFI bindings for EchoSDK.'
+name: VoxSDKBindings
+description: 'Auto-generated Dart FFI bindings for VoxSDK.'
 output: 'lib/src/ffi_bindings.dart'
 
 headers:
   entry-points:
-    - '../../include/echosdk.h'
+    - '../../include/voxsdk.h'
 
 compiler-opts:
   - '-I../../include'
   # ffigen ignores __attribute__((packed)) on enums and would widen
-  # echosdk_aec_mode_t to 4 bytes, shifting every later config field.
-  - '-DECHOSDK_NO_PACKED_ENUM=1'
+  # voxsdk_aec_mode_t to 4 bytes, shifting every later config field.
+  - '-DVOXSDK_NO_PACKED_ENUM=1'
   # Adjust to the local clang resource dir (ls /usr/lib/clang/).
   - '-isystem/usr/lib/clang/21/include'
 
 # Symbol filtering
 functions:
   include:
-    - 'echosdk_.*'
+    - 'voxsdk_.*'
 
 globals:
   include:
-    - 'ECHOSDK_.*'
+    - 'VOXSDK_.*'
 
 macros:
   include:
-    - 'ECHOSDK_.*'
+    - 'VOXSDK_.*'
 
 enums:
   include:
-    - 'echosdk_.*'
+    - 'voxsdk_.*'
 
 structs:
   include:
-    - 'echosdk_.*'
+    - 'voxsdk_.*'
 
 typedefs:
   include:
-    - 'echosdk_.*'
+    - 'voxsdk_.*'
 
 comments:
   style: any

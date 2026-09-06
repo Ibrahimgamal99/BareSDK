@@ -8,9 +8,9 @@
  * default-device-change notifications (headphone plug/unplug events).
  */
 
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
-int bsdk_platform_audio_init(bool activate)
+int vox_platform_audio_init(bool activate)
 {
 	(void)activate;  /* no platform-managed session to activate */
 	/* baresip's wasapi module (loaded by modules_init) handles Windows audio */

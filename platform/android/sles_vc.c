@@ -3,7 +3,7 @@
  *
  * baresip's stock `opensles` module records with the default (generic) input
  * preset and plays on the media stream, so the platform's built-in echo
- * cancellation and noise suppression never engage.  This driver is EchoSDK's
+ * cancellation and noise suppression never engage.  This driver is VoxSDK's
  * own replacement (third_party is never patched):
  *
  *   recorder — requests SL_IID_ANDROIDCONFIGURATION and sets
@@ -29,7 +29,7 @@
 #include <SLES/OpenSLES_Android.h>
 #include <re.h>
 #include <rem.h>
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
 /* Queue depth per direction, in PTIME slices.
  *
@@ -532,7 +532,7 @@ static int player_alloc(struct auplay_st **stp, const struct auplay *ap,
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bsdk_sles_vc_init(void)
+int vox_sles_vc_init(void)
 {
 	SLEngineOption opts[] = {
 		{ (SLuint32)SL_ENGINEOPTION_THREADSAFE,
@@ -564,11 +564,11 @@ int bsdk_sles_vc_init(void)
 	return 0;
 
  err_out:
-	bsdk_sles_vc_close();
+	vox_sles_vc_close();
 	return ENODEV;
 }
 
-void bsdk_sles_vc_close(void)
+void vox_sles_vc_close(void)
 {
 	s_ausrc  = mem_deref(s_ausrc);
 	s_auplay = mem_deref(s_auplay);

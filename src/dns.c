@@ -12,14 +12,14 @@
  * All callbacks and the done_h handler fire on the re_main thread.
  *
  * Caller contract:
- *   bsdk_dns_init()   — call after baresip_init() in core.c
- *   bsdk_dns_resolve() — call from re_main thread only
- *   bsdk_dns_close()  — call before baresip_close() in core.c
+ *   vox_dns_init()   — call after baresip_init() in core.c
+ *   vox_dns_resolve() — call from re_main thread only
+ *   vox_dns_close()  — call before baresip_close() in core.c
  */
 
 #include <string.h>
 #include <stdlib.h>
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* ── DNS client ────────────────────────────────────────────────────────── */
 
@@ -32,86 +32,86 @@ static struct dnsc *g_dnsc;   /* borrowed from baresip network — not owned */
 
 /* ── Internal types ────────────────────────────────────────────────────── */
 
-struct bsdk_dns_target {
-	echosdk_transport_t transport;
+struct vox_dns_target {
+	voxsdk_transport_t transport;
 	char                host[256];
 	uint16_t            port;
 	uint16_t            priority;
 	uint16_t            weight;
 };
 
-struct bsdk_dns_result {
-	struct bsdk_dns_target targets[MAX_TARGETS];
+struct vox_dns_result {
+	struct vox_dns_target targets[MAX_TARGETS];
 	size_t                  count;
 	int                     err;
 };
 
 struct srv_slot {
 	char                name[256];   /* SRV qname, e.g. _sip._udp.example.com */
-	echosdk_transport_t transport;
+	voxsdk_transport_t transport;
 };
 
 struct dns_lookup {
 	char                domain[256];
-	echosdk_transport_t transport_hint;
+	voxsdk_transport_t transport_hint;
 	uint16_t            port_hint;   /* 0 = no explicit port in URI */
 
 	int                 pending;     /* in-flight DNS queries */
 	bool                done;
 
-	struct bsdk_dns_result result;
+	struct vox_dns_result result;
 
 	struct srv_slot     srv[MAX_SRV];
 	int                 srv_count;
 
-	bsdk_dns_done_h    *done_h;
+	vox_dns_done_h    *done_h;
 	void               *done_arg;
 };
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
-static echosdk_transport_t transport_from_naptr_service(const char *svc)
+static voxsdk_transport_t transport_from_naptr_service(const char *svc)
 {
 	if (!svc)
-		return (echosdk_transport_t)-1;
+		return (voxsdk_transport_t)-1;
 	/* RFC 3263 §4.1 service field values */
-	if (!str_casecmp(svc, "SIPS+D2T")) return ECHOSDK_TRANSPORT_TLS;
-	if (!str_casecmp(svc, "SIP+D2T"))  return ECHOSDK_TRANSPORT_TCP;
-	if (!str_casecmp(svc, "SIP+D2U"))  return ECHOSDK_TRANSPORT_UDP;
-	if (!str_casecmp(svc, "SIPS+D2W")) return ECHOSDK_TRANSPORT_WSS;
-	if (!str_casecmp(svc, "SIP+D2W"))  return ECHOSDK_TRANSPORT_WS;
-	return (echosdk_transport_t)-1;
+	if (!str_casecmp(svc, "SIPS+D2T")) return VOXSDK_TRANSPORT_TLS;
+	if (!str_casecmp(svc, "SIP+D2T"))  return VOXSDK_TRANSPORT_TCP;
+	if (!str_casecmp(svc, "SIP+D2U"))  return VOXSDK_TRANSPORT_UDP;
+	if (!str_casecmp(svc, "SIPS+D2W")) return VOXSDK_TRANSPORT_WSS;
+	if (!str_casecmp(svc, "SIP+D2W"))  return VOXSDK_TRANSPORT_WS;
+	return (voxsdk_transport_t)-1;
 }
 
-static uint16_t default_port_for_transport(echosdk_transport_t t)
+static uint16_t default_port_for_transport(voxsdk_transport_t t)
 {
 	switch (t) {
-	case ECHOSDK_TRANSPORT_TLS: return 5061;
-	/* WebSocket defaults, as in bsdk_parse_server_url. */
-	case ECHOSDK_TRANSPORT_WS:  return 80;
-	case ECHOSDK_TRANSPORT_WSS: return 443;
+	case VOXSDK_TRANSPORT_TLS: return 5061;
+	/* WebSocket defaults, as in vox_parse_server_url. */
+	case VOXSDK_TRANSPORT_WS:  return 80;
+	case VOXSDK_TRANSPORT_WSS: return 443;
 	default:                    return 5060;
 	}
 }
 
-static const char *srv_prefix_for_transport(echosdk_transport_t t)
+static const char *srv_prefix_for_transport(voxsdk_transport_t t)
 {
 	switch (t) {
-	case ECHOSDK_TRANSPORT_TLS: return "_sips._tcp.";
-	case ECHOSDK_TRANSPORT_TCP: return "_sip._tcp.";
-	case ECHOSDK_TRANSPORT_WS:  return "_sip._tcp.";
-	case ECHOSDK_TRANSPORT_WSS: return "_sips._tcp.";
+	case VOXSDK_TRANSPORT_TLS: return "_sips._tcp.";
+	case VOXSDK_TRANSPORT_TCP: return "_sip._tcp.";
+	case VOXSDK_TRANSPORT_WS:  return "_sip._tcp.";
+	case VOXSDK_TRANSPORT_WSS: return "_sips._tcp.";
 	default:                    return "_sip._udp.";
 	}
 }
 
-static void add_result(struct dns_lookup *lk, echosdk_transport_t t,
+static void add_result(struct dns_lookup *lk, voxsdk_transport_t t,
                         const char *host, uint16_t port,
                         uint16_t pri, uint16_t weight)
 {
 	if (lk->result.count >= MAX_TARGETS)
 		return;
-	struct bsdk_dns_target *tgt = &lk->result.targets[lk->result.count++];
+	struct vox_dns_target *tgt = &lk->result.targets[lk->result.count++];
 	tgt->transport = t;
 	str_ncpy(tgt->host, host, sizeof(tgt->host));
 	tgt->port     = port;
@@ -130,10 +130,10 @@ static void add_result(struct dns_lookup *lk, echosdk_transport_t t,
  * makes a failover walk through the list meaningless.  Insertion sort: the
  * list is at most MAX_TARGETS entries and this runs once per lookup.
  */
-static void sort_targets(struct bsdk_dns_result *res)
+static void sort_targets(struct vox_dns_result *res)
 {
 	for (size_t i = 1; i < res->count; i++) {
-		struct bsdk_dns_target tmp = res->targets[i];
+		struct vox_dns_target tmp = res->targets[i];
 		size_t j = i;
 
 		while (j > 0 &&
@@ -164,7 +164,7 @@ static void lookup_finish(struct dns_lookup *lk)
 
 struct srv_ctx {
 	struct dns_lookup  *lk;
-	echosdk_transport_t transport;
+	voxsdk_transport_t transport;
 };
 
 static void srv_handler(int err, const struct dnshdr *hdr,
@@ -173,7 +173,7 @@ static void srv_handler(int err, const struct dnshdr *hdr,
 {
 	struct srv_ctx    *sc = arg;
 	struct dns_lookup *lk = sc->lk;
-	echosdk_transport_t t = sc->transport;
+	voxsdk_transport_t t = sc->transport;
 	bool found = false;
 
 	(void)hdr; (void)authl; (void)addl;
@@ -231,7 +231,7 @@ static void naptr_handler(int err, const struct dnshdr *hdr,
 			    str_casecmp(rr->rdata.naptr.flags, "S") != 0)
 				continue;
 
-			echosdk_transport_t t =
+			voxsdk_transport_t t =
 				transport_from_naptr_service(rr->rdata.naptr.services);
 			if ((int)t == -1)
 				continue;
@@ -304,19 +304,19 @@ static void start_srv_queries(struct dns_lookup *lk)
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-int bsdk_dns_init(void)
+int vox_dns_init(void)
 {
 	/* Reuse the DNS client that baresip configured from the system resolver.
 	 * We borrow this pointer — it is owned and freed by baresip. */
 	g_dnsc = net_dnsc(baresip_network());
 	if (!g_dnsc) {
-		warning("EchoSDK/dns: no DNS client available from baresip network\n");
+		warning("VoxSDK/dns: no DNS client available from baresip network\n");
 		return ENOENT;
 	}
 	return 0;
 }
 
-void bsdk_dns_close(void)
+void vox_dns_close(void)
 {
 	g_dnsc = NULL;
 }
@@ -324,7 +324,7 @@ void bsdk_dns_close(void)
 /**
  * Resolve a SIP domain using RFC 3263 NAPTR→SRV chain.
  *
- * Runs on re_main thread (must be called from re_main or via bsdk_dispatch).
+ * Runs on re_main thread (must be called from re_main or via vox_dispatch).
  *
  * @param domain          Hostname to resolve (must not be a numeric IP)
  * @param transport_hint  Preferred transport, used when NAPTR is absent
@@ -337,10 +337,10 @@ void bsdk_dns_close(void)
  *
  * @return 0 on success (done_h will fire), or errno on immediate failure
  */
-int bsdk_dns_resolve(const char *domain,
-                     echosdk_transport_t transport_hint,
+int vox_dns_resolve(const char *domain,
+                     voxsdk_transport_t transport_hint,
                      uint16_t port_hint,
-                     bsdk_dns_done_h *done_h, void *arg)
+                     vox_dns_done_h *done_h, void *arg)
 {
 	if (!domain || !done_h)
 		return EINVAL;
@@ -387,26 +387,26 @@ int bsdk_dns_resolve(const char *domain,
 
 /* ── Result accessors ────────────────────────────────────────────────────────
  *
- * struct bsdk_dns_result is opaque outside this file so the target array stays
+ * struct vox_dns_result is opaque outside this file so the target array stays
  * an implementation detail.  account.c needs to walk it for SRV failover, so
  * expose exactly the three things a walk needs.
  */
 
-size_t bsdk_dns_result_count(const struct bsdk_dns_result *res)
+size_t vox_dns_result_count(const struct vox_dns_result *res)
 {
 	return res ? res->count : 0;
 }
 
-int bsdk_dns_result_err(const struct bsdk_dns_result *res)
+int vox_dns_result_err(const struct vox_dns_result *res)
 {
 	return res ? res->err : EINVAL;
 }
 
-int bsdk_dns_result_get(const struct bsdk_dns_result *res, size_t idx,
-                        echosdk_transport_t *transport,
+int vox_dns_result_get(const struct vox_dns_result *res, size_t idx,
+                        voxsdk_transport_t *transport,
                         char *host, size_t host_sz, uint16_t *port)
 {
-	const struct bsdk_dns_target *t;
+	const struct vox_dns_target *t;
 
 	if (!res || idx >= res->count)
 		return EINVAL;

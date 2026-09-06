@@ -1,7 +1,7 @@
 /**
  * @file test_fmtp_bitrate.c  Unit tests for the adaptive-bitrate fmtp rewriter
  *
- * bsdk_adapt_fmtp_set_bitrate() is what makes adaptive bitrate safe.  The
+ * vox_adapt_fmtp_set_bitrate() is what makes adaptive bitrate safe.  The
  * obvious alternative — baresip's audio_set_bitrate() — re-runs the encoder
  * update with a NULL fmtp, so Opus re-derives useinbandfec, usedtx, cbr and
  * stereo from defaults and quietly drops whatever was negotiated.  Dropping
@@ -13,7 +13,7 @@
  * its own previous output.  A parameter dropped, duplicated or corrupted here
  * silently changes how audio is encoded, which is why it gets its own test.
  *
- * Links src/adapt.c against libre only.  The baresip and EchoSDK symbols the
+ * Links src/adapt.c against libre only.  The baresip and VoxSDK symbols the
  * rest of that file references are stubbed below: pulling in libbaresip would
  * drag every audio backend the sysroot happens to have been built with.
  */
@@ -21,7 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
 static int g_pass, g_fail;
 
@@ -35,16 +35,16 @@ static int g_pass, g_fail;
  * adapt.c's other functions reference these; none is reachable from the
  * rewriter under test. */
 
-struct bsdk_ctx g_bsdk;
+struct vox_ctx g_vox;
 
-void bsdk_post_quality_alert(struct echosdk_call *lc,
-                             echosdk_quality_issue_t issue,
+void vox_post_quality_alert(struct voxsdk_call *lc,
+                             voxsdk_quality_issue_t issue,
                              float value, float threshold, bool recovering)
 {
 	(void)lc; (void)issue; (void)value; (void)threshold; (void)recovering;
 }
 
-int bsdk_dispatch_sync(void (*fn)(void *), void *arg)
+int vox_dispatch_sync(void (*fn)(void *), void *arg)
 {
 	(void)fn; (void)arg;
 	return 0;
@@ -85,7 +85,7 @@ static void expect(const char *label, const char *src, uint32_t br,
                     const char *want)
 {
 	char buf[512];
-	int err = bsdk_adapt_fmtp_set_bitrate(buf, sizeof(buf), src, br);
+	int err = vox_adapt_fmtp_set_bitrate(buf, sizeof(buf), src, br);
 
 	CHECK(err == 0, "%s: unexpected error %d", label, err);
 	if (err)
@@ -140,11 +140,11 @@ static void test_idempotent_under_repeat(void)
 {
 	char a[512], b[512], c[512];
 
-	CHECK(bsdk_adapt_fmtp_set_bitrate(a, sizeof(a),
+	CHECK(vox_adapt_fmtp_set_bitrate(a, sizeof(a),
 	          "useinbandfec=1;stereo=0", 24000) == 0, "step 1 failed");
-	CHECK(bsdk_adapt_fmtp_set_bitrate(b, sizeof(b), a, 12000) == 0,
+	CHECK(vox_adapt_fmtp_set_bitrate(b, sizeof(b), a, 12000) == 0,
 	      "step 2 failed");
-	CHECK(bsdk_adapt_fmtp_set_bitrate(c, sizeof(c), b, 12000) == 0,
+	CHECK(vox_adapt_fmtp_set_bitrate(c, sizeof(c), b, 12000) == 0,
 	      "step 3 failed");
 
 	CHECK(!strcmp(b, "useinbandfec=1;stereo=0;maxaveragebitrate=12000"),
@@ -195,14 +195,14 @@ static void test_overflow_rejected(void)
 	memset(src, 'a', sizeof(src) - 1);
 	src[sizeof(src) - 1] = '\0';
 
-	err = bsdk_adapt_fmtp_set_bitrate(buf, sizeof(buf), src, 8000);
+	err = vox_adapt_fmtp_set_bitrate(buf, sizeof(buf), src, 8000);
 	CHECK(err == EINVAL, "overflow: expected EINVAL, got %d", err);
 
 	/* Zero-size destination must be rejected, not written to. */
-	err = bsdk_adapt_fmtp_set_bitrate(buf, 0, "stereo=0", 8000);
+	err = vox_adapt_fmtp_set_bitrate(buf, 0, "stereo=0", 8000);
 	CHECK(err == EINVAL, "zero size: expected EINVAL, got %d", err);
 
-	err = bsdk_adapt_fmtp_set_bitrate(NULL, sizeof(buf), "stereo=0", 8000);
+	err = vox_adapt_fmtp_set_bitrate(NULL, sizeof(buf), "stereo=0", 8000);
 	CHECK(err == EINVAL, "null buf: expected EINVAL, got %d", err);
 }
 

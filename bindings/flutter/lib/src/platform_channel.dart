@@ -1,18 +1,18 @@
 /// Mobile platform shim.
 ///
-/// Talks to the plugin's native side (`EchoSDKPlugin` — Kotlin on Android,
-/// Swift on iOS) over the `echo_sdk` MethodChannel for the few things FFI
+/// Talks to the plugin's native side (`VoxSDKPlugin` — Kotlin on Android,
+/// Swift on iOS) over the `vox_sdk` MethodChannel for the few things FFI
 /// cannot do:
-///  - a writable temp dir (EchoSDK's required tmp_dir on Android),
+///  - a writable temp dir (VoxSDK's required tmp_dir on Android),
 ///  - audio focus / session activation around calls,
 ///  - audio-route enumeration + selection (earpiece / speaker / Bluetooth /
 ///    wired) with change pushes,
 ///  - network-change callbacks (ConnectivityManager / NWPathMonitor) that
 ///    drive handover via networkChanged().
 ///
-/// Everything here works WITHOUT [EchoSDK.start] — the plugin registers with
+/// Everything here works WITHOUT [VoxSDK.start] — the plugin registers with
 /// the Flutter engine independently of the SIP stack, so a host app can adopt
-/// the route API before (or without) running SIP through EchoSDK.
+/// the route API before (or without) running SIP through VoxSDK.
 ///
 /// Every call is a no-op on desktop so the package still works as a pure
 /// FFI binding there.
@@ -35,7 +35,7 @@ class AudioRoute {
     required this.isActive,
   });
 
-  /// Stable opaque id, handed back to [EchoSDKPlatform.setAudioRoute]
+  /// Stable opaque id, handed back to [VoxSDKPlatform.setAudioRoute]
   /// ('earpiece' | 'speaker' | 'wired-headset' | 'bluetooth' | 'bt:<dev>').
   final String id;
 
@@ -69,8 +69,8 @@ class AudioRoute {
       '${name.isNotEmpty ? ', "$name"' : ''})';
 }
 
-class EchoSDKPlatform {
-  static const MethodChannel _channel = MethodChannel('echo_sdk');
+class VoxSDKPlatform {
+  static const MethodChannel _channel = MethodChannel('vox_sdk');
   static bool _handlerInstalled = false;
   static void Function()? onNetworkChanged;
 
@@ -116,7 +116,7 @@ class EchoSDKPlatform {
     });
   }
 
-  /// Writable temp directory — used as EchoSDK `tmp_dir`. Null on desktop.
+  /// Writable temp directory — used as VoxSDK `tmp_dir`. Null on desktop.
   static Future<String?> getCacheDir() async {
     if (!_isMobile) return null;
     return _channel.invokeMethod<String>('getCacheDir');
@@ -139,7 +139,7 @@ class EchoSDKPlatform {
 
   /// The audio-output routes the system currently offers for a call.
   /// [ensureHandler] + [onAudioRoutesChanged] keep the list fresh without
-  /// polling. Empty on desktop (use the device APIs on [EchoSDK] there).
+  /// polling. Empty on desktop (use the device APIs on [VoxSDK] there).
   static Future<List<AudioRoute>> listAudioRoutes() async {
     if (!_isMobile) return const [];
     final raw = await _channel.invokeListMethod<Object?>('listAudioRoutes');
@@ -171,7 +171,7 @@ class EchoSDKPlatform {
   ///
   /// Arms a watcher only — the actual capture/playback devices open when the
   /// call has media, which is later than "answered". Pair with
-  /// `echosdk_audio_use_external(true)`; on its own this does nothing, because
+  /// `voxsdk_audio_use_external(true)`; on its own this does nothing, because
   /// the SDK would still hold the platform device.
   static Future<void> startAppOwnedAudio() async {
     if (!_isMobile) return;

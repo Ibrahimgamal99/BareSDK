@@ -1,13 +1,13 @@
-name: echo_sdk
+name: vox_sdk
 description: >-
   Flutter/Dart SIP softphone SDK (baresip-based): UDP/TCP/TLS/WS/WSS
   registration, calls, codec control, reconnection & network handover,
   media statistics and quality alerts.
 version: 1.0.1
-homepage: https://github.com/NawyRE/echo-sdk
-repository: https://github.com/NawyRE/echo-sdk
-issue_tracker: https://github.com/NawyRE/echo-sdk/issues
-documentation: https://github.com/NawyRE/echo-sdk/blob/main/docs/quickstart/flutter.md
+homepage: https://github.com/Ibrahimgamal99/VoxSDK
+repository: https://github.com/Ibrahimgamal99/VoxSDK
+issue_tracker: https://github.com/Ibrahimgamal99/VoxSDK/issues
+documentation: https://github.com/Ibrahimgamal99/VoxSDK/blob/main/docs/quickstart/flutter.md
 topics:
   - sip
   - voip
@@ -33,17 +33,17 @@ flutter:
   plugin:
     platforms:
       # Android is a hybrid plugin:
-      #  - ffiPlugin ships the prebuilt libechosdk.so from src/main/jniLibs
-      #  - EchoSDKPlugin (Kotlin) provides cache dir, audio focus, speaker
+      #  - ffiPlugin ships the prebuilt libvoxsdk.so from src/main/jniLibs
+      #  - VoxSDKPlugin (Kotlin) provides cache dir, audio focus, speaker
       #    routing and ConnectivityManager callbacks over MethodChannel.
       android:
-        package: dev.echosdk.flutter
-        pluginClass: EchoSDKPlugin
+        package: dev.voxsdk.flutter
+        pluginClass: VoxSDKPlugin
         ffiPlugin: true
-      # iOS vendors the prebuilt dynamic EchoSDK.xcframework via the podspec
+      # iOS vendors the prebuilt dynamic VoxSDK.xcframework via the podspec
       # (built by scripts/build-ios.sh on macOS/CI) plus a Swift shim for
       # audio session / speaker routing / NWPathMonitor callbacks.
       ios:
-        pluginClass: EchoSDKPlugin
+        pluginClass: VoxSDKPlugin
       # Desktop: the app bundles the native library itself (or passes
-      # EchoSDK(libPath: ...)); see lib/src/sdk.dart loadLib().
+      # VoxSDK(libPath: ...)); see lib/src/sdk.dart loadLib().

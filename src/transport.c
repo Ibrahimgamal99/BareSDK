@@ -7,25 +7,25 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
-const char *bsdk_transport_str(echosdk_transport_t t)
+const char *vox_transport_str(voxsdk_transport_t t)
 {
 	switch (t) {
-	case ECHOSDK_TRANSPORT_UDP: return "udp";
-	case ECHOSDK_TRANSPORT_TCP: return "tcp";
-	case ECHOSDK_TRANSPORT_TLS: return "tls";
-	case ECHOSDK_TRANSPORT_WS:  return "ws";
-	case ECHOSDK_TRANSPORT_WSS: return "wss";
+	case VOXSDK_TRANSPORT_UDP: return "udp";
+	case VOXSDK_TRANSPORT_TCP: return "tcp";
+	case VOXSDK_TRANSPORT_TLS: return "tls";
+	case VOXSDK_TRANSPORT_WS:  return "ws";
+	case VOXSDK_TRANSPORT_WSS: return "wss";
 	default:                    return "udp";
 	}
 }
 
-const char *bsdk_mediaenc_str(echosdk_media_enc_t enc)
+const char *vox_mediaenc_str(voxsdk_media_enc_t enc)
 {
 	switch (enc) {
-	case ECHOSDK_MEDIA_ENC_SDES:      return "srtp";
-	case ECHOSDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
+	case VOXSDK_MEDIA_ENC_SDES:      return "srtp";
+	case VOXSDK_MEDIA_ENC_DTLS_SRTP: return "dtls_srtp";
 	default:                          return NULL;
 	}
 }
@@ -49,8 +49,8 @@ const char *bsdk_mediaenc_str(echosdk_media_enc_t enc)
  *   "sip:pbx.example.com:443;transport=wss"        → WSS, host=pbx.example.com,        443, ""
  *   "sip:pbx.example.com;transport=tls"            → TLS, host=pbx.example.com,       5061, ""
  */
-int bsdk_parse_server_url(const char *url,
-                           echosdk_transport_t *out_transport,
+int vox_parse_server_url(const char *url,
+                           voxsdk_transport_t *out_transport,
                            char *host, size_t host_sz,
                            uint16_t *port,
                            char *path, size_t path_sz)
@@ -62,7 +62,7 @@ int bsdk_parse_server_url(const char *url,
 	path[0] = '\0';
 	*port   = 0;
 
-	echosdk_transport_t transport;
+	voxsdk_transport_t transport;
 	uint16_t default_port;
 	const char *rest;
 
@@ -74,25 +74,25 @@ int bsdk_parse_server_url(const char *url,
 	 * "wss://pbx.example.com/ws" to a port nothing answers on, which presents
 	 * as REGISTER timing out against a server that is plainly reachable. */
 	if (strncmp(url, "wss://", 6) == 0) {
-		transport    = ECHOSDK_TRANSPORT_WSS;
+		transport    = VOXSDK_TRANSPORT_WSS;
 		default_port = 443;
 		rest         = url + 6;
 	} else if (strncmp(url, "ws://", 5) == 0) {
-		transport    = ECHOSDK_TRANSPORT_WS;
+		transport    = VOXSDK_TRANSPORT_WS;
 		default_port = 80;
 		rest         = url + 5;
 	} else if (strncmp(url, "sips:", 5) == 0) {
-		transport    = ECHOSDK_TRANSPORT_TLS;
+		transport    = VOXSDK_TRANSPORT_TLS;
 		default_port = 5061;
 		rest         = url + 5;
 		if (rest[0] == '/' && rest[1] == '/') rest += 2;
 	} else if (strncmp(url, "sip:", 4) == 0) {
-		transport    = ECHOSDK_TRANSPORT_UDP;
+		transport    = VOXSDK_TRANSPORT_UDP;
 		default_port = 5060;
 		rest         = url + 4;
 		if (rest[0] == '/' && rest[1] == '/') rest += 2;
 	} else {
-		transport    = ECHOSDK_TRANSPORT_UDP;
+		transport    = VOXSDK_TRANSPORT_UDP;
 		default_port = 5060;
 		rest         = url;
 	}
@@ -102,19 +102,19 @@ int bsdk_parse_server_url(const char *url,
 	if (tp) {
 		const char *tv = tp + 11;
 		if (strncasecmp(tv, "wss", 3) == 0) {
-			transport    = ECHOSDK_TRANSPORT_WSS;
+			transport    = VOXSDK_TRANSPORT_WSS;
 			default_port = 443;
 		} else if (strncasecmp(tv, "ws", 2) == 0) {
-			transport    = ECHOSDK_TRANSPORT_WS;
+			transport    = VOXSDK_TRANSPORT_WS;
 			default_port = 80;
 		} else if (strncasecmp(tv, "tls", 3) == 0) {
-			transport    = ECHOSDK_TRANSPORT_TLS;
+			transport    = VOXSDK_TRANSPORT_TLS;
 			default_port = 5061;
 		} else if (strncasecmp(tv, "tcp", 3) == 0) {
-			transport    = ECHOSDK_TRANSPORT_TCP;
+			transport    = VOXSDK_TRANSPORT_TCP;
 			default_port = 5060;
 		} else if (strncasecmp(tv, "udp", 3) == 0) {
-			transport    = ECHOSDK_TRANSPORT_UDP;
+			transport    = VOXSDK_TRANSPORT_UDP;
 			default_port = 5060;
 		}
 	}
@@ -179,9 +179,9 @@ int bsdk_parse_server_url(const char *url,
  *
  * server_url, if non-NULL, takes precedence over server_host/server_port.
  */
-int bsdk_build_outbound(const char *server_url,
+int vox_build_outbound(const char *server_url,
                          const char *server_host, uint16_t server_port,
-                         echosdk_transport_t transport,
+                         voxsdk_transport_t transport,
                          char *buf, size_t buf_sz)
 {
 	char host[256] = {0};
@@ -189,23 +189,23 @@ int bsdk_build_outbound(const char *server_url,
 	uint16_t port  = server_port;
 
 	if (server_url) {
-		bsdk_parse_server_url(server_url, &transport,
+		vox_parse_server_url(server_url, &transport,
 		                      host, sizeof(host),
 		                      &port, path, sizeof(path));
 	} else {
 		str_ncpy(host, server_host ? server_host : "", sizeof(host));
 		if (!port) {
 			switch (transport) {
-			case ECHOSDK_TRANSPORT_TLS: port = 5061; break;
-			/* WebSocket defaults, as in bsdk_parse_server_url. */
-			case ECHOSDK_TRANSPORT_WS:  port = 80; break;
-			case ECHOSDK_TRANSPORT_WSS: port = 443; break;
+			case VOXSDK_TRANSPORT_TLS: port = 5061; break;
+			/* WebSocket defaults, as in vox_parse_server_url. */
+			case VOXSDK_TRANSPORT_WS:  port = 80; break;
+			case VOXSDK_TRANSPORT_WSS: port = 443; break;
 			default:                    port = 5060; break;
 			}
 		}
 	}
 
 	re_snprintf(buf, buf_sz, "sip:%s:%u;transport=%s",
-	            host, port, bsdk_transport_str(transport));
+	            host, port, vox_transport_str(transport));
 	return 0;
 }

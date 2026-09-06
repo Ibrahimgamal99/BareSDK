@@ -1,6 +1,6 @@
 # Events reference
 
-All events are delivered via the `event_cb` you set in `echosdk_config_t`. The callback is called from the **event dispatch thread** (not `re_main`) so you may call EchoSDK APIs from inside it.
+All events are delivered via the `event_cb` you set in `voxsdk_config_t`. The callback is called from the **event dispatch thread** (not `re_main`) so you may call VoxSDK APIs from inside it.
 
 Event payloads are in the `ev->u` union — access the member matching `ev->type`.
 
@@ -9,7 +9,7 @@ Event payloads are in the `ev->u` union — access the member matching `ev->type
 Events are dispatched via `@sdk.on(name)` decorators. Every handler receives a single event object with a `.type` string and type-specific fields:
 
 ```python
-import echo_sdk as sdk
+import vox_sdk as sdk
 
 @sdk.on("registered")
 def _(ev):
@@ -67,8 +67,8 @@ State fields use strings instead of integer constants:
 
 ---
 
-## ECHOSDK_EV_LOG
-**`ev->u.log`** — `echosdk_ev_log_t`
+## VOXSDK_EV_LOG
+**`ev->u.log`** — `voxsdk_ev_log_t`
 
 Emitted for every internal log message at or below `cfg.log_level`.
 
@@ -78,16 +78,16 @@ Emitted for every internal log message at or below `cfg.log_level`.
 
 ---
 
-## ECHOSDK_EV_REG_STATE
-**`ev->u.reg`** — `echosdk_ev_reg_state_t`
+## VOXSDK_EV_REG_STATE
+**`ev->u.reg`** — `voxsdk_ev_reg_state_t`
 
 Fires on every registration state change.
 
 | Field | Type | Description |
 |---|---|---|
 | `account` | handle | The account that changed state |
-| `state` | `echosdk_reg_state_t` | `UNREGISTERED`, `REGISTERING`, `REGISTERED`, `RECONNECTING`, `FAILED`, `UNREGISTERING` |
-| `error` | `echosdk_error_t` | `ECHOSDK_OK` when `REGISTERED` |
+| `state` | `voxsdk_reg_state_t` | `UNREGISTERED`, `REGISTERING`, `REGISTERED`, `RECONNECTING`, `FAILED`, `UNREGISTERING` |
+| `error` | `voxsdk_error_t` | `VOXSDK_OK` when `REGISTERED` |
 | `error_str` | `const char *` | Human-readable error; NULL on OK |
 | `retry_attempt` | `uint32_t` | How many retries so far |
 | `retry_delay_ms` | `uint32_t` | Next retry in this many ms |
@@ -98,7 +98,7 @@ dialog:
 | State | Meaning | What the app does |
 |---|---|---|
 | `RECONNECTING` | The registration is down and the SDK is getting it back itself — a retry armed after a timeout or 5xx, a keepalive probe the proxy stopped answering, a network handover (Wi-Fi ↔ cellular, VPN, dock). | Show "Reconnecting…". Nothing else. |
-| `FAILED` | The SDK has stopped trying: `ECHOSDK_ERR_AUTH`, an exhausted `reg_retry_max_attempts`, or a retry the app cancelled. | Surface it — new credentials, or `echosdk_account_retry_now()`. |
+| `FAILED` | The SDK has stopped trying: `VOXSDK_ERR_AUTH`, an exhausted `reg_retry_max_attempts`, or a retry the app cancelled. | Surface it — new credentials, or `voxsdk_account_retry_now()`. |
 
 A recovery reports `RECONNECTING` once and stays there for every attempt it
 makes, ending at `REGISTERED` or `FAILED`; it does not flip back to
@@ -109,10 +109,10 @@ to render.
 
 ---
 
-## ECHOSDK_EV_INCOMING_CALL
-**`ev->u.incoming`** — `echosdk_ev_incoming_call_t`
+## VOXSDK_EV_INCOMING_CALL
+**`ev->u.incoming`** — `voxsdk_ev_incoming_call_t`
 
-Fires when a new INVITE is received. Call `echosdk_call_answer()` or `echosdk_call_hangup()`.
+Fires when a new INVITE is received. Call `voxsdk_call_answer()` or `voxsdk_call_hangup()`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -123,8 +123,8 @@ Fires when a new INVITE is received. Call `echosdk_call_answer()` or `echosdk_ca
 
 ---
 
-## ECHOSDK_EV_CALL_STATE
-**`ev->u.call_state`** — `echosdk_ev_call_state_t`
+## VOXSDK_EV_CALL_STATE
+**`ev->u.call_state`** — `voxsdk_ev_call_state_t`
 
 Fires on every call state transition.
 
@@ -144,12 +144,12 @@ Fires on every call state transition.
 > normal hangup reaches the SDK looking exactly like a dead socket
 > (`"Connection reset by peer [104]"`). The SDK therefore treats a transport
 > error on a call that had reached `ESTABLISHED` as a remote hangup and reports
-> `ENDED` with `reason = "Remote hangup"` and `error = ECHOSDK_OK`.
+> `ENDED` with `reason = "Remote hangup"` and `error = VOXSDK_OK`.
 >
 > A consequence worth knowing: a genuine mid-call transport failure is also
 > reported as `ENDED`. The two are indistinguishable at this layer, and the call
 > is over either way — the transport itself is covered by `REG_STATE` and
-> `ECHOSDK_EV_NETWORK`, which a plain hangup never touches.
+> `VOXSDK_EV_NETWORK`, which a plain hangup never touches.
 >
 > Errors *before* answer are unaffected: 486, 603 and every other 4xx/5xx/6xx
 > still arrive as `FAILED` with the SIP reason phrase intact.
@@ -158,14 +158,14 @@ Fires on every call state transition.
 |---|---|---|
 | `account` | handle | Owning account |
 | `call` | handle | The call |
-| `state` | `echosdk_call_state_t` | New state |
-| `error` | `echosdk_error_t` | Error code when FAILED |
+| `state` | `voxsdk_call_state_t` | New state |
+| `error` | `voxsdk_error_t` | Error code when FAILED |
 | `reason` | `const char *` | SIP reason phrase, `"Remote hangup"` for a peer BYE, or NULL |
 
 ---
 
-## ECHOSDK_EV_CALL_DTMF
-**`ev->u.dtmf`** — `echosdk_ev_call_dtmf_t`
+## VOXSDK_EV_CALL_DTMF
+**`ev->u.dtmf`** — `voxsdk_ev_call_dtmf_t`
 
 DTMF digit received via RFC 4733.
 
@@ -176,8 +176,8 @@ DTMF digit received via RFC 4733.
 
 ---
 
-## ECHOSDK_EV_SDP_NEGOTIATION
-**`ev->u.sdp`** — `echosdk_ev_sdp_negotiation_t`
+## VOXSDK_EV_SDP_NEGOTIATION
+**`ev->u.sdp`** — `voxsdk_ev_sdp_negotiation_t`
 
 Emitted after SDP offer/answer exchange (when `cfg.trace_sdp_diff = true`).
 
@@ -193,14 +193,14 @@ Emitted after SDP offer/answer exchange (when `cfg.trace_sdp_diff = true`).
 
 ---
 
-## ECHOSDK_EV_SIP_TRACE
-**`ev->u.sip_trace`** — `echosdk_ev_sip_trace_t`
+## VOXSDK_EV_SIP_TRACE
+**`ev->u.sip_trace`** — `voxsdk_ev_sip_trace_t`
 
 Raw SIP message (when `cfg.trace_sip = true`).
 
 | Field | Type | Description |
 |---|---|---|
-| `dir` | `echosdk_media_dir_t` | `TX` or `RX` |
+| `dir` | `voxsdk_media_dir_t` | `TX` or `RX` |
 | `transport` | `const char *` | `"UDP"`, `"TCP"`, `"TLS"`, `"WS"`, `"WSS"` |
 | `remote_addr` | `const char *` | `"1.2.3.4:5060"` |
 | `raw_message` | `const char *` | Full SIP message text |
@@ -208,10 +208,10 @@ Raw SIP message (when `cfg.trace_sip = true`).
 
 ---
 
-## ECHOSDK_EV_MEDIA_STATS
-**`ev->u.stats`** — `echosdk_ev_media_stats_t`
+## VOXSDK_EV_MEDIA_STATS
+**`ev->u.stats`** — `voxsdk_ev_media_stats_t`
 
-Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchronously by `echosdk_call_get_stats()`. All RTCP-dependent fields are zero until the first RTCP exchange — packet counters and bandwidth are available immediately.
+Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchronously by `voxsdk_call_get_stats()`. All RTCP-dependent fields are zero until the first RTCP exchange — packet counters and bandwidth are available immediately.
 
 **Packet counters**
 
@@ -277,7 +277,7 @@ Periodic RTCP stats (rate set by `cfg.stats_interval_ms`). Also returned synchro
 | `mos_cq` | `float` | TX-path conversational quality — `mos_lq` minus the delay impairment, so always ≤ `mos_lq` |
 | `mos_lq_rx` | `float` | RX-path listening quality (far end → you), scored on **effective** loss: network loss plus jitter-buffer discards |
 | `mos_cq_rx` | `float` | RX-path conversational quality |
-| `mos_method` | `echosdk_mos_method_t` | `EMODEL` or `SIMPLIFIED` |
+| `mos_method` | `voxsdk_mos_method_t` | `EMODEL` or `SIMPLIFIED` |
 
 See [Observability → MOS methods](observability.md#mos-methods) for the formulas.
 
@@ -318,8 +318,8 @@ See [Observability → MOS methods](observability.md#mos-methods) for the formul
 
 ---
 
-## ECHOSDK_EV_REGISTRAR_WARNING
-**`ev->u.reg_warn`** — `echosdk_ev_registrar_warning_t`
+## VOXSDK_EV_REGISTRAR_WARNING
+**`ev->u.reg_warn`** — `voxsdk_ev_registrar_warning_t`
 
 Non-fatal warning from the registrar (e.g. `Warning:` header).
 
@@ -329,16 +329,16 @@ Non-fatal warning from the registrar (e.g. `Warning:` header).
 
 ---
 
-## ECHOSDK_EV_TRANSFER_REQUEST
-**`ev->u.transfer_req`** — `echosdk_ev_transfer_req_t`
+## VOXSDK_EV_TRANSFER_REQUEST
+**`ev->u.transfer_req`** — `voxsdk_ev_transfer_req_t`
 
 Incoming REFER request — the peer is asking you to transfer this call.
 
 **This event requires an answer.** A REFER creates an implicit subscription
 (RFC 3515), and the transferor waits for a final `message/sipfrag` NOTIFY saying
 what became of it. The SDK sends the `202 Accepted` and `100 Trying`, then hands
-the decision to you. Call exactly one of `echosdk_call_transfer_accept()` or
-`echosdk_call_transfer_reject()` on `call`; ignoring the event leaves the far end
+the decision to you. Call exactly one of `voxsdk_call_transfer_accept()` or
+`voxsdk_call_transfer_reject()` on `call`; ignoring the event leaves the far end
 waiting out its 60-second subscription.
 
 Do not follow a transfer by hanging up and dialling `refer_to_uri` — the new call
@@ -355,8 +355,8 @@ is then unrelated to the REFER and the subscription is never answered. See
 
 ---
 
-## ECHOSDK_EV_TRANSFER_FAILED
-**`ev->u.transfer_failed`** — `echosdk_ev_transfer_failed_t`
+## VOXSDK_EV_TRANSFER_FAILED
+**`ev->u.transfer_failed`** — `voxsdk_ev_transfer_failed_t`
 
 An *outgoing* REFER was refused. The call is **still established** — a refused
 transfer is not a call failure, and the stack does not close the leg. Resume the
@@ -364,7 +364,7 @@ caller (they are usually on hold) and report the reason; do not hang up.
 
 There is no matching success event: an accepted REFER hands the call to the
 transfer target and closes our leg, which arrives as
-`ECHOSDK_EV_CALL_STATE` / `ECHOSDK_CALL_ENDED`.
+`VOXSDK_EV_CALL_STATE` / `VOXSDK_CALL_ENDED`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -374,8 +374,8 @@ transfer target and closes our leg, which arrives as
 
 ---
 
-## ECHOSDK_EV_MWI
-**`ev->u.mwi`** — `echosdk_ev_mwi_t`
+## VOXSDK_EV_MWI
+**`ev->u.mwi`** — `voxsdk_ev_mwi_t`
 
 Voicemail notification (NOTIFY from MWI subscription).
 
@@ -391,8 +391,8 @@ Voicemail notification (NOTIFY from MWI subscription).
 
 ---
 
-## ECHOSDK_EV_MESSAGE
-**`ev->u.msg`** — `echosdk_ev_message_t`
+## VOXSDK_EV_MESSAGE
+**`ev->u.msg`** — `voxsdk_ev_message_t`
 
 Incoming SIP MESSAGE (out-of-dialog instant message).
 
@@ -405,8 +405,8 @@ Incoming SIP MESSAGE (out-of-dialog instant message).
 
 ---
 
-## ECHOSDK_EV_PRESENCE_STATE
-**`ev->u.presence`** — `echosdk_ev_presence_state_t`
+## VOXSDK_EV_PRESENCE_STATE
+**`ev->u.presence`** — `voxsdk_ev_presence_state_t`
 
 Buddy presence changed (received via SUBSCRIBE/NOTIFY).
 
@@ -414,24 +414,24 @@ Buddy presence changed (received via SUBSCRIBE/NOTIFY).
 |---|---|
 | `account` | handle |
 | `target_uri` | `const char *` |
-| `status` | `echosdk_presence_status_t`: `UNKNOWN`, `OPEN`, `CLOSED`, `BUSY` |
+| `status` | `voxsdk_presence_status_t`: `UNKNOWN`, `OPEN`, `CLOSED`, `BUSY` |
 
-## ECHOSDK_EV_NETWORK
-**`ev->u.network`** — `echosdk_ev_network_t`
+## VOXSDK_EV_NETWORK
+**`ev->u.network`** — `voxsdk_ev_network_t`
 
 Progress of a network handover (Wi-Fi ↔ 4G/5G, VPN up/down, dock/undock).
 See [Network handover](../guides/network_handover.md) for the full sequence.
 
 | Field | Type |
 |---|---|
-| `event` | `echosdk_net_event_t` — see stage table below |
+| `event` | `voxsdk_net_event_t` — see stage table below |
 | `call` | handle — `CALL_*` stages only, else NULL |
 | `account` | handle — `REREGISTERING` only, else NULL |
 | `local_addr` | `const char *` — new local IP, `""` when unknown |
 | `attempt` / `max_attempts` | `uint32_t` — retry counter, e.g. "3/6" |
 | `elapsed_ms` | `uint32_t` — on `CALL_MIGRATED`, how long audio was interrupted |
 | `ice` | `bool` — the call has a live ICE media-NAT; it is migrated with an ICE restart |
-| `error` | `echosdk_error_t` — `ECHOSDK_OK` unless a `*_FAILED` stage |
+| `error` | `voxsdk_error_t` — `VOXSDK_OK` unless a `*_FAILED` stage |
 
 Stages: `CHANGE_DETECTED`, `DOWN`, `UP`, `TRANSPORT_RESET`, `REREGISTERING`,
 `CALL_MIGRATING`, `CALL_MIGRATE_ACCEPTED`, `CALL_MIGRATED`,
@@ -452,8 +452,8 @@ retrying; see [Network handover](../guides/network_handover.md#ice-calls).
 
 ---
 
-## ECHOSDK_EV_QUALITY_ALERT
-**`ev->u.quality_alert`** — `echosdk_ev_quality_alert_t`
+## VOXSDK_EV_QUALITY_ALERT
+**`ev->u.quality_alert`** — `voxsdk_ev_quality_alert_t`
 
 Fired when a quality metric crosses one of the configured thresholds, and
 again when it crosses back. Edge-triggered, so a call that stays bad produces
@@ -462,7 +462,7 @@ one alert, not one per stats tick.
 | Field | Type | Description |
 |---|---|---|
 | `call` | handle | The affected call |
-| `issue` | `echosdk_quality_issue_t` | `MOS`, `LOSS`, `JITTER`, `RTT`, `MEDIA_STALL` |
+| `issue` | `voxsdk_quality_issue_t` | `MOS`, `LOSS`, `JITTER`, `RTT`, `MEDIA_STALL` |
 | `value` | `float` | The metric that crossed |
 | `threshold` | `float` | The threshold it crossed |
 | `recovering` | `bool` | true = the value came back across |

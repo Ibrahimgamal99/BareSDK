@@ -8,9 +8,9 @@
  * automatic device-change events (e.g., AirPods connect/disconnect).
  */
 
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
-int bsdk_platform_audio_init(bool activate)
+int vox_platform_audio_init(bool activate)
 {
 	(void)activate;  /* no platform-managed session to activate */
 	/* baresip's coreaudio module (loaded by modules_init) handles macOS audio */

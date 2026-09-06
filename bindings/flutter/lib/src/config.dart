@@ -1,5 +1,5 @@
-/// Configuration classes mirroring `echosdk_config_t` and
-/// `echosdk_account_config_t`.
+/// Configuration classes mirroring `voxsdk_config_t` and
+/// `voxsdk_account_config_t`.
 library;
 
 import 'dart:ffi';
@@ -8,7 +8,7 @@ import 'package:ffi/ffi.dart';
 import 'enums.dart';
 import 'ffi_bindings.dart' as c;
 
-/// Opus encoder tuning (`echosdk_opus_config_t`).
+/// Opus encoder tuning (`voxsdk_opus_config_t`).
 class OpusConfig {
   /// 0 = auto/VBR; otherwise bits per second, e.g. 32000.
   final int bitrate;
@@ -38,11 +38,11 @@ class OpusConfig {
   });
 }
 
-/// Global stack configuration, applied once at [EchoSDK] startup.
+/// Global stack configuration, applied once at [VoxSDK] startup.
 ///
-/// Everything is optional; native defaults (see echosdk.h) apply for any
+/// Everything is optional; native defaults (see voxsdk.h) apply for any
 /// field left at its Dart default.
-class EchoSDKConfig {
+class VoxSDKConfig {
   // ── Transport ──────────────────────────────────────────────────────────
   final Transport transport;
   final String? localIp;
@@ -165,14 +165,14 @@ class EchoSDKConfig {
   /// as CallKit activates the session.
   ///
   /// Such apps normally also pass `manageAudioSession: false` to
-  /// [EchoSDK.start], which stops the SDK toggling activation around calls.
+  /// [VoxSDK.start], which stops the SDK toggling activation around calls.
   final bool platformAudioActivate;
 
   /// Hand the microphone and speaker to the app instead of letting the SDK
   /// open them.
   ///
-  /// Applied after `echosdk_init()` — there is no native config field for it,
-  /// the switch is the runtime call [EchoSDK.useAppOwnedAudio]. On mobile this
+  /// Applied after `voxsdk_init()` — there is no native config field for it,
+  /// the switch is the runtime call [VoxSDK.useAppOwnedAudio]. On mobile this
   /// also starts the plugin's realtime capture/playback loops around each
   /// call; on desktop the loops are the app's own business.
   ///
@@ -229,7 +229,7 @@ class EchoSDKConfig {
   final int sipTimerFMs;
 
   // ── Degraded links ─────────────────────────────────────────────────────
-  // Handover (netMonitorIntervalSeconds and EchoSDK.networkChanged) covers a
+  // Handover (netMonitorIntervalSeconds and VoxSDK.networkChanged) covers a
   // changed local address.  These cover the other failure: the address stays
   // put and the link goes bad — one bar of signal, a saturated uplink, a cell
   // that stops forwarding packets without dropping the PDP context.  Nothing
@@ -306,7 +306,7 @@ class EchoSDKConfig {
 
   // ── Platform ───────────────────────────────────────────────────────────
   /// Writable temp dir for SDK state. REQUIRED on Android (use
-  /// [EchoSDK.start], which fills it with the app cache dir automatically).
+  /// [VoxSDK.start], which fills it with the app cache dir automatically).
   final String? tmpDir;
 
   // ── Tracing / logging ──────────────────────────────────────────────────
@@ -324,10 +324,10 @@ class EchoSDKConfig {
 
   // ── Network handover ───────────────────────────────────────────────────
   /// Interface poll period seconds; set 0 on mobile — the plugin drives
-  /// [EchoSDK.networkChanged] from the OS connectivity callback instead.
+  /// [VoxSDK.networkChanged] from the OS connectivity callback instead.
   final int netMonitorIntervalSeconds;
 
-  const EchoSDKConfig({
+  const VoxSDKConfig({
     this.transport = Transport.udp,
     this.localIp,
     this.localPort = 0,
@@ -404,8 +404,8 @@ class EchoSDKConfig {
     this.netMonitorIntervalSeconds = 10,
   });
 
-  EchoSDKConfig copyWith({String? tmpDir, int? netMonitorIntervalSeconds}) {
-    return EchoSDKConfig(
+  VoxSDKConfig copyWith({String? tmpDir, int? netMonitorIntervalSeconds}) {
+    return VoxSDKConfig(
       transport: transport,
       localIp: localIp,
       localPort: localPort,
@@ -485,7 +485,7 @@ class EchoSDKConfig {
   }
 }
 
-/// Per-account configuration (`echosdk_account_config_t`).
+/// Per-account configuration (`voxsdk_account_config_t`).
 class AccountConfig {
   /// SIP transport; ignored when [serverUrl] is set (derived from scheme).
   final Transport transport;
@@ -600,18 +600,18 @@ int writeCodecNamesInto(Array<Array<Char>> names, List<String> codecs) {
 }
 
 /// Copy codec names into the fixed `char[8][32]` array of an account config.
-void writeCodecNames(c.echosdk_account_config_t cfg, List<String> codecs) {
+void writeCodecNames(c.voxsdk_account_config_t cfg, List<String> codecs) {
   cfg.audio_codec_name_count =
       writeCodecNamesInto(cfg.audio_codec_names, codecs);
 }
 
-/// Populate a native `echosdk_config_t` from [EchoSDKConfig].
-/// Returns a [NativeScope] the caller must free after `echosdk_init`
+/// Populate a native `voxsdk_config_t` from [VoxSDKConfig].
+/// Returns a [NativeScope] the caller must free after `voxsdk_init`
 /// (the SDK deep-copies all config strings).
 NativeScope fillNativeConfig(
-    Pointer<c.echosdk_config_t> cfg, EchoSDKConfig conf, c.EchoSDKBindings b) {
+    Pointer<c.voxsdk_config_t> cfg, VoxSDKConfig conf, c.VoxSDKBindings b) {
   final scope = NativeScope();
-  b.echosdk_config_init(cfg);
+  b.voxsdk_config_init(cfg);
   final r = cfg.ref;
 
   r.transport = conf.transport.raw;
@@ -641,7 +641,7 @@ NativeScope fillNativeConfig(
   r.turn_user = scope.str(conf.turnUser);
   r.turn_pass = scope.str(conf.turnPass);
   r.ice_enabled = conf.iceEnabled;
-  // -1 means "leave echosdk_config_init()'s default"; 0 is a real value here
+  // -1 means "leave voxsdk_config_init()'s default"; 0 is a real value here
   // (disable the deadline), so the usual `> 0` guard would swallow it.
   if (conf.iceGatheringTimeoutMs >= 0) {
     r.ice_gathering_timeout_ms = conf.iceGatheringTimeoutMs;
@@ -691,7 +691,7 @@ NativeScope fillNativeConfig(
   r.jitter_alert_threshold = conf.jitterAlertThreshold;
 
   // Degraded-link handling.  Fields whose Dart default is 0 are assigned only
-  // when set, so echosdk_config_init()'s value survives — the same convention
+  // when set, so voxsdk_config_init()'s value survives — the same convention
   // the registration block above uses.  mediaStallMs and the two booleans
   // carry meaningful non-zero defaults and are always written.
   if (conf.regRetryJitter > 0) r.reg_retry_jitter = conf.regRetryJitter;
@@ -724,9 +724,9 @@ NativeScope fillNativeConfig(
   return scope;
 }
 
-/// Populate a native `echosdk_account_config_t` from [AccountConfig].
-/// Returns a [NativeScope] the caller must free after `echosdk_account_create`.
-NativeScope fillNativeAccountConfig(Pointer<c.echosdk_account_config_t> cfg,
+/// Populate a native `voxsdk_account_config_t` from [AccountConfig].
+/// Returns a [NativeScope] the caller must free after `voxsdk_account_create`.
+NativeScope fillNativeAccountConfig(Pointer<c.voxsdk_account_config_t> cfg,
     String uri, String password, AccountConfig conf) {
   final scope = NativeScope();
   final r = cfg.ref;

@@ -9,13 +9,13 @@
  * (controlled by cmake/modules-desktop.cmake or modules-mobile.cmake).
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* Common modules present in both desktop and mobile profiles.
  *
  * Deliberately excluded:
  *   "account" — reads ~/.baresip/accounts from disk; SDK creates all
- *               accounts programmatically via echosdk_account_create()
+ *               accounts programmatically via voxsdk_account_create()
  *   "contact" — reads ~/.baresip/contacts from disk (template contains
  *               sip:user@domain;presence=p2p which triggers spurious
  *               SUBSCRIBE dialogs); contacts are added via the API
@@ -53,31 +53,31 @@ static const char *DESKTOP_EXTRA[] = {
 	NULL
 };
 
-#if defined(ECHOSDK_PROFILE_DESKTOP) && defined(ECHOSDK_HAS_WEBRTC_AEC)
+#if defined(VOXSDK_PROFILE_DESKTOP) && defined(VOXSDK_HAS_WEBRTC_AEC)
 /* Loaded only when aec_mode == WEBRTC at init time.
  * module_load is one-way — we don't unload at runtime. */
 static const char *WEBRTC_AEC_LIST[] = { "webrtc_aec", NULL };
 #endif
 
 /* Platform audio module selected at compile time */
-#if defined(ECHOSDK_AUDIO_OPENSLES)
+#if defined(VOXSDK_AUDIO_OPENSLES)
 /* Android: OpenSLES works on every supported API level (minSdk 24).
- * The preferred driver is EchoSDK's own "sles_vc" (voice-communication
+ * The preferred driver is VoxSDK's own "sles_vc" (voice-communication
  * preset → platform AEC/NS); modules_init() falls back to loading the
  * stock "opensles" module when sles_vc fails to initialize.
  * aaudio needs API >= 26 and is not compiled in — see CMakeLists.txt. */
 static const char *PLATFORM_AUDIO[] = { "opensles", NULL };
-#elif defined(ECHOSDK_AUDIO_AAUDIO)
+#elif defined(VOXSDK_AUDIO_AAUDIO)
 static const char *PLATFORM_AUDIO[] = { "aaudio", NULL };
-#elif defined(ECHOSDK_AUDIO_AUDIOUNIT)
+#elif defined(VOXSDK_AUDIO_AUDIOUNIT)
 /* iOS: audiounit covers capture + playback (VoiceProcessingIO = HW AEC).
  * avcapture (video) is deliberately not compiled — see CMakeLists.txt. */
 static const char *PLATFORM_AUDIO[] = { "audiounit", NULL };
-#elif defined(ECHOSDK_AUDIO_COREAUDIO)
+#elif defined(VOXSDK_AUDIO_COREAUDIO)
 static const char *PLATFORM_AUDIO[] = { "coreaudio", NULL };
-#elif defined(ECHOSDK_AUDIO_WASAPI)
+#elif defined(VOXSDK_AUDIO_WASAPI)
 static const char *PLATFORM_AUDIO[] = { "wasapi", NULL };
-#elif defined(ECHOSDK_AUDIO_PULSE)
+#elif defined(VOXSDK_AUDIO_PULSE)
 static const char *PLATFORM_AUDIO[] = { "pulse", NULL };
 #else
 static const char *PLATFORM_AUDIO[] = { NULL };
@@ -90,7 +90,7 @@ static void load_list(const char **list)
 	for (int i = 0; list[i]; i++) {
 		int err = module_load(".", list[i]);
 		if (err && err != EALREADY)
-			warning("EchoSDK: module '%s': %m\n", list[i], err);
+			warning("VoxSDK: module '%s': %m\n", list[i], err);
 	}
 }
 
@@ -101,16 +101,16 @@ static void load_list(const char **list)
  * work left to do. */
 static bool s_platform_aec;
 
-bool bsdk_platform_has_aec(void)
+bool vox_platform_has_aec(void)
 {
 	return s_platform_aec;
 }
 
 /* The device module the platform would use on its own, remembered so
- * echosdk_audio_use_external(false) can put it back. */
+ * voxsdk_audio_use_external(false) can put it back. */
 static char s_platform_audio_mod[32];
 
-const char *bsdk_platform_audio_mod(void)
+const char *vox_platform_audio_mod(void)
 {
 	return s_platform_audio_mod[0] ? s_platform_audio_mod : NULL;
 }
@@ -123,14 +123,14 @@ int modules_init(void)
 
 	load_list(COMMON_MODULES);
 
-#if defined(ECHOSDK_PROFILE_DESKTOP)
+#if defined(VOXSDK_PROFILE_DESKTOP)
 	load_list(DESKTOP_EXTRA);
 #endif
 
-#if defined(ECHOSDK_AUDIO_OPENSLES)
-	/* Prefer EchoSDK's voice-communication OpenSLES driver (platform
+#if defined(VOXSDK_AUDIO_OPENSLES)
+	/* Prefer VoxSDK's voice-communication OpenSLES driver (platform
 	 * AEC/NS); fall back to the stock opensles module on failure. */
-	if (bsdk_sles_vc_init() == 0) {
+	if (vox_sles_vc_init() == 0) {
 		audio_mod = "sles_vc";
 		/* VOICE_COMMUNICATION recording preset — the HAL's AEC/NS/AGC. */
 		s_platform_aec = true;
@@ -145,22 +145,22 @@ int modules_init(void)
 	load_list(PLATFORM_AUDIO);
 #endif
 
-#if defined(ECHOSDK_AUDIO_AUDIOUNIT)
+#if defined(VOXSDK_AUDIO_AUDIOUNIT)
 	/* iOS: audiounit's I/O unit is VoiceProcessingIO, which is Apple's
 	 * hardware echo canceller. (The define is only set for iOS — a macOS
 	 * build gets coreaudio, which is not echo-cancelled.) */
 	s_platform_aec = true;
 #endif
 
-#if defined(ECHOSDK_PROFILE_DESKTOP) && defined(ECHOSDK_HAS_WEBRTC_AEC)
-	if (g_bsdk.cfg.aec_mode == ECHOSDK_AEC_WEBRTC)
+#if defined(VOXSDK_PROFILE_DESKTOP) && defined(VOXSDK_HAS_WEBRTC_AEC)
+	if (g_vox.cfg.aec_mode == VOXSDK_AEC_WEBRTC)
 		load_list(WEBRTC_AEC_LIST);
 #endif
 
 	/* Always available, never automatic: the app opts in with
-	 * echosdk_audio_use_external(true). */
-	if (bsdk_audio_external_init())
-		warning("EchoSDK: app-owned audio device unavailable\n");
+	 * voxsdk_audio_use_external(true). */
+	if (vox_audio_external_init())
+		warning("VoxSDK: app-owned audio device unavailable\n");
 
 	if (audio_mod)
 		str_ncpy(s_platform_audio_mod, audio_mod,
@@ -177,7 +177,7 @@ int modules_init(void)
 		         sizeof(cfg->audio.src_mod));
 		str_ncpy(cfg->audio.play_mod, audio_mod,
 		         sizeof(cfg->audio.play_mod));
-#if defined(ECHOSDK_AUDIO_WASAPI)
+#if defined(VOXSDK_AUDIO_WASAPI)
 		/* wasapi src/play accept either a real endpoint ID or the literal
 		 * string "default" — an empty device name makes IMMDeviceEnumerator_
 		 * GetDevice("") fail with E_INVALIDARG and the audio thread bails

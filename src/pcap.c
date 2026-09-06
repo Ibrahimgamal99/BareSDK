@@ -7,8 +7,8 @@
  * pcap global header: magic 0xa1b2c3d4, version 2.4, link_type=RAW(101)
  * Per-packet: pcap_pkthdr + IPv4 header (proto=UDP) + UDP header + SIP payload
  *
- * All writes are serialized under g_bsdk.pcap_lock (called from re_main thread
- * only in practice, but the lock guards against echosdk_pcap_start/stop races).
+ * All writes are serialized under g_vox.pcap_lock (called from re_main thread
+ * only in practice, but the lock guards against voxsdk_pcap_start/stop races).
  */
 
 #include <stdint.h>
@@ -43,11 +43,11 @@ static int gettimeofday(struct timeval *tv, void *tz)
 #include <sys/time.h>
 #include <arpa/inet.h>
 #endif
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* Packing must apply ONLY to the on-wire pcap/IP/UDP/TCP structs below.
- * Pushing pack(1) before echosdk_internal.h would change the layout of
- * struct bsdk_ctx in this TU only, breaking access to g_bsdk fields. */
+ * Pushing pack(1) before voxsdk_internal.h would change the layout of
+ * struct vox_ctx in this TU only, breaking access to g_vox fields. */
 #ifdef _WIN32
 #pragma pack(push, 1)
 #define PACKED_STRUCT struct
@@ -149,54 +149,54 @@ static void sa_to_bytes(const struct sa *addr, uint8_t out[4], uint16_t *port)
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-int bsdk_pcap_open(const char *path)
+int vox_pcap_open(const char *path)
 {
 	if (!path)
 		return 0;
 
-	mtx_lock(&g_bsdk.pcap_lock);
-	if (g_bsdk.pcap_file) {
-		mtx_unlock(&g_bsdk.pcap_lock);
+	mtx_lock(&g_vox.pcap_lock);
+	if (g_vox.pcap_file) {
+		mtx_unlock(&g_vox.pcap_lock);
 		return EALREADY;
 	}
-	g_bsdk.pcap_file = fopen(path, "wb");
-	if (!g_bsdk.pcap_file) {
-		mtx_unlock(&g_bsdk.pcap_lock);
+	g_vox.pcap_file = fopen(path, "wb");
+	if (!g_vox.pcap_file) {
+		mtx_unlock(&g_vox.pcap_lock);
 		return errno ? errno : EIO;
 	}
-	write_global_header(g_bsdk.pcap_file);
-	fflush(g_bsdk.pcap_file);
-	mtx_unlock(&g_bsdk.pcap_lock);
+	write_global_header(g_vox.pcap_file);
+	fflush(g_vox.pcap_file);
+	mtx_unlock(&g_vox.pcap_lock);
 	return 0;
 }
 
-void bsdk_pcap_close(void)
+void vox_pcap_close(void)
 {
 	{
-		const uint64_t *p = (const uint64_t*)&g_bsdk.pcap_lock;
-		BSDK_TRACE("[bsdk] pcap_close: addr=%p bytes=%016llx %016llx %016llx %016llx %016llx\n",
+		const uint64_t *p = (const uint64_t*)&g_vox.pcap_lock;
+		VOX_TRACE("[vox] pcap_close: addr=%p bytes=%016llx %016llx %016llx %016llx %016llx\n",
 		       (void*)p, p[0], p[1], p[2], p[3], p[4]);
 	}
-	mtx_lock(&g_bsdk.pcap_lock);
-	BSDK_TRACE("[bsdk] pcap_close: locked\n");
-	if (g_bsdk.pcap_file) {
-		fclose(g_bsdk.pcap_file);
-		g_bsdk.pcap_file = NULL;
+	mtx_lock(&g_vox.pcap_lock);
+	VOX_TRACE("[vox] pcap_close: locked\n");
+	if (g_vox.pcap_file) {
+		fclose(g_vox.pcap_file);
+		g_vox.pcap_file = NULL;
 	}
-	mtx_unlock(&g_bsdk.pcap_lock);
-	BSDK_TRACE("[bsdk] pcap_close: done\n");
+	mtx_unlock(&g_vox.pcap_lock);
+	VOX_TRACE("[vox] pcap_close: done\n");
 }
 
-void bsdk_pcap_write_sip(const char *data, size_t len,
+void vox_pcap_write_sip(const char *data, size_t len,
                            const struct sa *src, const struct sa *dst,
                            bool is_udp)
 {
 	if (!data || !len)
 		return;
 
-	mtx_lock(&g_bsdk.pcap_lock);
-	if (!g_bsdk.pcap_file) {
-		mtx_unlock(&g_bsdk.pcap_lock);
+	mtx_lock(&g_vox.pcap_lock);
+	if (!g_vox.pcap_file) {
+		mtx_unlock(&g_vox.pcap_lock);
 		return;
 	}
 
@@ -247,10 +247,10 @@ void bsdk_pcap_write_sip(const char *data, size_t len,
 			.checksum = 0,
 		};
 
-		fwrite(&ph,  sizeof(ph),  1, g_bsdk.pcap_file);
-		fwrite(&ip,  sizeof(ip),  1, g_bsdk.pcap_file);
-		fwrite(&udp, sizeof(udp), 1, g_bsdk.pcap_file);
-		fwrite(data, 1, len,         g_bsdk.pcap_file);
+		fwrite(&ph,  sizeof(ph),  1, g_vox.pcap_file);
+		fwrite(&ip,  sizeof(ip),  1, g_vox.pcap_file);
+		fwrite(&udp, sizeof(udp), 1, g_vox.pcap_file);
+		fwrite(data, 1, len,         g_vox.pcap_file);
 	} else {
 		ip_proto = IP_PROTO_TCP;
 		l4_total = (uint16_t)(TCP_HDR_LEN + len);
@@ -287,28 +287,28 @@ void bsdk_pcap_write_sip(const char *data, size_t len,
 			.urgent_ptr        = 0,
 		};
 
-		fwrite(&ph,  sizeof(ph),  1, g_bsdk.pcap_file);
-		fwrite(&ip,  sizeof(ip),  1, g_bsdk.pcap_file);
-		fwrite(&tcp, sizeof(tcp), 1, g_bsdk.pcap_file);
-		fwrite(data, 1, len,          g_bsdk.pcap_file);
+		fwrite(&ph,  sizeof(ph),  1, g_vox.pcap_file);
+		fwrite(&ip,  sizeof(ip),  1, g_vox.pcap_file);
+		fwrite(&tcp, sizeof(tcp), 1, g_vox.pcap_file);
+		fwrite(data, 1, len,          g_vox.pcap_file);
 	}
 
-	fflush(g_bsdk.pcap_file);
-	mtx_unlock(&g_bsdk.pcap_lock);
+	fflush(g_vox.pcap_file);
+	mtx_unlock(&g_vox.pcap_lock);
 }
 
 /* ── Public control API ──────────────────────────────────────────────────── */
 
-int echosdk_pcap_start(const char *path)
+int voxsdk_pcap_start(const char *path)
 {
-	if (!path) return ECHOSDK_ERR_INVAL;
-	return bsdk_pcap_open(path);
+	if (!path) return VOXSDK_ERR_INVAL;
+	return vox_pcap_open(path);
 }
 
-int echosdk_pcap_stop(void)
+int voxsdk_pcap_stop(void)
 {
-	bsdk_pcap_close();
-	return ECHOSDK_OK;
+	vox_pcap_close();
+	return VOXSDK_OK;
 }
 
 #ifdef _WIN32

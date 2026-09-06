@@ -49,7 +49,7 @@
   gather on the new interface — and emit the ordinary `callMigrating` →
   `callMigrated` sequence, with the re-INVITE arriving up to
   `iceGatheringTimeoutMs` after `callMigrating`. `NetworkStage.callIceStale` and
-  `EchoSDKConfig.netIceHandover` now apply only to the calls a restart could not
+  `VoxSDKConfig.netIceHandover` now apply only to the calls a restart could not
   be performed for.
 
 - In-dialog requests on an incoming call never reached the server, so hanging up
@@ -77,7 +77,7 @@
   sides heard silence. The SDK now re-offers when the address ICE settles on is
   not the one that was advertised.
 
-- `EchoSDKConfig`'s ICE toggle had no STUN server to go with it in the example
+- `VoxSDKConfig`'s ICE toggle had no STUN server to go with it in the example
   app, which is the configuration that triggers the above. Added STUN and TURN
   fields, shown when ICE is enabled, and defaulted `mediaEnc` to
   `MediaEncryption.dtlsSrtp` — a WSS-facing PBX rejects an unencrypted account.
@@ -94,7 +94,7 @@
   complete, nothing bounded that wait, and one path never reported at all — so
   a call sat in `CallState.calling` forever with no SIP message on the wire and
   no event, while `Account.call()` had already returned a `Call`. The new
-  `EchoSDKConfig.iceGatheringTimeoutMs` (default 2000; `-1` keeps the SDK
+  `VoxSDKConfig.iceGatheringTimeoutMs` (default 2000; `-1` keeps the SDK
   default, `0` waits indefinitely) releases the offer with whatever candidates
   exist when it expires, the same way dart-sip-ua's `ice_gathering_timeout`
   and pjsua's `PJSUA_ICE_TRANSPORT_INIT_TIMEOUT` do.
@@ -110,7 +110,7 @@
 
 ### Added
 
-- Degraded-link handling on `EchoSDKConfig` — for the failure handover cannot
+- Degraded-link handling on `VoxSDKConfig` — for the failure handover cannot
   see, where the address stays put and the link itself goes bad:
   `mediaStallMs`, `rtpTimeoutSeconds`, `adaptiveBitrate` with its
   `adaptMin/MaxBitrate`, `adaptLossDown/UpPct` and `adaptRecoverTicks` bounds,
@@ -124,7 +124,7 @@
   re-INVITE so the UI can say something useful while the attempt is in flight.
 - `IceHandover` enum for `netIceHandover`: `bestEffort` (default) or `failFast`.
 - `Call.setRtpTimeout()`, `Call.setBitrate()`, `Account.keepaliveNow()`,
-  `EchoSDK.setAdaptiveBitrate()`.
+  `VoxSDK.setAdaptiveBitrate()`.
 
 - `TransferFailedEvent` — an outgoing REFER was refused. Previously this arrived
   as `CallStateEvent(CallState.failed)`, which is terminal: the Dart layer
@@ -146,7 +146,7 @@
 
 First release of the Flutter/Dart binding.
 
-- FFI binding over the full `echosdk.h` surface: accounts, calls, hold/resume,
+- FFI binding over the full `voxsdk.h` surface: accounts, calls, hold/resume,
   DTMF, blind + attended transfer, SIP MESSAGE, presence/BLF/MWI, custom
   headers, push tokens (RFC 8599).
 - Transports: UDP · TCP · TLS · WS · WSS, with SRTP-SDES and DTLS-SRTP.
@@ -155,9 +155,9 @@ First release of the Flutter/Dart binding.
 - Media: codec selection and Opus tuning, PCM tap, WAV recording, mute, device
   enumeration and hot-switch, gain, AEC.
 - Observability: RTCP/MOS media statistics and quality alerts, SIP trace.
-- Android: prebuilt `libechosdk.so` for arm64-v8a, armeabi-v7a and x86_64 plus
+- Android: prebuilt `libvoxsdk.so` for arm64-v8a, armeabi-v7a and x86_64 plus
   a Kotlin shim (cache dir, audio focus, speakerphone, ConnectivityManager).
-- iOS: vendored dynamic `EchoSDK.xcframework` plus a Swift shim
+- iOS: vendored dynamic `VoxSDK.xcframework` plus a Swift shim
   (`AVAudioSession`, speaker routing, `NWPathMonitor`), VoiceProcessingIO
   capture with hardware echo cancellation.
 - Desktop (Linux/macOS/Windows) usable as a plain FFI binding.

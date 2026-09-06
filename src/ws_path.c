@@ -6,7 +6,7 @@
  * configured path before the HTTP upgrade request is sent.
  *
  * Additionally, we inject the configured Origin header and any extra
- * WebSocket headers (ws_origin / ws_extra_headers from echosdk_config_t),
+ * WebSocket headers (ws_origin / ws_extra_headers from voxsdk_config_t),
  * and override the keepalive interval (ws_keepalive_ms).
  *
  * Interposition mechanism (every platform, no linker flags): the libre build
@@ -22,17 +22,17 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* Path substituted into every outbound WS connect, derived from the live
  * accounts by ws_recompute().  Empty means no substitution — libre's trailing
  * "/" is passed through as-is. */
-char g_bsdk_ws_path[256] = "";
+char g_vox_ws_path[256] = "";
 
 /* WebSocket server origin to pin outbound connects to, e.g.
  * "wss://pbx.example.com:443".  Empty disables pinning — see the RFC 7118
  * note in the wrapper below. */
-char g_bsdk_ws_server[288] = "";
+char g_vox_ws_server[288] = "";
 
 /* ── WS server registry ─────────────────────────────────────────────────────
  *
@@ -58,7 +58,7 @@ char g_bsdk_ws_server[288] = "";
  * create/destroy: pinning returns as soon as one server is left.
  */
 
-enum { BSDK_WS_MAX_SERVERS = 4 };
+enum { VOX_WS_MAX_SERVERS = 4 };
 
 struct ws_server {
 	char     origin[288];
@@ -67,7 +67,7 @@ struct ws_server {
 	uint64_t seq;      /* creation order; newest wins the loopback rescue */
 };
 
-static struct ws_server ws_srvv[BSDK_WS_MAX_SERVERS];
+static struct ws_server ws_srvv[VOX_WS_MAX_SERVERS];
 static uint64_t ws_srv_seq;
 
 /* More distinct servers than the table holds.  The table is no longer a
@@ -75,13 +75,13 @@ static uint64_t ws_srv_seq;
  * can be trusted — stay out of the way entirely. */
 static bool ws_srv_overflow;
 
-static void ws_origin(char *buf, size_t sz, echosdk_transport_t tp,
+static void ws_origin(char *buf, size_t sz, voxsdk_transport_t tp,
                       const char *host, uint16_t port)
 {
 	bool ipv6 = strchr(host, ':') != NULL;
 
 	re_snprintf(buf, sz, ipv6 ? "%s://[%s]:%u" : "%s://%s:%u",
-	            tp == ECHOSDK_TRANSPORT_WSS ? "wss" : "ws", host, port);
+	            tp == VOXSDK_TRANSPORT_WSS ? "wss" : "ws", host, port);
 }
 
 static struct ws_server *ws_find(const char *origin, const char *path)
@@ -120,11 +120,11 @@ static void ws_recompute(void)
 			same_path = false;
 	}
 
-	str_ncpy(g_bsdk_ws_server,
+	str_ncpy(g_vox_ws_server,
 	         (n && same_origin && !ws_srv_overflow) ? origin : "",
-	         sizeof(g_bsdk_ws_server));
-	str_ncpy(g_bsdk_ws_path, (n && same_path) ? path : "",
-	         sizeof(g_bsdk_ws_path));
+	         sizeof(g_vox_ws_server));
+	str_ncpy(g_vox_ws_path, (n && same_path) ? path : "",
+	         sizeof(g_vox_ws_path));
 
 	/* Every WS account is gone — the entries we lost to overflow are gone
 	 * with them, so the table is trustworthy again. */
@@ -132,7 +132,7 @@ static void ws_recompute(void)
 		ws_srv_overflow = false;
 }
 
-void bsdk_ws_set_server(echosdk_transport_t tp, const char *host,
+void vox_ws_set_server(voxsdk_transport_t tp, const char *host,
                         uint16_t port, const char *path)
 {
 	char origin[288];
@@ -159,7 +159,7 @@ void bsdk_ws_set_server(echosdk_transport_t tp, const char *host,
 		}
 	}
 	if (!free_slot) {
-		warning("EchoSDK: more than %zu WebSocket servers in one "
+		warning("VoxSDK: more than %zu WebSocket servers in one "
 		        "process; connection pinning disabled\n",
 		        RE_ARRAY_SIZE(ws_srvv));
 		ws_srv_overflow = true;
@@ -175,7 +175,7 @@ void bsdk_ws_set_server(echosdk_transport_t tp, const char *host,
 	ws_recompute();
 }
 
-void bsdk_ws_unset_server(echosdk_transport_t tp, const char *host,
+void vox_ws_unset_server(voxsdk_transport_t tp, const char *host,
                           uint16_t port, const char *path)
 {
 	char origin[288];
@@ -301,7 +301,7 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 	char patched[512];
 	const char *use_uri = uri;
 
-	if (g_bsdk_ws_server[0] != '\0') {
+	if (g_vox_ws_server[0] != '\0') {
 		/* Pin every outbound WebSocket to the configured server.
 		 *
 		 * RFC 7118 §B.2: a SIP WebSocket Client reaches its peers only
@@ -318,9 +318,9 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 		 * in the TLS handshake: libre derives its URI from an already
 		 * resolved sockaddr, so unpinned wss:// connects present an IP
 		 * literal for SNI and certificate validation. */
-		const char *path = g_bsdk_ws_path[0] ? g_bsdk_ws_path : "/";
+		const char *path = g_vox_ws_path[0] ? g_vox_ws_path : "/";
 		int r = re_snprintf(patched, sizeof(patched), "%s%s",
-		                    g_bsdk_ws_server, path);
+		                    g_vox_ws_server, path);
 		if (r > 0)
 			use_uri = patched;
 	}
@@ -342,7 +342,7 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 			int r = re_snprintf(patched, sizeof(patched), "%s%s",
 			                    rescue->origin, path);
 			if (r > 0) {
-				warning("EchoSDK: WebSocket connect to '%s' cannot "
+				warning("VoxSDK: WebSocket connect to '%s' cannot "
 				        "reach a server; sending to '%s' instead "
 				        "(several WS servers are configured — pin "
 				        "one by destroying unused accounts)\n",
@@ -350,7 +350,7 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 				use_uri = patched;
 			}
 		}
-		else if (g_bsdk_ws_path[0] != '\0') {
+		else if (g_vox_ws_path[0] != '\0') {
 			/* Keep libre's authority and swap the path only.  libre
 			 * always passes "scheme://host:port/", so replace the
 			 * trailing "/".  %b is libre's bounded-string specifier:
@@ -361,20 +361,20 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 				int r = re_snprintf(patched, sizeof(patched),
 				                    "%b%s", uri,
 				                    (size_t)(n - 1),
-				                    g_bsdk_ws_path);
+				                    g_vox_ws_path);
 				if (r > 0)
 					use_uri = patched;
 			}
 		}
 	}
 
-	debug("EchoSDK: ws connect '%s' -> '%s' (pin='%s' path='%s')\n",
+	debug("VoxSDK: ws connect '%s' -> '%s' (pin='%s' path='%s')\n",
 	      uri ? uri : "(null)", use_uri ? use_uri : "(null)",
-	      g_bsdk_ws_server, g_bsdk_ws_path);
+	      g_vox_ws_server, g_vox_ws_path);
 
 	/* Override keepalive if configured (0 = disabled, otherwise ms). */
-	unsigned use_kaint = g_bsdk.cfg.ws_keepalive_ms
-	                     ? g_bsdk.cfg.ws_keepalive_ms
+	unsigned use_kaint = g_vox.cfg.ws_keepalive_ms
+	                     ? g_vox.cfg.ws_keepalive_ms
 	                     : kaint;
 
 	/* Build extra headers string: Origin + ws_extra_headers.
@@ -385,15 +385,15 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 	char extra[1024];
 	extra[0] = '\0';
 
-	if (g_bsdk.cfg.ws_origin && g_bsdk.cfg.ws_origin[0])
+	if (g_vox.cfg.ws_origin && g_vox.cfg.ws_origin[0])
 		re_snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra),
-		            "Origin: %s\r\n", g_bsdk.cfg.ws_origin);
+		            "Origin: %s\r\n", g_vox.cfg.ws_origin);
 
-	if (g_bsdk.cfg.ws_extra_headers) {
-		for (int i = 0; g_bsdk.cfg.ws_extra_headers[i]; i++)
+	if (g_vox.cfg.ws_extra_headers) {
+		for (int i = 0; g_vox.cfg.ws_extra_headers[i]; i++)
 			re_snprintf(extra + strlen(extra),
 			            sizeof(extra) - strlen(extra),
-			            "%s\r\n", g_bsdk.cfg.ws_extra_headers[i]);
+			            "%s\r\n", g_vox.cfg.ws_extra_headers[i]);
 	}
 
 	if (extra[0]) {
@@ -459,16 +459,16 @@ static void ws_route_rebuild(void)
 
 	s_route_ok = false;
 
-	if (!g_bsdk_ws_server[0])
+	if (!g_vox_ws_server[0])
 		return;
 
-	if (!strncmp(g_bsdk_ws_server, "wss://", 6)) {
+	if (!strncmp(g_vox_ws_server, "wss://", 6)) {
 		scheme = "wss";
-		rest   = g_bsdk_ws_server + 6;
+		rest   = g_vox_ws_server + 6;
 	}
-	else if (!strncmp(g_bsdk_ws_server, "ws://", 5)) {
+	else if (!strncmp(g_vox_ws_server, "ws://", 5)) {
 		scheme = "ws";
-		rest   = g_bsdk_ws_server + 5;
+		rest   = g_vox_ws_server + 5;
 	}
 	else {
 		return;
@@ -524,14 +524,14 @@ static bool ws_route_is_websocket(const struct uri *route)
  * sip_transp_send() interposition used to repair that by address; the route
  * substitution makes it unnecessary.)
  */
-const struct uri *bsdk_ws_route_override(const struct uri *route);
+const struct uri *vox_ws_route_override(const struct uri *route);
 
-const struct uri *bsdk_ws_route_override(const struct uri *route)
+const struct uri *vox_ws_route_override(const struct uri *route)
 {
-	if (!route || !g_bsdk_ws_server[0] || !ws_route_is_websocket(route))
+	if (!route || !g_vox_ws_server[0] || !ws_route_is_websocket(route))
 		return route;
 
-	if (!s_route_ok || pl_strcmp(&s_route_uri.host, g_bsdk_ws_server)) {
+	if (!s_route_ok || pl_strcmp(&s_route_uri.host, g_vox_ws_server)) {
 		/* Cheap guard against a server change between calls; rebuilding
 		 * is a snprintf and a parse. */
 		ws_route_rebuild();
@@ -544,7 +544,7 @@ const struct uri *bsdk_ws_route_override(const struct uri *route)
 	    route->port == s_route_uri.port)
 		return route;   /* already the flow — nothing to do */
 
-	debug("EchoSDK: ws in-dialog route %r:%u is not the registration flow;"
+	debug("VoxSDK: ws in-dialog route %r:%u is not the registration flow;"
 	      " routing over %r:%u instead (RFC 7118 B.2)\n",
 	      &route->host, route->port,
 	      &s_route_uri.host, s_route_uri.port);
@@ -561,5 +561,5 @@ const struct uri *__real_sip_dialog_route(const struct sip_dialog *dlg);
 
 const struct uri *sip_dialog_route(const struct sip_dialog *dlg)
 {
-	return bsdk_ws_route_override(__real_sip_dialog_route(dlg));
+	return vox_ws_route_override(__real_sip_dialog_route(dlg));
 }

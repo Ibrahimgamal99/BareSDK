@@ -1,39 +1,39 @@
 /**
  * @file presence.c  Presence publish + BLF/MWI consumer
  *
- * Presence publish: echosdk_account_publish_presence() →
+ * Presence publish: voxsdk_account_publish_presence() →
  *   ua_presence_status_set() — baresip's presence module sends PUBLISH.
  *
  * MWI: BEVENT_MWI_NOTIFY fires with bevent_get_text() = raw NOTIFY body.
  *   We parse "Messages-Waiting: yes/no" and "Voice-Message: new/old (urgent)"
- *   then post ECHOSDK_EV_MWI.
+ *   then post VOXSDK_EV_MWI.
  *
  * Contact/BLF: contact_update_h fires when a subscribed contact's presence
  *   state changes (via NOTIFY from the PBX). We forward it as
- *   ECHOSDK_EV_PRESENCE_STATE. The presence + contact modules handle the
+ *   VOXSDK_EV_PRESENCE_STATE. The presence + contact modules handle the
  *   SUBSCRIBE/NOTIFY dialog automatically.
  *
- * 100rel: echosdk_account_set_100rel() maps to account_set_rel100_mode().
+ * 100rel: voxsdk_account_set_100rel() maps to account_set_rel100_mode().
  */
 
 #include <string.h>
 #include <stdlib.h>
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* ── Presence publish ────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_account   *acct;
-	echosdk_presence_status_t status;
+	struct voxsdk_account   *acct;
+	voxsdk_presence_status_t status;
 	int                       result;
 } pub_ctx_t;
 
-static enum presence_status to_baresip_status(echosdk_presence_status_t s)
+static enum presence_status to_baresip_status(voxsdk_presence_status_t s)
 {
 	switch (s) {
-	case ECHOSDK_PRESENCE_OPEN:   return PRESENCE_OPEN;
-	case ECHOSDK_PRESENCE_CLOSED: return PRESENCE_CLOSED;
-	case ECHOSDK_PRESENCE_BUSY:   return PRESENCE_BUSY;
+	case VOXSDK_PRESENCE_OPEN:   return PRESENCE_OPEN;
+	case VOXSDK_PRESENCE_CLOSED: return PRESENCE_CLOSED;
+	case VOXSDK_PRESENCE_BUSY:   return PRESENCE_BUSY;
 	default:                      return PRESENCE_UNKNOWN;
 	}
 }
@@ -46,20 +46,20 @@ static void publish_fn(void *arg)
 	ctx->result = 0;
 }
 
-int echosdk_account_publish_presence(echosdk_account_handle_t account,
-                                      echosdk_presence_status_t status)
+int voxsdk_account_publish_presence(voxsdk_account_handle_t account,
+                                      voxsdk_presence_status_t status)
 {
-	if (!account) return ECHOSDK_ERR_INVAL;
+	if (!account) return VOXSDK_ERR_INVAL;
 	pub_ctx_t ctx = {.acct = account, .status = status, .result = 0};
-	int err = bsdk_dispatch_sync(publish_fn, &ctx);
+	int err = vox_dispatch_sync(publish_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
 /* ── 100rel ──────────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_account *acct;
-	echosdk_100rel_mode_t   mode;
+	struct voxsdk_account *acct;
+	voxsdk_100rel_mode_t   mode;
 	int                     result;
 } rel100_ctx_t;
 
@@ -72,12 +72,12 @@ static void set_100rel_fn(void *arg)
 	ctx->result = account_set_rel100_mode(ba, (enum rel100_mode)ctx->mode);
 }
 
-int echosdk_account_set_100rel(echosdk_account_handle_t account,
-                                echosdk_100rel_mode_t mode)
+int voxsdk_account_set_100rel(voxsdk_account_handle_t account,
+                                voxsdk_100rel_mode_t mode)
 {
-	if (!account) return ECHOSDK_ERR_INVAL;
+	if (!account) return VOXSDK_ERR_INVAL;
 	rel100_ctx_t ctx = {.acct = account, .mode = mode, .result = 0};
-	int err = bsdk_dispatch_sync(set_100rel_fn, &ctx);
+	int err = vox_dispatch_sync(set_100rel_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
@@ -122,19 +122,19 @@ static void parse_mwi_body(const char *body,
 }
 
 /* Called from event.c for BEVENT_MWI_NOTIFY */
-void bsdk_presence_handle_mwi(struct bevent *event)
+void vox_presence_handle_mwi(struct bevent *event)
 {
 	struct ua      *ua   = bevent_get_ua(event);
 	const char     *body = bevent_get_text(event);
 
-	struct echosdk_account *acct = ua ? bsdk_account_find_by_ua(ua) : NULL;
+	struct voxsdk_account *acct = ua ? vox_account_find_by_ua(ua) : NULL;
 
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = ECHOSDK_EV_MWI;
-	echosdk_ev_mwi_t *m = &qev->ev.u.mwi;
+	qev->ev.type = VOXSDK_EV_MWI;
+	voxsdk_ev_mwi_t *m = &qev->ev.u.mwi;
 	m->account = acct;
 
 	if (body) {
@@ -146,18 +146,18 @@ void bsdk_presence_handle_mwi(struct bevent *event)
 		m->raw_body = qev->buf;
 	}
 
-	bsdk_event_post_qev(qev);   /* warns and frees qev when the queue is full */
+	vox_event_post_qev(qev);   /* warns and frees qev when the queue is full */
 }
 
 /* ── Contact/BLF presence update handler ────────────────────────────────── */
 
-static echosdk_presence_status_t from_baresip_status(enum presence_status s)
+static voxsdk_presence_status_t from_baresip_status(enum presence_status s)
 {
 	switch (s) {
-	case PRESENCE_OPEN:   return ECHOSDK_PRESENCE_OPEN;
-	case PRESENCE_CLOSED: return ECHOSDK_PRESENCE_CLOSED;
-	case PRESENCE_BUSY:   return ECHOSDK_PRESENCE_BUSY;
-	default:              return ECHOSDK_PRESENCE_UNKNOWN;
+	case PRESENCE_OPEN:   return VOXSDK_PRESENCE_OPEN;
+	case PRESENCE_CLOSED: return VOXSDK_PRESENCE_CLOSED;
+	case PRESENCE_BUSY:   return VOXSDK_PRESENCE_BUSY;
+	default:              return VOXSDK_PRESENCE_UNKNOWN;
 	}
 }
 
@@ -168,15 +168,15 @@ static void contact_update_handler(struct contact *c, bool removed, void *arg)
 		return;
 
 	const char *uri = contact_uri(c);
-	echosdk_presence_status_t status =
+	voxsdk_presence_status_t status =
 		from_baresip_status(contact_presence(c));
 
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = ECHOSDK_EV_PRESENCE_STATE;
-	echosdk_ev_presence_state_t *ps = &qev->ev.u.presence;
+	qev->ev.type = VOXSDK_EV_PRESENCE_STATE;
+	voxsdk_ev_presence_state_t *ps = &qev->ev.u.presence;
 	ps->account    = NULL; /* global — contact not tied to one account */
 	ps->status     = status;
 
@@ -185,13 +185,13 @@ static void contact_update_handler(struct contact *c, bool removed, void *arg)
 		ps->target_uri = qev->buf;
 	}
 
-	bsdk_event_post_qev(qev);   /* warns and frees qev when the queue is full */
+	vox_event_post_qev(qev);   /* warns and frees qev when the queue is full */
 }
 
 /* ── Presence subscribe / unsubscribe ─────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_account *acct;
+	struct voxsdk_account *acct;
 	char                   *uri;
 	int                     result;
 } sub_ctx_t;
@@ -219,20 +219,20 @@ static void subscribe_fn(void *arg)
 		contact_set_presence(c, true);
 }
 
-int echosdk_account_subscribe_presence(echosdk_account_handle_t account,
+int voxsdk_account_subscribe_presence(voxsdk_account_handle_t account,
                                         const char *target_uri)
 {
-	if (!account || !target_uri) return ECHOSDK_ERR_INVAL;
+	if (!account || !target_uri) return VOXSDK_ERR_INVAL;
 	sub_ctx_t ctx = {.acct = account, .result = 0};
-	ctx.uri = bsdk_strdup(target_uri);
-	if (!ctx.uri) return ECHOSDK_ERR_NOMEM;
-	int err = bsdk_dispatch_sync(subscribe_fn, &ctx);
+	ctx.uri = vox_strdup(target_uri);
+	if (!ctx.uri) return VOXSDK_ERR_NOMEM;
+	int err = vox_dispatch_sync(subscribe_fn, &ctx);
 	mem_deref(ctx.uri);
 	return err ? err : ctx.result;
 }
 
 typedef struct {
-	struct echosdk_account *acct;
+	struct voxsdk_account *acct;
 	char                   *uri;
 	int                     result;
 } unsub_ctx_t;
@@ -255,21 +255,21 @@ static void unsubscribe_fn(void *arg)
 	}
 }
 
-int echosdk_account_unsubscribe_presence(echosdk_account_handle_t account,
+int voxsdk_account_unsubscribe_presence(voxsdk_account_handle_t account,
                                           const char *target_uri)
 {
-	if (!account || !target_uri) return ECHOSDK_ERR_INVAL;
+	if (!account || !target_uri) return VOXSDK_ERR_INVAL;
 	unsub_ctx_t ctx = {.acct = account, .result = 0};
-	ctx.uri = bsdk_strdup(target_uri);
-	if (!ctx.uri) return ECHOSDK_ERR_NOMEM;
-	int err = bsdk_dispatch_sync(unsubscribe_fn, &ctx);
+	ctx.uri = vox_strdup(target_uri);
+	if (!ctx.uri) return VOXSDK_ERR_NOMEM;
+	int err = vox_dispatch_sync(unsubscribe_fn, &ctx);
 	mem_deref(ctx.uri);
 	return err ? err : ctx.result;
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bsdk_presence_init(void)
+int vox_presence_init(void)
 {
 	struct contacts *contacts = baresip_contacts();
 	if (contacts)
@@ -277,7 +277,7 @@ int bsdk_presence_init(void)
 	return 0;
 }
 
-void bsdk_presence_close(void)
+void vox_presence_close(void)
 {
 	struct contacts *contacts = baresip_contacts();
 	if (contacts)

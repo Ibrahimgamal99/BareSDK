@@ -5,7 +5,7 @@
  *                            on to the remote address ICE selected.
  *
  * Links the real ice_shim.c against libre and stubs the four baresip symbols
- * it touches (baresip_mnatl, mnat_find, _warning, _info) plus g_bsdk, the same
+ * it touches (baresip_mnatl, mnat_find, _warning, _info) plus g_vox, the same
  * way test_fmtp_bitrate stubs baresip for adapt.c.  libbaresip is deliberately
  * not linked: baresip_mnatl() needs a full baresip_init(), and all this code
  * wants is a media-NAT registry entry to interpose on.
@@ -39,11 +39,11 @@
 #include <string.h>
 #include <re.h>
 #include <baresip.h>
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
-/* ice_shim.c reads g_bsdk.cfg.ice_gathering_timeout_ms; core.c is not linked
+/* ice_shim.c reads g_vox.cfg.ice_gathering_timeout_ms; core.c is not linked
  * in, so own the definition here. */
-struct bsdk_ctx g_bsdk;
+struct vox_ctx g_vox;
 
 static int g_pass, g_fail;
 
@@ -315,7 +315,7 @@ static void test_install(void)
 {
 	const struct mnat *m;
 
-	CHECK(0 == bsdk_ice_shim_init(), "install failed");
+	CHECK(0 == vox_ice_shim_init(), "install failed");
 
 	m = mnat_find(baresip_mnatl(), "ice");
 	CHECK(m != NULL, "mnat vanished");
@@ -333,7 +333,7 @@ static void test_install(void)
 	/* Installing again must be a no-op, not a self-capture that recurses. */
 	{
 		mnat_sess_h *first = m->sessh;
-		CHECK(0 == bsdk_ice_shim_init(), "reinstall failed");
+		CHECK(0 == vox_ice_shim_init(), "reinstall failed");
 		CHECK(m->sessh == first, "reinstall re-wrapped the wrapper");
 	}
 }
@@ -345,7 +345,7 @@ static void test_deadline_releases_offer(void)
 	int marker = 42;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 120;
+	g_vox.cfg.ice_gathering_timeout_ms = 120;
 
 	sess = open_sess(&marker);
 	CHECK(sess != NULL, "sessh failed");
@@ -373,7 +373,7 @@ static void test_gather_beats_deadline(void)
 	struct mnat_sess *sess;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 120;
+	g_vox.cfg.ice_gathering_timeout_ms = 120;
 
 	sess = open_sess(NULL);
 	CHECK(sess != NULL, "sessh failed");
@@ -396,7 +396,7 @@ static void test_late_failure_dropped(void)
 	struct mnat_sess *sess;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 60;
+	g_vox.cfg.ice_gathering_timeout_ms = 60;
 
 	sess = open_sess(NULL);
 	CHECK(sess != NULL, "sessh failed");
@@ -419,7 +419,7 @@ static void test_late_success_passed_on(void)
 	struct mnat_sess *sess;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 60;
+	g_vox.cfg.ice_gathering_timeout_ms = 60;
 
 	sess = open_sess(NULL);
 	CHECK(sess != NULL, "sessh failed");
@@ -444,7 +444,7 @@ static void test_media_and_update_unwrap(void)
 	struct mnat_sess *inner;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;   /* no deadline in this test */
+	g_vox.cfg.ice_gathering_timeout_ms = 0;   /* no deadline in this test */
 
 	sess = open_sess(NULL);
 	CHECK(sess != NULL, "sessh failed");
@@ -484,7 +484,7 @@ static void test_zero_disables_deadline(void)
 	struct mnat_sess *sess;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sess = open_sess(NULL);
 	CHECK(sess != NULL, "sessh failed");
@@ -502,7 +502,7 @@ static void test_destroy_cancels_deadline(void)
 	struct mnat_sess *sess;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 80;
+	g_vox.cfg.ice_gathering_timeout_ms = 80;
 
 	sess = open_sess(NULL);
 	CHECK(sess != NULL, "sessh failed");
@@ -570,7 +570,7 @@ static void test_reoffer_on_unsignalled_candidate(void)
 
 	reset_counters();
 	g_connh_calls = 0;
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sa_set_str(&host,  "10.0.0.5", 44690);
 	sa_set_str(&prflx, "213.212.207.242", 44690);
@@ -615,7 +615,7 @@ static void test_no_reoffer_when_unchanged(void)
 
 	reset_counters();
 	g_connh_calls = 0;
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sa_set_str(&host, "10.0.0.5", 44690);
 	CHECK(0 == make_sdp(&sdpsess, &sdpm, &host), "sdp setup failed");
@@ -668,7 +668,7 @@ static void test_updateh_reasserts_selected_raddr(void)
 	g_connh_calls = 0;
 	g_connh_raddr2_set = true;
 	sa_init(&g_connh_raddr, AF_UNSPEC);
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sa_set_str(&host, "10.0.0.5", 44690);
 	CHECK(0 == make_sdp(&sdpsess, &sdpm, &host), "sdp setup failed");
@@ -728,7 +728,7 @@ static void test_updateh_yields_when_peer_moves(void)
 
 	reset_counters();
 	g_connh_calls = 0;
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sa_set_str(&host, "10.0.0.5", 44690);
 	CHECK(0 == make_sdp(&sdpsess, &sdpm, &host), "sdp setup failed");
@@ -775,7 +775,7 @@ static void test_updateh_quiet_before_conncheck(void)
 
 	reset_counters();
 	g_connh_calls = 0;
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sess = open_sess(NULL);
 	CHECK(sess != NULL, "sessh failed");
@@ -807,7 +807,7 @@ static void test_signalled_rebased_at_gather(void)
 
 	reset_counters();
 	g_connh_calls = 0;
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sa_set_str(&host,  "10.100.4.206", 62209);
 	sa_set_str(&srflx, "41.33.94.42",  62209);
@@ -842,7 +842,7 @@ static void test_signalled_rebased_at_gather(void)
  * media-level `c=` overrides the session-level one, RFC 4566 §5.7).  Nothing
  * re-gathers either.  So a handover re-INVITE on an ICE call re-advertises the
  * network the call just left, and the peer keeps sending RTP into the void while
- * dropping what arrives from the new source.  bsdk_ice_restart() replaces the
+ * dropping what arrives from the new source.  vox_ice_restart() replaces the
  * whole ICE session — new credentials, new gather — and the offer that follows
  * carries the new address at both levels.
  */
@@ -879,7 +879,7 @@ static void test_restart_replaces_session(void)
 	int marker = 7;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;   /* restart uses its own bound */
+	g_vox.cfg.ice_gathering_timeout_ms = 0;   /* restart uses its own bound */
 
 	sock = open_sock(&rtp_port);
 	CHECK(sock != NULL, "socket setup failed");
@@ -905,7 +905,7 @@ static void test_restart_replaces_session(void)
 	CHECK(g_estab_calls == 1, "gather completion not passed on");
 
 	/* Handover. */
-	CHECK(0 == bsdk_ice_restart(&marker, &lte), "restart refused");
+	CHECK(0 == vox_ice_restart(&marker, &lte), "restart refused");
 
 	CHECK(g_sessh_calls == 2, "no replacement ICE session (sessh calls=%d)",
 	      g_sessh_calls);
@@ -972,7 +972,7 @@ static void test_restart_teardown_order(void)
 	int marker = 8;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sess = open_sess(&marker);
 	CHECK(sess != NULL, "sessh failed");
@@ -995,9 +995,9 @@ static void test_restart_unknown_call(void)
 	int other = 0;
 
 	reset_counters();
-	CHECK(ENOENT == bsdk_ice_restart(&other, NULL),
+	CHECK(ENOENT == vox_ice_restart(&other, NULL),
 	      "a call with no ICE session was not reported as ENOENT");
-	CHECK(!bsdk_ice_call_active(&other), "reported ICE on a call with none");
+	CHECK(!vox_ice_call_active(&other), "reported ICE on a call with none");
 }
 
 /* A session whose streams all had the media-NAT disabled (BUNDLE mux does this)
@@ -1008,13 +1008,13 @@ static void test_restart_needs_media(void)
 	int marker = 9;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sess = open_sess(&marker);
 	CHECK(sess != NULL, "sessh failed");
-	CHECK(ENOENT == bsdk_ice_restart(&marker, NULL),
+	CHECK(ENOENT == vox_ice_restart(&marker, NULL),
 	      "restarted a session with no media");
-	CHECK(!bsdk_ice_call_active(&marker),
+	CHECK(!vox_ice_call_active(&marker),
 	      "reported ICE on a session with no media");
 	CHECK(g_sessh_calls == 1, "allocated a replacement session anyway");
 
@@ -1032,15 +1032,15 @@ static void test_restart_already_gathering(void)
 	int marker = 10;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sess = open_sess(&marker);
 	CHECK(sess != NULL, "sessh failed");
 	m->mediah(&mm, sess, NULL, NULL, NULL, fake_connh, NULL);
-	CHECK(bsdk_ice_call_active(&marker), "live ICE session not reported");
+	CHECK(vox_ice_call_active(&marker), "live ICE session not reported");
 
-	CHECK(0 == bsdk_ice_restart(&marker, NULL), "first restart refused");
-	CHECK(EALREADY == bsdk_ice_restart(&marker, NULL),
+	CHECK(0 == vox_ice_restart(&marker, NULL), "first restart refused");
+	CHECK(EALREADY == vox_ice_restart(&marker, NULL),
 	      "a second restart was started while the first was gathering");
 	CHECK(g_sessh_calls == 2, "sessh called %d times", g_sessh_calls);
 
@@ -1059,13 +1059,13 @@ static void test_restart_failure_not_propagated(void)
 	int marker = 11;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 0;
+	g_vox.cfg.ice_gathering_timeout_ms = 0;
 
 	sess = open_sess(&marker);
 	CHECK(sess != NULL, "sessh failed");
 	m->mediah(&mm, sess, NULL, NULL, NULL, fake_connh, NULL);
 
-	CHECK(0 == bsdk_ice_restart(&marker, NULL), "restart refused");
+	CHECK(0 == vox_ice_restart(&marker, NULL), "restart refused");
 
 	/* STUN is unreachable on the new network. */
 	g_inner_estabh(ETIMEDOUT, 0, "STUN timed out", g_inner_arg);
@@ -1091,7 +1091,7 @@ static void test_restart_deadline_releases_offer(void)
 	int marker = 12;
 
 	reset_counters();
-	g_bsdk.cfg.ice_gathering_timeout_ms = 120;
+	g_vox.cfg.ice_gathering_timeout_ms = 120;
 
 	sess = open_sess(&marker);
 	CHECK(sess != NULL, "sessh failed");
@@ -1102,7 +1102,7 @@ static void test_restart_deadline_releases_offer(void)
 	run_loop(200);
 	CHECK(g_estab_calls == 1, "initial deadline did not release the offer");
 
-	CHECK(0 == bsdk_ice_restart(&marker, NULL), "restart refused");
+	CHECK(0 == vox_ice_restart(&marker, NULL), "restart refused");
 	run_loop(60);
 	CHECK(g_estab_calls == 1, "restart offer released early");
 
@@ -1125,7 +1125,7 @@ static void test_close_restores(void)
 {
 	const struct mnat *m;
 
-	bsdk_ice_shim_close();
+	vox_ice_shim_close();
 
 	m = mnat_find(baresip_mnatl(), "ice");
 	CHECK(m->sessh   == fake_sessh,   "sessh not restored");
@@ -1134,7 +1134,7 @@ static void test_close_restores(void)
 	CHECK(m->attrh   == fake_attrh,   "attrh not restored");
 
 	/* Idempotent — shutdown runs it on the init failure path too. */
-	bsdk_ice_shim_close();
+	vox_ice_shim_close();
 	CHECK(m->sessh == fake_sessh, "second close disturbed the vtable");
 }
 

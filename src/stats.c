@@ -2,7 +2,7 @@
  * @file stats.c  RTCP stats polling timer + MOS calculation
  *
  * A tmr fires on re_main every cfg->stats_interval_ms. For each active call
- * it reads RTCP stats from the audio stream and posts ECHOSDK_EV_MEDIA_STATS.
+ * it reads RTCP stats from the audio stream and posts VOXSDK_EV_MEDIA_STATS.
  *
  * ── Loss rates are windowed, not cumulative ──────────────────────────────
  * RTCP carries lifetime cumulative counters (RFC 3550 A.3), the same
@@ -41,22 +41,22 @@
  */
 
 #include <math.h>
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* ── MOS calculations ───────────────────────────────────────────────────── */
 
 /** Audio bandwidth class — selects the narrowband or wideband R scale. */
 typedef enum {
-	BSDK_BW_NARROW,   /**< ITU-T G.107:   Ro = 93.2, R in [0,100] */
-	BSDK_BW_WIDE      /**< ITU-T G.107.1: Ro = 129,  R in [0,129] */
-} bsdk_bw_class_t;
+	VOX_BW_NARROW,   /**< ITU-T G.107:   Ro = 93.2, R in [0,100] */
+	VOX_BW_WIDE      /**< ITU-T G.107.1: Ro = 129,  R in [0,129] */
+} vox_bw_class_t;
 
 /* ITU-T G.113 Appendix I codec parameters: Ie (baseline impairment at 0 loss)
  * and Bpl (packet-loss robustness factor). */
 typedef struct {
 	float           ie;
 	float           bpl;
-	bsdk_bw_class_t bw;
+	vox_bw_class_t bw;
 } codec_params_t;
 
 static codec_params_t codec_emodel_params(const char *name, uint32_t srate,
@@ -64,34 +64,34 @@ static codec_params_t codec_emodel_params(const char *name, uint32_t srate,
 {
 	/* G.711 is the narrowband reference codec: Ie = 0 by definition. */
 	if (!name)
-		return (codec_params_t){0.f, 4.3f, BSDK_BW_NARROW};
+		return (codec_params_t){0.f, 4.3f, VOX_BW_NARROW};
 	if (!str_casecmp(name, "PCMU") || !str_casecmp(name, "PCMA"))
-		return (codec_params_t){0.f, 4.3f, BSDK_BW_NARROW};
+		return (codec_params_t){0.f, 4.3f, VOX_BW_NARROW};
 	if (!str_casecmp(name, "G729"))
-		return (codec_params_t){11.f, 19.0f, BSDK_BW_NARROW};
+		return (codec_params_t){11.f, 19.0f, VOX_BW_NARROW};
 	if (!str_casecmp(name, "G723"))
-		return (codec_params_t){15.f, 16.0f, BSDK_BW_NARROW};
+		return (codec_params_t){15.f, 16.0f, VOX_BW_NARROW};
 
 	/* G.722 is the *wideband* reference codec, exactly as G.711 is the
 	 * narrowband one: Ie,wb = 0 on the G.107.1 scale.  Scoring it as a
 	 * narrowband codec with an invented Ie penalty (as this used to) both
 	 * penalises it for nothing and caps it at the narrowband ceiling. */
 	if (!str_casecmp(name, "G722"))
-		return (codec_params_t){0.f, 4.3f, BSDK_BW_WIDE};
+		return (codec_params_t){0.f, 4.3f, VOX_BW_WIDE};
 
 	if (!str_casecmp(name, "opus")) {
 		/* Opus Ie/Bpl are approximations from the published instrumental
 		 * derivations (Voznak et al.); ITU-T G.113 does not tabulate
 		 * Opus.  Treat as indicative, not normative. */
-		bsdk_bw_class_t bw = (srate >= 16000) ? BSDK_BW_WIDE
-		                                      : BSDK_BW_NARROW;
+		vox_bw_class_t bw = (srate >= 16000) ? VOX_BW_WIDE
+		                                      : VOX_BW_NARROW;
 		if (bitrate_kbps <= 8)  return (codec_params_t){14.f, 12.0f, bw};
 		if (bitrate_kbps <= 12) return (codec_params_t){11.f, 14.0f, bw};
 		return (codec_params_t){7.f, 14.0f, bw};
 	}
 
-	return (codec_params_t){0.f, 4.3f, (srate >= 16000) ? BSDK_BW_WIDE
-	                                                    : BSDK_BW_NARROW};
+	return (codec_params_t){0.f, 4.3f, (srate >= 16000) ? VOX_BW_WIDE
+	                                                    : VOX_BW_NARROW};
 }
 
 /** Listening- and conversational-quality scores from one sample. */
@@ -103,9 +103,9 @@ typedef struct {
 
 /* Convert an R factor to MOS.  The G.107 polynomial is defined on a 0..100
  * scale, so the wideband R (0..129) is normalised onto it first. */
-static float r_to_mos(float R, bsdk_bw_class_t bw)
+static float r_to_mos(float R, vox_bw_class_t bw)
 {
-	float rmax = (bw == BSDK_BW_WIDE) ? 129.f : 100.f;
+	float rmax = (bw == VOX_BW_WIDE) ? 129.f : 100.f;
 	float r    = R * 100.f / rmax;
 
 	if (r <= 0.f)   return 1.0f;
@@ -125,7 +125,7 @@ static float r_to_mos(float R, bsdk_bw_class_t bw)
 static mos_pair_t mos_emodel(float loss_pct, float jb_ms, float rtt_ms,
                              codec_params_t cp)
 {
-	float Ro = (cp.bw == BSDK_BW_WIDE) ? 129.f : 93.2f;
+	float Ro = (cp.bw == VOX_BW_WIDE) ? 129.f : 93.2f;
 	mos_pair_t out;
 
 	/* ITU-T G.107: Ie-eff = Ie + (95-Ie) * Ppl / (Ppl + Bpl) */
@@ -171,10 +171,10 @@ static mos_pair_t mos_simplified(float loss_pct, float jitter_ms, float rtt_ms)
 }
 
 static mos_pair_t calc_mos(float loss_pct, float jitter_ms, float jb_ms,
-                           float rtt_ms, echosdk_mos_method_t method,
+                           float rtt_ms, voxsdk_mos_method_t method,
                            codec_params_t cp)
 {
-	if (method == ECHOSDK_MOS_SIMPLIFIED)
+	if (method == VOXSDK_MOS_SIMPLIFIED)
 		return mos_simplified(loss_pct, jitter_ms, rtt_ms);
 	return mos_emodel(loss_pct, jb_ms, rtt_ms, cp);
 }
@@ -207,8 +207,8 @@ static uint32_t counter_delta_i(int32_t now, int32_t prev)
  *                 the same window without consuming it.
  *
  * Returns the aucodec so the caller can set codec_name appropriately. */
-static const struct aucodec *fill_audio_stats(echosdk_ev_media_stats_t *s,
-                                               struct echosdk_call *lc,
+static const struct aucodec *fill_audio_stats(voxsdk_ev_media_stats_t *s,
+                                               struct voxsdk_call *lc,
                                                struct audio *au,
                                                struct stream *strm,
                                                bool advance)
@@ -260,7 +260,7 @@ static const struct aucodec *fill_audio_stats(echosdk_ev_media_stats_t *s,
 	}
 
 	/* ── RTCP (may be absent early in a call; leave zeros if so) ─── */
-	s->mos_method = g_bsdk.cfg.mos_method;
+	s->mos_method = g_vox.cfg.mos_method;
 
 	const struct rtcp_stats *rs = stream_rtcp_stats(strm);
 	if (rs) {
@@ -340,14 +340,14 @@ static const struct aucodec *fill_audio_stats(echosdk_ev_media_stats_t *s,
 		float peer_jb_ms = 2.0f * s->tx_jitter_ms;
 		mos_pair_t tx = calc_mos(s->loss_pct, s->tx_jitter_ms,
 		                         peer_jb_ms, s->rtt_ms,
-		                         g_bsdk.cfg.mos_method, cp);
+		                         g_vox.cfg.mos_method, cp);
 		s->mos_lq = tx.lq;
 		s->mos_cq = tx.cq;
 
 		/* Near end: what we hear.  Real measured buffer depth. */
 		mos_pair_t rx = calc_mos(eff_loss_rx, s->jitter_ms,
 		                         (float)s->jitter_buffer_ms, s->rtt_ms,
-		                         g_bsdk.cfg.mos_method, cp);
+		                         g_vox.cfg.mos_method, cp);
 		s->mos_lq_rx = rx.lq;
 		s->mos_cq_rx = rx.cq;
 
@@ -392,15 +392,15 @@ static const struct aucodec *fill_audio_stats(echosdk_ev_media_stats_t *s,
 
 /* Session-average MOS.  The running sum is in the R domain for the E-model,
  * so the conversion to MOS happens once, on the mean — not per tick. */
-static float session_mos_avg(const struct echosdk_call *lc,
-                             const echosdk_ev_media_stats_t *s)
+static float session_mos_avg(const struct voxsdk_call *lc,
+                             const voxsdk_ev_media_stats_t *s)
 {
 	if (!lc->stats_mos_n)
 		return 0.f;
 
 	float mean = lc->stats_q_sum / (float)lc->stats_mos_n;
 
-	if (g_bsdk.cfg.mos_method == ECHOSDK_MOS_SIMPLIFIED)
+	if (g_vox.cfg.mos_method == VOXSDK_MOS_SIMPLIFIED)
 		return mean;   /* already a MOS */
 
 	codec_params_t cp = codec_emodel_params(s->codec_name,
@@ -411,23 +411,23 @@ static float session_mos_avg(const struct echosdk_call *lc,
 
 /* ── Quality alert helper ────────────────────────────────────────────────── */
 
-static const char *quality_issue_str(echosdk_quality_issue_t issue)
+static const char *quality_issue_str(voxsdk_quality_issue_t issue)
 {
 	switch (issue) {
-	case ECHOSDK_QUALITY_MOS:         return "mos";
-	case ECHOSDK_QUALITY_LOSS:        return "loss";
-	case ECHOSDK_QUALITY_JITTER:      return "jitter";
-	case ECHOSDK_QUALITY_RTT:         return "rtt";
-	case ECHOSDK_QUALITY_MEDIA_STALL: return "media-stall";
+	case VOXSDK_QUALITY_MOS:         return "mos";
+	case VOXSDK_QUALITY_LOSS:        return "loss";
+	case VOXSDK_QUALITY_JITTER:      return "jitter";
+	case VOXSDK_QUALITY_RTT:         return "rtt";
+	case VOXSDK_QUALITY_MEDIA_STALL: return "media-stall";
 	default:                          return "?";
 	}
 }
 
-void bsdk_post_quality_alert(struct echosdk_call *lc,
-                             echosdk_quality_issue_t issue,
+void vox_post_quality_alert(struct voxsdk_call *lc,
+                             voxsdk_quality_issue_t issue,
                              float value, float threshold, bool recovering)
 {
-	struct echosdk_queued_event *qev;
+	struct voxsdk_queued_event *qev;
 
 	/* Logged as well as posted.  An alert only reaches the app as an event,
 	 * and an app is free to route it somewhere that is not the log — this
@@ -437,25 +437,25 @@ void bsdk_post_quality_alert(struct echosdk_call *lc,
 	 * often has: chasing a silent 36 s call on 2026-08-31 meant proving from
 	 * SDP and ICE state that media never came up, while the SDK had known it
 	 * for 32 of those seconds. */
-	info("EchoSDK: quality %s %s: %.1f (threshold %.1f)\n",
+	info("VoxSDK: quality %s %s: %.1f (threshold %.1f)\n",
 	     quality_issue_str(issue), recovering ? "recovered" : "alert",
 	     value, threshold);
 
-	qev = bsdk_qev_alloc();
+	qev = vox_qev_alloc();
 	if (!qev) return;
-	qev->ev.type = ECHOSDK_EV_QUALITY_ALERT;
-	echosdk_ev_quality_alert_t *a = &qev->ev.u.quality_alert;
+	qev->ev.type = VOXSDK_EV_QUALITY_ALERT;
+	voxsdk_ev_quality_alert_t *a = &qev->ev.u.quality_alert;
 	a->call       = lc;
 	a->issue      = issue;
 	a->value      = value;
 	a->threshold  = threshold;
 	a->recovering = recovering;
-	bsdk_event_post_qev(qev);
+	vox_event_post_qev(qev);
 }
 
 /* ── Per-call stats collection (timer path) ──────────────────────────────── */
 
-static void collect_call_stats(struct echosdk_call *lc)
+static void collect_call_stats(struct voxsdk_call *lc)
 {
 	if (!lc->bc)
 		return;
@@ -468,12 +468,12 @@ static void collect_call_stats(struct echosdk_call *lc)
 	if (!strm)
 		return;
 
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = ECHOSDK_EV_MEDIA_STATS;
-	echosdk_ev_media_stats_t *s = &qev->ev.u.stats;
+	qev->ev.type = VOXSDK_EV_MEDIA_STATS;
+	voxsdk_ev_media_stats_t *s = &qev->ev.u.stats;
 
 	/* advance=true: this is the tick that owns the loss window. */
 	const struct aucodec *ac = fill_audio_stats(s, lc, au, strm, true);
@@ -493,27 +493,27 @@ static void collect_call_stats(struct echosdk_call *lc)
 	s->is_final        = false;
 
 	/* Quality alert threshold crossing detection */
-	const echosdk_config_t *cfg = &g_bsdk.cfg;
+	const voxsdk_config_t *cfg = &g_vox.cfg;
 	if (cfg->mos_alert_threshold > 0.f && s->mos_lq > 0.f) {
 		bool was_bad = lc->last_mos_lq > 0.f
 		            && lc->last_mos_lq < cfg->mos_alert_threshold;
 		bool is_bad  = s->mos_lq < cfg->mos_alert_threshold;
 		if (is_bad != was_bad)
-			bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MOS, s->mos_lq,
+			vox_post_quality_alert(lc, VOXSDK_QUALITY_MOS, s->mos_lq,
 			                   cfg->mos_alert_threshold, was_bad);
 	}
 	if (cfg->loss_alert_threshold > 0.f) {
 		bool was_bad = lc->last_loss_pct > cfg->loss_alert_threshold;
 		bool is_bad  = s->loss_pct      > cfg->loss_alert_threshold;
 		if (is_bad != was_bad)
-			bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_LOSS, s->loss_pct,
+			vox_post_quality_alert(lc, VOXSDK_QUALITY_LOSS, s->loss_pct,
 			                   cfg->loss_alert_threshold, was_bad);
 	}
 	if (cfg->jitter_alert_threshold > 0.f) {
 		bool was_bad = lc->last_jitter_ms > cfg->jitter_alert_threshold;
 		bool is_bad  = s->jitter_ms       > cfg->jitter_alert_threshold;
 		if (is_bad != was_bad)
-			bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_JITTER, s->jitter_ms,
+			vox_post_quality_alert(lc, VOXSDK_QUALITY_JITTER, s->jitter_ms,
 			                   cfg->jitter_alert_threshold, was_bad);
 	}
 	lc->last_mos_lq    = s->mos_lq;
@@ -523,14 +523,14 @@ static void collect_call_stats(struct echosdk_call *lc)
 	/* Stall detection and bitrate adaptation read the same sample.  Run
 	 * them before the event is posted so the app cannot observe a stats
 	 * tick whose consequences have not been applied yet. */
-	bsdk_adapt_tick(lc, s);
+	vox_adapt_tick(lc, s);
 
-	bsdk_event_post_qev(qev);
+	vox_event_post_qev(qev);
 }
 
 /* ── Final stats snapshot on call teardown ───────────────────────────────── */
 
-void bsdk_stats_collect_final(struct echosdk_call *lc)
+void vox_stats_collect_final(struct voxsdk_call *lc)
 {
 	if (!lc || !lc->bc)
 		return;
@@ -543,12 +543,12 @@ void bsdk_stats_collect_final(struct echosdk_call *lc)
 	if (!strm)
 		return;
 
-	struct echosdk_queued_event *qev = bsdk_qev_alloc();
+	struct voxsdk_queued_event *qev = vox_qev_alloc();
 	if (!qev)
 		return;
 
-	qev->ev.type = ECHOSDK_EV_MEDIA_STATS;
-	echosdk_ev_media_stats_t *s = &qev->ev.u.stats;
+	qev->ev.type = VOXSDK_EV_MEDIA_STATS;
+	voxsdk_ev_media_stats_t *s = &qev->ev.u.stats;
 
 	/* advance=false: the teardown snapshot reports the window since the
 	 * last tick but must not fold itself into the session average, which
@@ -566,56 +566,56 @@ void bsdk_stats_collect_final(struct echosdk_call *lc)
 	s->call_duration_ms = lc->stats_call_start
 	                    ? (tmr_jiffies() - lc->stats_call_start) : 0u;
 
-	bsdk_event_post_qev(qev);
+	vox_event_post_qev(qev);
 }
 
 /* ── Timer handler (re_main thread) ─────────────────────────────────────── */
 
-static void stats_visit(struct echosdk_call *lc, void *arg)
+static void stats_visit(struct voxsdk_call *lc, void *arg)
 {
 	(void)arg;
-	if (lc->state == ECHOSDK_CALL_ESTABLISHED)
+	if (lc->state == VOXSDK_CALL_ESTABLISHED)
 		collect_call_stats(lc);
 }
 
 static void stats_timer_handler(void *arg)
 {
 	(void)arg;
-	bsdk_call_foreach(stats_visit, NULL);
-	tmr_start(&g_bsdk.stats_tmr, g_bsdk.cfg.stats_interval_ms,
+	vox_call_foreach(stats_visit, NULL);
+	tmr_start(&g_vox.stats_tmr, g_vox.cfg.stats_interval_ms,
 	          stats_timer_handler, NULL);
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-int bsdk_stats_init(void)
+int vox_stats_init(void)
 {
-	if (!g_bsdk.cfg.stats_interval_ms)
+	if (!g_vox.cfg.stats_interval_ms)
 		return 0;
 
-	tmr_init(&g_bsdk.stats_tmr);
-	tmr_start(&g_bsdk.stats_tmr, g_bsdk.cfg.stats_interval_ms,
+	tmr_init(&g_vox.stats_tmr);
+	tmr_start(&g_vox.stats_tmr, g_vox.cfg.stats_interval_ms,
 	          stats_timer_handler, NULL);
 	return 0;
 }
 
-void bsdk_stats_close(void)
+void vox_stats_close(void)
 {
-	tmr_cancel(&g_bsdk.stats_tmr);
+	tmr_cancel(&g_vox.stats_tmr);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_call      *lc;
-	echosdk_ev_media_stats_t *out;
+	struct voxsdk_call      *lc;
+	voxsdk_ev_media_stats_t *out;
 	int                       result;
 } getstats_ctx_t;
 
 static void getstats_fn(void *arg)
 {
 	getstats_ctx_t *ctx = arg;
-	struct echosdk_call *lc = ctx->lc;
+	struct voxsdk_call *lc = ctx->lc;
 	if (!lc->bc) { ctx->result = ENOENT; return; }
 
 	struct audio *au = call_audio(lc->bc);
@@ -624,7 +624,7 @@ static void getstats_fn(void *arg)
 	struct stream *strm = audio_strm(au);
 	if (!strm) { ctx->result = ENOENT; return; }
 
-	echosdk_ev_media_stats_t *s = ctx->out;
+	voxsdk_ev_media_stats_t *s = ctx->out;
 
 	/* advance=false: a getter must not consume the polling tick's loss
 	 * window, or an app that polls between ticks would zero the rates the
@@ -651,10 +651,10 @@ static void getstats_fn(void *arg)
 	ctx->result = 0;
 }
 
-int echosdk_call_get_stats(echosdk_call_handle_t call,
-                            echosdk_ev_media_stats_t *out)
+int voxsdk_call_get_stats(voxsdk_call_handle_t call,
+                            voxsdk_ev_media_stats_t *out)
 {
-	if (!call || !out) return ECHOSDK_ERR_INVAL;
+	if (!call || !out) return VOXSDK_ERR_INVAL;
 
 	/* Zero before anything can fail.  Every early return below — no call
 	 * object, no audio, no stream, or a dispatch that never runs — used to
@@ -664,6 +664,6 @@ int echosdk_call_get_stats(echosdk_call_handle_t call,
 	memset(out, 0, sizeof(*out));
 
 	getstats_ctx_t ctx = {.lc = call, .out = out, .result = 0};
-	int err = bsdk_dispatch_sync(getstats_fn, &ctx);
+	int err = vox_dispatch_sync(getstats_fn, &ctx);
 	return err ? err : ctx.result;
 }

@@ -4,31 +4,31 @@
  * and speaker gain.
  *
  * Filter chain (encode / TX path, in registration order):
- *   bsdk_mic_gain → bsdk_ns → bsdk_agc → bsdk_aec
+ *   vox_mic_gain → vox_ns → vox_agc → vox_aec
  * Decode / RX path (baresip walks dech in reverse registration order):
- *   bsdk_spk_gain
+ *   vox_spk_gain
  *
- * bsdk_mic_gain  — fixed dB scalar on the TX path (pre-boost before NS/AGC).
- * bsdk_ns        — single-band Wiener noise gate on TX.
- * bsdk_agc       — RMS-based gain normaliser targeting −20 dBFS.
- * bsdk_aec       — half-duplex echo suppressor: attenuates TX when RX is loud.
+ * vox_mic_gain  — fixed dB scalar on the TX path (pre-boost before NS/AGC).
+ * vox_ns        — single-band Wiener noise gate on TX.
+ * vox_agc       — RMS-based gain normaliser targeting −20 dBFS.
+ * vox_aec       — half-duplex echo suppressor: attenuates TX when RX is loud.
  *                  This is NOT acoustic echo cancellation.  For true AEC use
- *                  ECHOSDK_AEC_WEBRTC (desktop, requires libwebrtc-audio-processing-1).
- * bsdk_spk_gain  — fixed dB scalar on the RX path (post-jitter, pre-playback).
+ *                  VOXSDK_AEC_WEBRTC (desktop, requires libwebrtc-audio-processing-1).
+ * vox_spk_gain  — fixed dB scalar on the RX path (post-jitter, pre-playback).
  *
  * Thread model
  * ─────────────
  * Gain scalars and the AEC floor are stored as atomic uint32_t (float bits).
- * Setters in audio.c write via bsdk_*_store(); filters read via load_f().
+ * Setters in audio.c write via vox_*_store(); filters read via load_f().
  * No dispatch needed for gain setters — the audio thread gets the new value
  * within one frame (~20 ms) with no locking.
  *
  * aufilt_register/unregister/enable modify the shared aufiltl list.
  * "PROTECTED BY RE_MAIN" is used to mark those call sites — they must
- * always run on the re_main thread via bsdk_dispatch_sync.
+ * always run on the re_main thread via vox_dispatch_sync.
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 #include <rem_au.h>
 #include <rem_aulevel.h>
 #include <rem_auframe.h>
@@ -41,7 +41,7 @@ static uint32_t g_mic_gain_bits  = 0x3F800000u;  /* float 1.0f — unity */
 static uint32_t g_spk_gain_bits  = 0x3F800000u;  /* float 1.0f — unity */
 /* aec_suppression_level=1.0 → floor=0.15 (−16.5 dB), the former hardcoded default.
  * aec_suppression_level=0.0 → floor=1.0 (no attenuation).
- * Internal formula: floor = 1.0f - level * 0.85f  (see bsdk_aec_floor_store). */
+ * Internal formula: floor = 1.0f - level * 0.85f  (see vox_aec_floor_store). */
 static uint32_t g_aec_floor_bits = 0x3E19999Au;  /* float 0.15f */
 
 static inline float load_f(uint32_t *p)
@@ -59,9 +59,9 @@ static inline void store_f(uint32_t *p, float v)
 	re_atomic_rlx_set(p, b);
 }
 
-void bsdk_mic_gain_store(float linear) { store_f(&g_mic_gain_bits, linear); }
-void bsdk_spk_gain_store(float linear) { store_f(&g_spk_gain_bits, linear); }
-void bsdk_aec_floor_store(float floor) { store_f(&g_aec_floor_bits, floor); }
+void vox_mic_gain_store(float linear) { store_f(&g_mic_gain_bits, linear); }
+void vox_spk_gain_store(float linear) { store_f(&g_spk_gain_bits, linear); }
+void vox_aec_floor_store(float floor) { store_f(&g_aec_floor_bits, floor); }
 
 /* ── Helpers shared by mic_gain and spk_gain ────────────────────────────── */
 
@@ -73,7 +73,7 @@ static inline void apply_gain(int16_t *p, size_t n, float g)
 	}
 }
 
-/* ── bsdk_mic_gain (encode-only) ────────────────────────────────────────── */
+/* ── vox_mic_gain (encode-only) ────────────────────────────────────────── */
 
 struct mic_gain_enc_st { struct aufilt_enc_st base; };
 
@@ -280,7 +280,7 @@ static int aec_encode(struct aufilt_enc_st *st, struct auframe *af)
 	/* aec_suppression_level=0 → floor=1.0 (no TX attenuation)
 	 * aec_suppression_level=1 → floor=0.15 (−16.5 dB, current default)
 	 * The mapping is inverted because g_aec_floor_bits is a minimum gain,
-	 * not a suppression amount.  See bsdk_aec_floor_store() in audio.c. */
+	 * not a suppression amount.  See vox_aec_floor_store() in audio.c. */
 	const float rx_low  = 4.0e4f;
 	const float rx_high = 9.0e6f;
 	float floor_gain    = load_f(&g_aec_floor_bits);
@@ -325,7 +325,7 @@ static int aec_decode(struct aufilt_dec_st *st, struct auframe *af)
 	return 0;
 }
 
-/* ── bsdk_spk_gain (decode-only) ────────────────────────────────────────── */
+/* ── vox_spk_gain (decode-only) ────────────────────────────────────────── */
 
 struct spk_gain_dec_st { struct aufilt_dec_st base; };
 
@@ -356,25 +356,25 @@ static int spk_gain_decode(struct aufilt_dec_st *st, struct auframe *af)
 /* ── Registration ───────────────────────────────────────────────────────── */
 
 static struct aufilt g_mic_gain_filter = {
-	.name    = "bsdk_mic_gain",
+	.name    = "vox_mic_gain",
 	.encupdh = mic_gain_encupd,
 	.ench    = mic_gain_encode,
 };
 
 static struct aufilt g_ns_filter = {
-	.name    = "bsdk_ns",
+	.name    = "vox_ns",
 	.encupdh = ns_encupd,
 	.ench    = ns_encode,
 };
 
 static struct aufilt g_agc_filter = {
-	.name    = "bsdk_agc",
+	.name    = "vox_agc",
 	.encupdh = agc_encupd,
 	.ench    = agc_encode,
 };
 
 static struct aufilt g_aec_filter = {
-	.name    = "bsdk_aec",
+	.name    = "vox_aec",
 	.encupdh = aec_encupd,
 	.ench    = aec_encode,
 	.decupdh = aec_decupd,
@@ -382,7 +382,7 @@ static struct aufilt g_aec_filter = {
 };
 
 static struct aufilt g_spk_gain_filter = {
-	.name    = "bsdk_spk_gain",
+	.name    = "vox_spk_gain",
 	.decupdh = spk_gain_decupd,
 	.dech    = spk_gain_decode,
 };
@@ -400,18 +400,18 @@ static struct aufilt g_spk_gain_filter = {
  * case where that is the right thing, so it is not an app-overridable choice.
  *
  * The veto only holds while that driver is the one in the path.  Once the app
- * takes the device over (echosdk_audio_use_external), our voice-path driver is
+ * takes the device over (voxsdk_audio_use_external), our voice-path driver is
  * displaced and its canceller goes with it — so the suppressor becomes
  * available again.  It still does not switch itself on: an app that owns the
  * device is expected to capture through the platform voice path itself, and
  * has to ask for the fallback explicitly. */
-bool bsdk_aec_suppressor_wanted(echosdk_aec_mode_t mode)
+bool vox_aec_suppressor_wanted(voxsdk_aec_mode_t mode)
 {
-	if (mode != ECHOSDK_AEC_SUPPRESSOR)
+	if (mode != VOXSDK_AEC_SUPPRESSOR)
 		return false;
 
-	if (bsdk_platform_has_aec() && !bsdk_audio_external_selected()) {
-		info("EchoSDK: platform audio driver cancels echo in hardware; "
+	if (vox_platform_has_aec() && !vox_audio_external_selected()) {
+		info("VoxSDK: platform audio driver cancels echo in hardware; "
 		     "software suppressor stays off\n");
 		return false;
 	}
@@ -419,8 +419,8 @@ bool bsdk_aec_suppressor_wanted(echosdk_aec_mode_t mode)
 	return true;
 }
 
-void bsdk_audio_processing_init(bool ns, bool agc,
-                                echosdk_aec_mode_t aec_mode,
+void vox_audio_processing_init(bool ns, bool agc,
+                                voxsdk_aec_mode_t aec_mode,
                                 float aec_suppression_level,
                                 float mic_db, float spk_db)
 {
@@ -444,8 +444,8 @@ void bsdk_audio_processing_init(bool ns, bool agc,
 	/* Every enable below must pass the flag, never `if (flag) enable(true)`:
 	 * aufilt_register() enables what it registers, so a one-way enable is
 	 * not "leave it alone", it is "leave it ON".  These are TX filters and
-	 * that is not a subtle difference — bsdk_ns gates to −20 dB, bsdk_agc
-	 * pulls toward −20 dBFS with a 0.1 gain floor, and bsdk_aec ducks
+	 * that is not a subtle difference — vox_ns gates to −20 dB, vox_agc
+	 * pulls toward −20 dBFS with a 0.1 gain floor, and vox_aec ducks
 	 * 16.5 dB whenever the far end has audio.  Stacked on a microphone the
 	 * app asked us not to touch (ns and agc default to false, and AEC_OFF
 	 * means off), that is a caller nobody can hear.
@@ -453,33 +453,33 @@ void bsdk_audio_processing_init(bool ns, bool agc,
 	 * The two gain filters are the exception, and only because they read as
 	 * enabled either way: they self-bypass at unity. */
 	/* PROTECTED BY RE_MAIN */
-	aufilt_enable(fl, "bsdk_mic_gain", true);
-	aufilt_enable(fl, "bsdk_spk_gain", true);
+	aufilt_enable(fl, "vox_mic_gain", true);
+	aufilt_enable(fl, "vox_spk_gain", true);
 
-	bool aec_on = bsdk_aec_suppressor_wanted(aec_mode);
+	bool aec_on = vox_aec_suppressor_wanted(aec_mode);
 
 	/* PROTECTED BY RE_MAIN */
-	aufilt_enable(fl, "bsdk_ns",  ns);
-	aufilt_enable(fl, "bsdk_agc", agc);
-	/* bsdk_aec only for SUPPRESSOR, and only where nothing below us has
+	aufilt_enable(fl, "vox_ns",  ns);
+	aufilt_enable(fl, "vox_agc", agc);
+	/* vox_aec only for SUPPRESSOR, and only where nothing below us has
 	 * already cancelled the echo; WEBRTC uses the webrtc_aec module. */
-	aufilt_enable(fl, "bsdk_aec", aec_on);
+	aufilt_enable(fl, "vox_aec", aec_on);
 
 	/* Say what the microphone actually goes through.  Every one of these is
 	 * capable of taking the TX path down by 20 dB, so "what is touching the
 	 * mic" is the first question worth answering when a caller reports that
 	 * the far end cannot hear them — on a device, from a log, without a
 	 * debugger. */
-	info("EchoSDK: TX chain: mic_gain=%s ns=%s agc=%s aec=%s%s\n",
+	info("VoxSDK: TX chain: mic_gain=%s ns=%s agc=%s aec=%s%s\n",
 	     mic_db != 0.0f ? "on" : "unity/bypass",
 	     ns ? "on" : "off",
 	     agc ? "on" : "off",
 	     aec_on ? "suppressor" : "off",
-	     (!aec_on && aec_mode == ECHOSDK_AEC_SUPPRESSOR)
+	     (!aec_on && aec_mode == VOXSDK_AEC_SUPPRESSOR)
 	         ? " (platform canceller)" : "");
 }
 
-void bsdk_audio_processing_close(void)
+void vox_audio_processing_close(void)
 {
 	/* PROTECTED BY RE_MAIN */
 	aufilt_unregister(&g_mic_gain_filter);

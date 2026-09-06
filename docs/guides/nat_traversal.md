@@ -22,7 +22,7 @@ When your SIP device is behind a NAT router, the IP address and port in the SDP 
 STUN discovers your public IP:port mapping. Works when the NAT is **not symmetric** (i.e., the same mapping is used for all destinations).
 
 ```c
-echosdk_account_config_t cfg = {
+voxsdk_account_config_t cfg = {
     .uri          = "alice@pbx.example.com",
     .password     = "secret",
     .ice_enabled  = true,
@@ -39,7 +39,7 @@ STUN alone is sufficient for most home/office routers with full-cone or address-
 ICE tries multiple candidate addresses (host, server-reflexive via STUN, relay via TURN) and picks the best working pair.
 
 ```c
-echosdk_account_config_t cfg = {
+voxsdk_account_config_t cfg = {
     .uri          = "alice@pbx.example.com",
     .password     = "secret",
     .ice_enabled  = true,
@@ -58,7 +58,7 @@ TURN relays media through a server when direct connectivity fails (symmetric NAT
 When both `stun_server` and `turn_server` are set, TURN takes priority as the active ICE server (TURN includes STUN-equivalent discovery). Set only `stun_server` when you don't have a TURN server.
 
 ```c
-echosdk_account_config_t cfg = {
+voxsdk_account_config_t cfg = {
     .uri          = "alice@pbx.example.com",
     .password     = "secret",
     .ice_enabled  = true,
@@ -121,7 +121,7 @@ fingerprint
 ### Pattern 4: WebRTC browser interop (ICE + DTLS-SRTP + TURN)
 
 ```c
-.media_enc    = ECHOSDK_MEDIA_ENC_DTLS_SRTP,
+.media_enc    = VOXSDK_MEDIA_ENC_DTLS_SRTP,
 .ice_enabled  = true,
 .stun_server  = "stun:stun.l.google.com:19302",
 .turn_server  = "turn:turn.example.com:3478",
@@ -167,7 +167,7 @@ address the peer will not accept.
 The SDK re-offers when ICE settles on an address that was never signalled:
 
 ```
-EchoSDK/ice: selected local candidate 41.33.94.42:62417 was never signalled
+VoxSDK/ice: selected local candidate 41.33.94.42:62417 was never signalled
              (offered 213.212.207.242:62417) — re-offering so the peer accepts our media
 ```
 

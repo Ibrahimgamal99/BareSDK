@@ -1,5 +1,5 @@
-/* EchoSDK-patched: does `sa` match the address the call signals from? */
-static bool echosdk_sig_handler(const char *ifname, const struct sa *sa,
+/* VoxSDK-patched: does `sa` match the address the call signals from? */
+static bool voxsdk_sig_handler(const char *ifname, const struct sa *sa,
 				void *arg)
 {
 	(void)ifname;
@@ -8,7 +8,7 @@ static bool echosdk_sig_handler(const char *ifname, const struct sa *sa,
 }
 
 
-/* EchoSDK-patched: gather only on the interface that carries the signalling.
+/* VoxSDK-patched: gather only on the interface that carries the signalling.
  *
  * A component has one wildcard-bound socket, shared by every candidate this
  * handler adds.  So a second interface does not buy a second path: it buys a
@@ -51,7 +51,7 @@ static bool echosdk_sig_handler(const char *ifname, const struct sa *sa,
  * succeed.  The srflx came back with an IPv6 base for the same reason — the
  * highest-priority interface it was gathered against was one of those.
  */
-static bool echosdk_if_signalling(struct mnat_media *m, const struct sa *sa)
+static bool voxsdk_if_signalling(struct mnat_media *m, const struct sa *sa)
 {
 	const struct sa *sig;
 
@@ -62,7 +62,7 @@ static bool echosdk_if_signalling(struct mnat_media *m, const struct sa *sa)
 	if (!sig || !sa_isset(sig, SA_ADDR))
 		return true;
 
-	if (!net_laddr_apply(baresip_network(), echosdk_sig_handler,
+	if (!net_laddr_apply(baresip_network(), voxsdk_sig_handler,
 			     (void *)sig))
 		return true;
 
@@ -85,8 +85,8 @@ static bool if_handler(const char *ifname, const struct sa *sa, void *arg)
 	if (!net_af_enabled(baresip_network(), sa_af(sa)))
 		return false;
 
-	/* EchoSDK-patched */
-	if (!echosdk_if_signalling(m, sa)) {
+	/* VoxSDK-patched */
+	if (!voxsdk_if_signalling(m, sa)) {
 		ice_printf(m, "skipped interface: %s:%j — the call signals"
 			   " from %j\n",
 			   ifname, sa, sdp_session_laddr(m->sess->sdp));

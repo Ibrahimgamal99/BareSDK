@@ -1,9 +1,9 @@
-/* Lazy-loads libwebrtc-audio-processing-1 via dlopen so echosdk.so has no
+/* Lazy-loads libwebrtc-audio-processing-1 via dlopen so voxsdk.so has no
  * hard DT_NEEDED entry for it.  If the library is absent at runtime, AEC
  * init returns ENODEV (AudioProcessingBuilder::Create returns NULL, which
  * aec.cpp already handles).  Only active when the webrtc_aec module is built.
  */
-#ifdef ECHOSDK_HAS_WEBRTC_AEC
+#ifdef VOXSDK_HAS_WEBRTC_AEC
 
 #include <dlfcn.h>
 #include <pthread.h>
@@ -83,4 +83,4 @@ void webrtc_cfg_dtor(void *self)
 	if (f) f(self);
 }
 
-#endif /* ECHOSDK_HAS_WEBRTC_AEC */
+#endif /* VOXSDK_HAS_WEBRTC_AEC */

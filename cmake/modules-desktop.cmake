@@ -6,9 +6,9 @@
 # Crypto:  srtp = SDES-SRTP, dtls_srtp = DTLS-SRTP (RFC 5764).
 # NAT:     stun/turn/ice = RFC 5389/5766/8445.
 
-set(ECHOSDK_DESKTOP_MODULES
-  # Audio codecs — must stay identical to ECHOSDK_MOBILE_MODULES_BASE so the
-  # default SDP offer (see BSDK_DEFAULT_AUDIO_CODECS in src/account.c) is
+set(VOXSDK_DESKTOP_MODULES
+  # Audio codecs — must stay identical to VOXSDK_MOBILE_MODULES_BASE so the
+  # default SDP offer (see VOX_DEFAULT_AUDIO_CODECS in src/account.c) is
   # satisfiable on every platform.
   "opus"
   "g711"
@@ -32,7 +32,7 @@ set(ECHOSDK_DESKTOP_MODULES
   "presence"
   "uuid"
 )
-if(ECHOSDK_WITH_WEBRTC_AEC)
-  list(APPEND ECHOSDK_DESKTOP_MODULES "webrtc_aec")
+if(VOXSDK_WITH_WEBRTC_AEC)
+  list(APPEND VOXSDK_DESKTOP_MODULES "webrtc_aec")
 endif()
-list(JOIN ECHOSDK_DESKTOP_MODULES ";" ECHOSDK_DESKTOP_MODULES)
+list(JOIN VOXSDK_DESKTOP_MODULES ";" VOXSDK_DESKTOP_MODULES)

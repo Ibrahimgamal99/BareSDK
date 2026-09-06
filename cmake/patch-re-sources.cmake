@@ -1,18 +1,18 @@
 # patch-re-sources.cmake
-# Apply EchoSDK's libre patches at build time.
+# Apply VoxSDK's libre patches at build time.
 # Usage: cmake -DSOURCE_DIR=path/to/re -P patch-re-sources.cmake
 #
 # third_party/re is fetched by scripts/fetch-third-party.sh at a pinned
 # revision and is gitignored — not a submodule — so an in-place patch cannot
 # leak into upstream history (the hazard fix-msvc-re.cmake retired over).
-# Each patch is idempotent behind a "EchoSDK-patched" marker and fails loudly
+# Each patch is idempotent behind a "VoxSDK-patched" marker and fails loudly
 # when a libre bump moves the text it splices at, in the spirit of the
 # configure-time prototype guard in CMakeLists.txt.
 #
 # Why patches instead of GNU ld's --wrap (which used to carry two of these
 # fixes on Linux/Android): Apple's linker has no --wrap, so iOS builds
 # silently shipped without them.  The rename patches below are the
-# compile-time equivalent — libre's definition moves to __real_*, EchoSDK's
+# compile-time equivalent — libre's definition moves to __real_*, VoxSDK's
 # src/ws_path.c owns the public name, and every call site resolves to it at
 # link time on every platform.  No linker flags, and dist/ archives no longer
 # require consumers to pass any.
@@ -23,14 +23,14 @@ endif()
 
 # Splice NEW in place of OLD in FILE, or verify it already happened.
 # OLD must match byte-for-byte (tabs included); NEW must contain the
-# "EchoSDK-patched" marker that makes the operation idempotent.
-function(echosdk_patch FILE OLD NEW WHAT)
+# "VoxSDK-patched" marker that makes the operation idempotent.
+function(voxsdk_patch FILE OLD NEW WHAT)
   if(NOT EXISTS "${FILE}")
     message(FATAL_ERROR "patch-re-sources: ${FILE} does not exist (${WHAT})")
   endif()
   file(READ "${FILE}" _content)
 
-  string(FIND "${_content}" "EchoSDK-patched" _marker)
+  string(FIND "${_content}" "VoxSDK-patched" _marker)
   if(NOT _marker EQUAL -1)
     message(STATUS "patch-re-sources: ${FILE} already patched (${WHAT})")
     return()
@@ -63,7 +63,7 @@ endfunction()
 # intended semantic anyway: these records exist to retransmit the response
 # until the ACK arrives.  A plain bug fix, upstreamable as-is.
 # ---------------------------------------------------------------------------
-echosdk_patch("${SOURCE_DIR}/src/sipsess/reply.c"
+voxsdk_patch("${SOURCE_DIR}/src/sipsess/reply.c"
 [=[
 int sipsess_reply_ack(struct sipsess *sess, const struct sip_msg *msg)
 {
@@ -82,7 +82,7 @@ int sipsess_reply_ack(struct sipsess *sess, const struct sip_msg *msg)
 [=[
 int sipsess_reply_ack(struct sipsess *sess, const struct sip_msg *msg)
 {
-	/* EchoSDK-patched: drain every reply record this ACK matches.
+	/* VoxSDK-patched: drain every reply record this ACK matches.
 	 *
 	 * A UAS that sent a 1xx and the 2xx holds two records with the same
 	 * INVITE CSeq, and cmp_handler matches on the CSeq alone; freeing
@@ -117,11 +117,11 @@ int sipsess_reply_ack(struct sipsess *sess, const struct sip_msg *msg)
 # Record-Route, libre falls back to the peer's Contact — behind a reverse
 # proxy that names the server's own internal address, so the request dies in
 # DNS after being reported sent (RFC 7118 B.2 says a WebSocket client's
-# requests belong on the flow the registration established).  EchoSDK decides
-# the route in bsdk_ws_route_override() (src/ws_path.c); this rename lets it
+# requests belong on the flow the registration established).  VoxSDK decides
+# the route in vox_ws_route_override() (src/ws_path.c); this rename lets it
 # own the public accessor.
 # ---------------------------------------------------------------------------
-echosdk_patch("${SOURCE_DIR}/src/sip/dialog.c"
+voxsdk_patch("${SOURCE_DIR}/src/sip/dialog.c"
 [=[
 const struct uri *sip_dialog_route(const struct sip_dialog *dlg)
 {
@@ -130,9 +130,9 @@ const struct uri *sip_dialog_route(const struct sip_dialog *dlg)
 ]=]
 [=[
 #ifdef RE_SIP_DIALOG_ROUTE_OVERRIDE
-/* EchoSDK-patched: the SDK owns the public accessor so in-dialog WebSocket
+/* VoxSDK-patched: the SDK owns the public accessor so in-dialog WebSocket
  * requests can be routed over the registration flow (RFC 7118 B.2); see
- * EchoSDK's src/ws_path.c.  Same compile-time rename websock.c carries for
+ * VoxSDK's src/ws_path.c.  Same compile-time rename websock.c carries for
  * RE_WEBSOCK_CONNECT_OVERRIDE — call sites keep the public name and resolve
  * to the SDK's definition at link time; no linker tricks involved. */
 const struct uri *__real_sip_dialog_route(const struct sip_dialog *dlg)
@@ -150,11 +150,11 @@ const struct uri *sip_dialog_route(const struct sip_dialog *dlg)
 #
 # The hook ws_path.c and the MSVC/Apple builds have referenced all along
 # (fix-msvc-re.cmake documents it) but which never actually existed in the
-# pinned libre — Apple builds could not even link.  EchoSDK's wrapper pins
+# pinned libre — Apple builds could not even link.  VoxSDK's wrapper pins
 # the connect URI to the configured server and injects Origin/extra headers
 # and the keepalive override.
 # ---------------------------------------------------------------------------
-echosdk_patch("${SOURCE_DIR}/src/websock/websock.c"
+voxsdk_patch("${SOURCE_DIR}/src/websock/websock.c"
 [=[
 int websock_connect(struct websock_conn **connp, struct websock *sock,
 		    struct http_cli *cli, const char *uri, unsigned kaint,
@@ -163,9 +163,9 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 ]=]
 [=[
 #ifdef RE_WEBSOCK_CONNECT_OVERRIDE
-/* EchoSDK-patched: the SDK owns the public name so it can pin the connect
+/* VoxSDK-patched: the SDK owns the public name so it can pin the connect
  * URI to the configured server and inject the Origin/extra headers; see
- * EchoSDK's src/ws_path.c. */
+ * VoxSDK's src/ws_path.c. */
 int __real_websock_connect(struct websock_conn **connp, struct websock *sock,
 		    struct http_cli *cli, const char *uri, unsigned kaint,
 		    websock_estab_h *estabh, websock_recv_h *recvh,
@@ -196,7 +196,7 @@ int websock_connect(struct websock_conn **connp, struct websock *sock,
 # ".invalid" domain, taken from the instance-id baresip already advertises in
 # the contact params.  The full rationale is in the hunk.
 # ---------------------------------------------------------------------------
-echosdk_patch("${SOURCE_DIR}/src/sipreg/reg.c"
+voxsdk_patch("${SOURCE_DIR}/src/sipreg/reg.c"
 [=[
 static int send_handler(enum sip_transp tp, struct sa *src,
 			const struct sa *dst, struct mbuf *mb,
@@ -229,7 +229,7 @@ static int send_handler(enum sip_transp tp, struct sa *src,
 }
 ]=]
 [=[
-/* EchoSDK-patched: the Contact host for a WebSocket registration.
+/* VoxSDK-patched: the Contact host for a WebSocket registration.
  *
  * RFC 7118 s5.2.1 asks a WebSocket client to register a Contact whose host is
  * a random name in the ".invalid" domain, stable for the life of the instance.
@@ -242,7 +242,7 @@ static int send_handler(enum sip_transp tp, struct sa *src,
  * and callers differ: baresip passes the instance in the header params (which
  * land after `;expires=`), while a caller using
  * sipreg_set_contact_params() puts them inside the URI. */
-static int echosdk_ws_contact_host(char *buf, size_t sz,
+static int voxsdk_ws_contact_host(char *buf, size_t sz,
 				   const struct sipreg *reg)
 {
 	const char *srcv[2];
@@ -291,7 +291,7 @@ static int send_handler(enum sip_transp tp, struct sa *src,
 
 	reg->laddr = *src;
 
-	/* EchoSDK-patched: keep the local address out of a WebSocket Contact.
+	/* VoxSDK-patched: keep the local address out of a WebSocket Contact.
 	 *
 	 * Over WS the address is meaningless — the server answers down the
 	 * connection the REGISTER arrived on — but it is not harmless, because
@@ -310,7 +310,7 @@ static int send_handler(enum sip_transp tp, struct sa *src,
 	 * behaviour: a duplicate binding is a delay, while an unroutable Contact
 	 * would be a registration that never receives a call at all. */
 	if ((tp == SIP_TRANSP_WS || tp == SIP_TRANSP_WSS) &&
-	    0 == echosdk_ws_contact_host(host, sizeof(host), reg)) {
+	    0 == voxsdk_ws_contact_host(host, sizeof(host), reg)) {
 
 		err = mbuf_printf(mb,
 				  "Contact: <sip:%s@%s%s%s%s>;expires=%u%s%s",

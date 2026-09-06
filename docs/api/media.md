@@ -2,25 +2,25 @@
 
 ## Codecs
 
-Set in `echosdk_config_t`:
+Set in `voxsdk_config_t`:
 
 ```c
-cfg.audio_codecs[0]  = ECHOSDK_CODEC_OPUS;
-cfg.audio_codecs[1]  = ECHOSDK_CODEC_PCMU;
+cfg.audio_codecs[0]  = VOXSDK_CODEC_OPUS;
+cfg.audio_codecs[1]  = VOXSDK_CODEC_PCMU;
 cfg.audio_codec_count = 2;
 ```
 
 | Codec | Enum | Notes |
 |---|---|---|
-| Opus | `ECHOSDK_CODEC_OPUS` | Wideband / fullband, preferred for WebRTC |
-| G.711 µ-law | `ECHOSDK_CODEC_PCMU` | 8 kHz, universal PSTN compatibility |
-| G.711 A-law | `ECHOSDK_CODEC_PCMA` | 8 kHz, European PSTN |
+| Opus | `VOXSDK_CODEC_OPUS` | Wideband / fullband, preferred for WebRTC |
+| G.711 µ-law | `VOXSDK_CODEC_PCMU` | 8 kHz, universal PSTN compatibility |
+| G.711 A-law | `VOXSDK_CODEC_PCMA` | 8 kHz, European PSTN |
 
 These three are the only codecs compiled into the library, on every platform.
 Leaving `audio_codec_count` at 0 offers all three, Opus first — see
 [Default codec list](#default-codec-list).
 
-`ECHOSDK_CODEC_G722` and `ECHOSDK_CODEC_G726_32` still exist as enum
+`VOXSDK_CODEC_G722` and `VOXSDK_CODEC_G726_32` still exist as enum
 constants for ABI compatibility, but no module provides them; selecting one
 has no effect beyond a warning.
 
@@ -37,8 +37,8 @@ strcpy(cfg.audio_codec_names[1], "opus");
 cfg.audio_codec_name_count = 2;
 ```
 
-Both lists exist on `echosdk_config_t` (global) and
-`echosdk_account_config_t` (per account). Precedence, highest first:
+Both lists exist on `voxsdk_config_t` (global) and
+`voxsdk_account_config_t` (per account). Precedence, highest first:
 
 1. account `audio_codec_names`
 2. account `audio_codecs`
@@ -60,14 +60,14 @@ build ever ships without Opus or G.711, the SDK logs `codec list "…" matched
 no loaded codec` at account setup instead of silently offering something else.
 
 In Flutter both levels are `List<String>` and use the name form:
-`EchoSDKConfig(audioCodecs: ['ulaw', 'opus'])` globally,
+`VoxSDKConfig(audioCodecs: ['ulaw', 'opus'])` globally,
 `AccountConfig(audioCodecs: [...])` per account.
 
 ---
 
 ## Opus tuning
 
-Fine-tune the Opus encoder at init time via `cfg.opus` (`echosdk_opus_config_t`):
+Fine-tune the Opus encoder at init time via `cfg.opus` (`voxsdk_opus_config_t`):
 
 ```c
 cfg.opus.bitrate    = 32000;  // 0 = auto/VBR (default)
@@ -84,10 +84,10 @@ All fields default to 0 / false / -1 (Opus encoder defaults). Only set what you 
 
 ## Audio processing
 
-Enable at init time via `echosdk_config_t`:
+Enable at init time via `voxsdk_config_t`:
 
 ```c
-cfg.aec_mode              = ECHOSDK_AEC_SUPPRESSOR;  // built-in half-duplex gate
+cfg.aec_mode              = VOXSDK_AEC_SUPPRESSOR;  // built-in half-duplex gate
 cfg.aec_suppression_level = 1.0f;                    // 0.0–1.0; 1.0 = maximum
 cfg.ns                    = true;   // noise suppression (Wiener gate)
 cfg.agc                   = true;   // automatic gain control (normalise to −20 dBFS)
@@ -97,24 +97,24 @@ AEC mode options:
 
 | Value | `aec_mode` int (Python) | Description |
 |---|---|---|
-| `ECHOSDK_AEC_OFF` | `0` | No echo cancellation |
-| `ECHOSDK_AEC_SUPPRESSOR` | `1` | Built-in half-duplex gate (default) |
-| `ECHOSDK_AEC_WEBRTC` | `2` | WebRTC AEC (desktop only; requires `libwebrtc-audio-processing-1`) |
+| `VOXSDK_AEC_OFF` | `0` | No echo cancellation |
+| `VOXSDK_AEC_SUPPRESSOR` | `1` | Built-in half-duplex gate (default) |
+| `VOXSDK_AEC_WEBRTC` | `2` | WebRTC AEC (desktop only; requires `libwebrtc-audio-processing-1`) |
 
 Toggle at runtime without re-dialling:
 
 ```c
-echosdk_set_aec_mode(ECHOSDK_AEC_OFF);        // disable AEC
-echosdk_set_aec_mode(ECHOSDK_AEC_SUPPRESSOR); // re-enable
-echosdk_set_aec_suppression_level(0.5f);      // softer suppression
-echosdk_set_ns(false);
-echosdk_set_agc(true);
+voxsdk_set_aec_mode(VOXSDK_AEC_OFF);        // disable AEC
+voxsdk_set_aec_mode(VOXSDK_AEC_SUPPRESSOR); // re-enable
+voxsdk_set_aec_suppression_level(0.5f);      // softer suppression
+voxsdk_set_ns(false);
+voxsdk_set_agc(true);
 ```
 
 **Python**
 
 ```python
-import echo_sdk as sdk
+import vox_sdk as sdk
 
 # ── Configure before the first create_account() ──────────────────────────────
 sdk.configure(
@@ -151,7 +151,7 @@ sdk.set_speaker_gain(-3.0)             # RX gain dB [-20, +20]; 0 = unity (bypas
 | Double-talk | One side goes quiet | Both parties heard |
 | CPU | Negligible | Moderate |
 | Platform | Desktop | Desktop only |
-| Build | None | `cmake -DECHOSDK_WITH_WEBRTC_AEC=ON` + `libwebrtc-audio-processing-1-dev` |
+| Build | None | `cmake -DVOXSDK_WITH_WEBRTC_AEC=ON` + `libwebrtc-audio-processing-1-dev` |
 
 > **WebRTC AEC** must be selected at init time via `sdk.configure(aec_mode=2)`. Only `off ↔ init_mode` transitions are valid at runtime — switching between SUPPRESSOR and WEBRTC returns an error.
 >
@@ -167,7 +167,7 @@ engine, needs the mic for something else at the same time, or wants the OS
 integration its platform team has already built — can take them over:
 
 ```c
-echosdk_audio_use_external(true);   /* SDK stops touching the hardware */
+voxsdk_audio_use_external(true);   /* SDK stops touching the hardware */
 ```
 
 From then on the app supplies and consumes PCM. Nothing else about the call
@@ -176,22 +176,22 @@ changes; SIP, ICE, SRTP, codecs and the jitter buffer stay with the SDK.
 ```c
 uint32_t srate, ptime;
 uint8_t  ch;
-echosdk_audio_external_format(&srate, &ch, &ptime);   /* e.g. 8000, 1, 20 */
+voxsdk_audio_external_format(&srate, &ch, &ptime);   /* e.g. 8000, 1, 20 */
 
 /* capture thread — this is what the far end hears */
-echosdk_audio_external_push(mic_pcm, nsamp);
+voxsdk_audio_external_push(mic_pcm, nsamp);
 
 /* playback thread — this is what the local user hears */
-echosdk_audio_external_pull(spk_pcm, nsamp);
+voxsdk_audio_external_pull(spk_pcm, nsamp);
 ```
 
 PCM is S16LE interleaved. Any buffer size is accepted — the stack re-frames to
 the call's ptime internally. `pull()` always fills the buffer completely,
 writing silence when no call is up, so it can feed the speaker unconditionally.
-Call both from the app's own audio threads, never from inside a EchoSDK event
+Call both from the app's own audio threads, never from inside a VoxSDK event
 callback.
 
-`echosdk_audio_use_external(false)` gives the devices back. Both directions
+`voxsdk_audio_use_external(false)` gives the devices back. Both directions
 take effect immediately, including on a call already in progress.
 
 Python:
@@ -226,17 +226,17 @@ so the whole feature can be verified on a desktop with no audio hardware.
 
 ### Full API surface
 
-C (`include/echosdk.h`):
+C (`include/voxsdk.h`):
 
 | | |
 |---|---|
-| `echosdk_audio_use_external(bool)` | take/return the device; live, incl. mid-call |
-| `echosdk_audio_external_push(pcm, nsamp)` | captured mic audio → far end |
-| `echosdk_audio_external_pull(pcm, nsamp)` | far end → speaker; always fills |
-| `echosdk_audio_external_format(&srate, &ch, &ptime)` | negotiated format, `ENODEV` until media |
-| `echosdk_audio_external_is_active()` | is a call using the app-owned device |
+| `voxsdk_audio_use_external(bool)` | take/return the device; live, incl. mid-call |
+| `voxsdk_audio_external_push(pcm, nsamp)` | captured mic audio → far end |
+| `voxsdk_audio_external_pull(pcm, nsamp)` | far end → speaker; always fills |
+| `voxsdk_audio_external_format(&srate, &ch, &ptime)` | negotiated format, `ENODEV` until media |
+| `voxsdk_audio_external_is_active()` | is a call using the app-owned device |
 
-Flutter (`EchoSDK`):
+Flutter (`VoxSDK`):
 
 | | |
 |---|---|
@@ -285,7 +285,7 @@ On mobile, **the realtime loop belongs in the native layer** — Kotlin over JNI
 Swift calling the C directly — not in Dart. A garbage-collection pause on the
 capture path is a dropped frame, and there is no way to schedule around it. The
 Dart API deliberately exposes only the mode switch and the format; there is no
-`push`/`pull` on `EchoSDK` for that reason.
+`push`/`pull` on `VoxSDK` for that reason.
 
 Whatever runs the loop must capture through the platform's voice path —
 Android `MediaRecorder.AudioSource.VOICE_COMMUNICATION` with
@@ -314,14 +314,14 @@ dead one.
 ### Lifecycle
 
 The device opens when the call gets media, not when it is answered, so
-`echosdk_audio_external_format()` returns `ENODEV` until then. There is **no
+`voxsdk_audio_external_format()` returns `ENODEV` until then. There is **no
 "media is up" event** to wait on: `CALL_ESTABLISHED` is a SIP state and races
 the device by a few milliseconds, and a mid-call re-INVITE can renegotiate the
 codec with no call-state change at all. Poll the format — it reports both that
 the device opened and that its format changed — and stop the loops when the
 call ends.
 
-`echosdk_audio_use_external()` is **not sticky across a restart**: `echosdk_init()`
+`voxsdk_audio_use_external()` is **not sticky across a restart**: `voxsdk_init()`
 re-derives the device from the platform, so an app that shuts the stack down and
 brings it back up has to ask again.
 
@@ -343,7 +343,7 @@ Mixing two calls together is conferencing, and out of scope here.
 > The SDK's own half-duplex suppressor does become *available* again while the
 > app owns the device, since the hardware canceller is out of the path — but it
 > stays **off** unless asked for with
-> `echosdk_set_aec_mode(ECHOSDK_AEC_SUPPRESSOR)`. Switching it on automatically
+> `voxsdk_set_aec_mode(VOXSDK_AEC_SUPPRESSOR)`. Switching it on automatically
 > would silently duck the TX of an app that is already cancelling properly. It
 > is forced back off when the platform device returns, so the two never stack.
 
@@ -351,7 +351,7 @@ Mixing two calls together is conferencing, and out of scope here.
 
 ## iOS audio session / CallKit
 
-On iOS the SDK configures the shared `AVAudioSession` during `echosdk_init()`:
+On iOS the SDK configures the shared `AVAudioSession` during `voxsdk_init()`:
 category `PlayAndRecord`, mode `VoiceChat` (hardware AEC + earpiece routing),
 options `AllowBluetooth | AllowBluetoothA2DP`. Whether it also *activates* that
 session is a config decision:
@@ -376,8 +376,8 @@ cfg.platform_audio_activate = false;   /* CXProvider owns activation */
 ```dart
 // Flutter: pair it with manageAudioSession: false so the plugin does not
 // toggle activation around calls either.
-final sdk = await EchoSDK.start(
-  config: const EchoSDKConfig(platformAudioActivate: false),
+final sdk = await VoxSDK.start(
+  config: const VoxSDKConfig(platformAudioActivate: false),
   manageAudioSession: false,
 );
 ```
@@ -400,16 +400,16 @@ Configure at init time:
 ```c
 cfg.jitter_buffer_min_ms = 20;
 cfg.jitter_buffer_max_ms = 150;
-cfg.jbuf_type = ECHOSDK_JBUF_ADAPTIVE;   // default
-// cfg.jbuf_type = ECHOSDK_JBUF_FIXED;   // constant depth at min_ms
+cfg.jbuf_type = VOXSDK_JBUF_ADAPTIVE;   // default
+// cfg.jbuf_type = VOXSDK_JBUF_FIXED;   // constant depth at min_ms
 ```
 
 Adjust at runtime (takes effect on new calls):
 
 ```c
-echosdk_set_jitter_buffer(20, 200);                    // resize adaptive buffer
-echosdk_set_jitter_buffer_type(ECHOSDK_JBUF_FIXED);    // switch to fixed depth
-echosdk_set_jitter_buffer_type(ECHOSDK_JBUF_ADAPTIVE); // back to adaptive
+voxsdk_set_jitter_buffer(20, 200);                    // resize adaptive buffer
+voxsdk_set_jitter_buffer_type(VOXSDK_JBUF_FIXED);    // switch to fixed depth
+voxsdk_set_jitter_buffer_type(VOXSDK_JBUF_ADAPTIVE); // back to adaptive
 ```
 
 Both bounds default to baresip's built-in values when left at zero.
@@ -422,7 +422,7 @@ Override the RTP DSCP marking for a specific established call:
 
 ```c
 // EF (46) — Expedited Forwarding, lowest latency
-echosdk_call_set_dscp_rtp(call, 46);
+voxsdk_call_set_dscp_rtp(call, 46);
 ```
 
 The global RTP and SIP DSCP values are set at init time via `cfg.dscp_rtp` and `cfg.dscp_sip`.
@@ -432,38 +432,38 @@ The global RTP and SIP DSCP values are set at init time via `cfg.dscp_rtp` and `
 ## Mute / unmute
 
 ```c
-echosdk_audio_mute(call, true);     // mute microphone (TX)
-echosdk_audio_mute(call, false);    // unmute microphone
+voxsdk_audio_mute(call, true);     // mute microphone (TX)
+voxsdk_audio_mute(call, false);    // unmute microphone
 
-echosdk_audio_mute_rx(call, true);  // silence speaker (RX)
-echosdk_audio_mute_rx(call, false); // unmute speaker
+voxsdk_audio_mute_rx(call, true);  // silence speaker (RX)
+voxsdk_audio_mute_rx(call, false); // unmute speaker
 
 // Query current TX mute state (no network round-trip)
-bool muted = echosdk_audio_is_muted(call);
+bool muted = voxsdk_audio_is_muted(call);
 ```
 
-`echosdk_audio_mute` stops encoding and sending microphone audio.
-`echosdk_audio_mute_rx` disables the RTP receiver — the remote continues to send but audio is not decoded or played.
+`voxsdk_audio_mute` stops encoding and sending microphone audio.
+`voxsdk_audio_mute_rx` disables the RTP receiver — the remote continues to send but audio is not decoded or played.
 
 ---
 
 ## Audio device enumeration
 
 ```c
-echosdk_audio_device_t devs[32];
+voxsdk_audio_device_t devs[32];
 
-int n = echosdk_audio_list_input_devices(devs, 32);
+int n = voxsdk_audio_list_input_devices(devs, 32);
 for (int i = 0; i < n; i++)
     printf("[%d] %s%s\n", i, devs[i].name,
            devs[i].is_default ? "  *default*" : "");
 
-n = echosdk_audio_list_output_devices(devs, 32);
+n = voxsdk_audio_list_output_devices(devs, 32);
 for (int i = 0; i < n; i++)
     printf("[%d] %s%s\n", i, devs[i].name,
            devs[i].is_default ? "  *default*" : "");
 ```
 
-`echosdk_audio_device_t` fields:
+`voxsdk_audio_device_t` fields:
 
 | Field | Type | Description |
 |---|---|---|
@@ -471,19 +471,19 @@ for (int i = 0; i < n; i++)
 | `description` | `char[256]` | Human-readable label (may be empty) |
 | `is_default` | `bool` | Platform default device |
 
-Returns the number of entries written (≥ 0). Returns 0 if the audio module has not finished enumeration yet — call again after a short delay or after receiving the first `ECHOSDK_EV_LOG` message.
+Returns the number of entries written (≥ 0). Returns 0 if the audio module has not finished enumeration yet — call again after a short delay or after receiving the first `VOXSDK_EV_LOG` message.
 
 ---
 
 ## Audio device selection
 
 ```c
-echosdk_audio_set_input_device("Plantronics Headset");    // microphone
-echosdk_audio_set_output_device("Plantronics Headset");   // speaker
-echosdk_audio_set_input_device(NULL);                     // platform default
+voxsdk_audio_set_input_device("Plantronics Headset");    // microphone
+voxsdk_audio_set_output_device("Plantronics Headset");   // speaker
+voxsdk_audio_set_input_device(NULL);                     // platform default
 ```
 
-Device names come from `echosdk_audio_list_input/output_devices()`. The change takes effect immediately on all active calls — no re-dial required.
+Device names come from `voxsdk_audio_list_input/output_devices()`. The change takes effect immediately on all active calls — no re-dial required.
 
 ---
 
@@ -492,8 +492,8 @@ Device names come from `echosdk_audio_list_input/output_devices()`. The change t
 Install a callback that receives every decoded audio frame:
 
 ```c
-void my_tap(echosdk_call_handle_t call,
-            echosdk_media_dir_t   dir,   // RX or TX
+void my_tap(voxsdk_call_handle_t call,
+            voxsdk_media_dir_t   dir,   // RX or TX
             const int16_t        *pcm,
             size_t                samples,
             uint32_t              sample_rate,
@@ -506,15 +506,15 @@ void my_tap(echosdk_call_handle_t call,
     my_buf_ready = true;
 }
 
-echosdk_call_set_media_tap(call, my_tap, my_userdata);
-echosdk_call_set_media_tap(call, NULL, NULL);   // remove tap
+voxsdk_call_set_media_tap(call, my_tap, my_userdata);
+voxsdk_call_set_media_tap(call, NULL, NULL);   // remove tap
 ```
 
 **Rules:**
 - Called from the **audio thread** — must return immediately.
 - Copy PCM data to your own buffer; don't hold a reference to `pcm` past the callback.
-- `dir == ECHOSDK_MEDIA_DIR_RX` = decoded received audio (what you hear).
-- `dir == ECHOSDK_MEDIA_DIR_TX` = microphone audio before encoding (what you send).
+- `dir == VOXSDK_MEDIA_DIR_RX` = decoded received audio (what you hear).
+- `dir == VOXSDK_MEDIA_DIR_TX` = microphone audio before encoding (what you send).
 
 ---
 
@@ -523,10 +523,10 @@ echosdk_call_set_media_tap(call, NULL, NULL);   // remove tap
 Record a call's audio to a single WAV file (PCM S16LE). Both the received (RX) and sent (TX) audio are clip-summed into one stream — you hear both sides of the conversation.
 
 ```c
-echosdk_call_record_start(call, "/tmp/call.wav");
+voxsdk_call_record_start(call, "/tmp/call.wav");
 
 // Stop and finalize the WAV header
-echosdk_call_record_stop(call);
+voxsdk_call_record_stop(call);
 ```
 
 **Output format:** PCM S16LE WAV. Sample rate and channel count are taken from the first audio frame (e.g. 48 kHz/2ch for Opus, 8 kHz/1ch for G.711).
@@ -534,11 +534,11 @@ echosdk_call_record_stop(call);
 **Typical usage — start on answer, stop on hangup:**
 
 ```c
-case ECHOSDK_EV_CALL_STATE:
-    if (ev->u.call_state.state == ECHOSDK_CALL_ESTABLISHED)
-        echosdk_call_record_start(ev->u.call_state.call, "/tmp/call.wav");
-    if (ev->u.call_state.state == ECHOSDK_CALL_ENDED)
-        echosdk_call_record_stop(ev->u.call_state.call);
+case VOXSDK_EV_CALL_STATE:
+    if (ev->u.call_state.state == VOXSDK_CALL_ESTABLISHED)
+        voxsdk_call_record_start(ev->u.call_state.call, "/tmp/call.wav");
+    if (ev->u.call_state.state == VOXSDK_CALL_ENDED)
+        voxsdk_call_record_stop(ev->u.call_state.call);
 ```
 
 **Notes:**
@@ -552,8 +552,8 @@ case ECHOSDK_EV_CALL_STATE:
 
 | Enum | Description |
 |---|---|
-| `ECHOSDK_MEDIA_ENC_NONE` | No encryption (RTP) |
-| `ECHOSDK_MEDIA_ENC_SDES` | SRTP with SDP crypto attributes (RFC 4568) |
-| `ECHOSDK_MEDIA_ENC_DTLS_SRTP` | DTLS-SRTP (RFC 5764) — required for WebRTC |
+| `VOXSDK_MEDIA_ENC_NONE` | No encryption (RTP) |
+| `VOXSDK_MEDIA_ENC_SDES` | SRTP with SDP crypto attributes (RFC 4568) |
+| `VOXSDK_MEDIA_ENC_DTLS_SRTP` | DTLS-SRTP (RFC 5764) — required for WebRTC |
 
-Set globally in `echosdk_config_t.media_enc` or per-account in `echosdk_account_config_t.media_enc`.
+Set globally in `voxsdk_config_t.media_enc` or per-account in `voxsdk_account_config_t.media_enc`.

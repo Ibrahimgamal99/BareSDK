@@ -1,18 +1,18 @@
 cmake_minimum_required(VERSION 3.19)
-project(echosdk VERSION 1.0.0 LANGUAGES C)
+project(voxsdk VERSION 1.0.0 LANGUAGES C)
 
 include(ExternalProject)
 
 # ---------------------------------------------------------------------------
-# Source-only mode — used internally by echosdk_core_project ExternalProject.
-# When ECHOSDK_SRC_MODE=ON this file compiles only src/*.c + platform/*.c
-# into echosdk_core and returns; the outer build then merges it with re + baresip.
+# Source-only mode — used internally by voxsdk_core_project ExternalProject.
+# When VOXSDK_SRC_MODE=ON this file compiles only src/*.c + platform/*.c
+# into voxsdk_core and returns; the outer build then merges it with re + baresip.
 # ---------------------------------------------------------------------------
-option(ECHOSDK_SRC_MODE "Compile EchoSDK sources only (internal use)" OFF)
+option(VOXSDK_SRC_MODE "Compile VoxSDK sources only (internal use)" OFF)
 
 # ---------------------------------------------------------------------------
 # HAVE_UNIXSOCK is an ABI switch, not a feature flag — it MUST be identical in
-# re, baresip and echosdk_core. Set here, above the ECHOSDK_SRC_MODE branch,
+# re, baresip and voxsdk_core. Set here, above the VOXSDK_SRC_MODE branch,
 # because the core sources are configured by a *separate* CMake invocation
 # from the one that configures re and baresip: anything set inside a branch
 # reaches only one of them.
@@ -32,21 +32,21 @@ option(ECHOSDK_SRC_MODE "Compile EchoSDK sources only (internal use)" OFF)
 # `#if !defined(HAVE_UNIXSOCK) || HAVE_UNIXSOCK == 1` — so a target that never
 # hears about the flag at all still gets the *large* struct. Set it explicitly
 # on all three rather than trusting any of those defaults to agree.
-set(ECHOSDK_USE_UNIXSOCK ON CACHE BOOL
+set(VOXSDK_USE_UNIXSOCK ON CACHE BOOL
     "Include AF_UNIX in re's struct sa (ABI-critical; must match everywhere)")
-if(ECHOSDK_USE_UNIXSOCK)
-  set(_BSDK_UNIXSOCK_CM "ON")
-  set(_BSDK_UNIXSOCK_DEF "HAVE_UNIXSOCK=1")
+if(VOXSDK_USE_UNIXSOCK)
+  set(_VOX_UNIXSOCK_CM "ON")
+  set(_VOX_UNIXSOCK_DEF "HAVE_UNIXSOCK=1")
 else()
-  set(_BSDK_UNIXSOCK_CM "OFF")
-  set(_BSDK_UNIXSOCK_DEF "HAVE_UNIXSOCK=0")
+  set(_VOX_UNIXSOCK_CM "OFF")
+  set(_VOX_UNIXSOCK_DEF "HAVE_UNIXSOCK=0")
 endif()
 
-if(ECHOSDK_SRC_MODE)
+if(VOXSDK_SRC_MODE)
   cmake_minimum_required(VERSION 3.19)
-  project(echosdk_core VERSION 1.0.0 LANGUAGES C)
+  project(voxsdk_core VERSION 1.0.0 LANGUAGES C)
 
-  set(ECHOSDK_SYSROOT "" CACHE PATH "Path to installed re+baresip headers")
+  set(VOXSDK_SYSROOT "" CACHE PATH "Path to installed re+baresip headers")
 
   # Platform-specific source files
   if(ANDROID_ABI)
@@ -82,51 +82,51 @@ if(ECHOSDK_SRC_MODE)
     list(FILTER CORE_SRCS EXCLUDE REGEX ".*glibc_symver\\.c$")
   endif()
 
-  add_library(echosdk_core STATIC ${CORE_SRCS} ${PLAT_SRCS})
+  add_library(voxsdk_core STATIC ${CORE_SRCS} ${PLAT_SRCS})
 
-  target_include_directories(echosdk_core PRIVATE
-    "${ECHOSDK_SYSROOT}/include"
-    "${ECHOSDK_SYSROOT}/include/re"
+  target_include_directories(voxsdk_core PRIVATE
+    "${VOXSDK_SYSROOT}/include"
+    "${VOXSDK_SYSROOT}/include/re"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
   # Propagate the modules profile as a compile definition
-  if(ECHOSDK_MODULES_PROFILE STREQUAL "mobile")
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_PROFILE_MOBILE=1)
+  if(VOXSDK_MODULES_PROFILE STREQUAL "mobile")
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_PROFILE_MOBILE=1)
   else()
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_PROFILE_DESKTOP=1)
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_PROFILE_DESKTOP=1)
   endif()
 
   # ABI-critical: must match re and baresip — see the HAVE_UNIXSOCK note above.
-  target_compile_definitions(echosdk_core PRIVATE ${_BSDK_UNIXSOCK_DEF})
+  target_compile_definitions(voxsdk_core PRIVATE ${_VOX_UNIXSOCK_DEF})
 
   # WebRTC AEC opt-in
-  if(ECHOSDK_WITH_WEBRTC_AEC)
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_HAS_WEBRTC_AEC=1)
+  if(VOXSDK_WITH_WEBRTC_AEC)
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_HAS_WEBRTC_AEC=1)
   endif()
 
   # Platform audio define so modules_init.c picks the right audio module.
   # Android uses OpenSLES: the aaudio module needs API >= 26 (libaaudio.so
   # does not exist in the android-24 sysroot) while minSdk is 24.
   if(ANDROID_ABI)
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_AUDIO_OPENSLES=1)
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_AUDIO_OPENSLES=1)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_AUDIO_AUDIOUNIT=1)
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_AUDIO_AUDIOUNIT=1)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_AUDIO_COREAUDIO=1)
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_AUDIO_COREAUDIO=1)
   elseif(WIN32)
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_AUDIO_WASAPI=1)
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_AUDIO_WASAPI=1)
   else()
-    target_compile_definitions(echosdk_core PRIVATE ECHOSDK_AUDIO_PULSE=1)
+    target_compile_definitions(voxsdk_core PRIVATE VOXSDK_AUDIO_PULSE=1)
   endif()
 
-  set_target_properties(echosdk_core PROPERTIES
+  set_target_properties(voxsdk_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     C_STANDARD 11
     C_STANDARD_REQUIRED ON
     PREFIX "")
 
-  install(TARGETS echosdk_core ARCHIVE DESTINATION .)
+  install(TARGETS voxsdk_core ARCHIVE DESTINATION .)
   return()
 endif()
 
@@ -134,38 +134,38 @@ endif()
 # Options
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Generate bindings/cpp/echosdk.hpp from include/echosdk.h
+# Generate bindings/cpp/voxsdk.hpp from include/voxsdk.h
 # ---------------------------------------------------------------------------
 add_custom_command(
-  OUTPUT  "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/echosdk.hpp"
+  OUTPUT  "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/voxsdk.hpp"
   COMMAND "${CMAKE_COMMAND}"
-          -D "C_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/include/echosdk.h"
-          -D "CPP_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/echosdk.hpp"
+          -D "C_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/include/voxsdk.h"
+          -D "CPP_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/voxsdk.hpp"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_hpp.cmake"
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/echosdk.h"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/voxsdk.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_hpp.cmake"
-  COMMENT "Regenerating echosdk.hpp from echosdk.h"
+  COMMENT "Regenerating voxsdk.hpp from voxsdk.h"
   VERBATIM
 )
 add_custom_target(gen_hpp ALL
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/echosdk.hpp")
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/voxsdk.hpp")
 
-set(ECHOSDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
-set(ECHOSDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
+set(VOXSDK_TLS "openssl" CACHE STRING "TLS backend: openssl or mbedtls")
+set(VOXSDK_MODULES_PROFILE "desktop" CACHE STRING "Module profile: desktop or mobile")
 # Desktop targets link the platform's own libssl/libcrypto. Android and iOS
 # have no system OpenSSL, so cross-compiled targets build it from
 # third_party/openssl.  (libre implements TLS/DTLS only over OpenSSL — an
 # mbedTLS build silently stubs out SIP/TLS, SIP/WSS and DTLS-SRTP; see the
 # Phase 0.5 note below.)
-if((ANDROID_ABI OR CMAKE_SYSTEM_NAME STREQUAL "iOS") AND ECHOSDK_TLS STREQUAL "openssl")
+if((ANDROID_ABI OR CMAKE_SYSTEM_NAME STREQUAL "iOS") AND VOXSDK_TLS STREQUAL "openssl")
   set(_build_openssl_default ON)
 else()
   set(_build_openssl_default OFF)
 endif()
-option(ECHOSDK_BUILD_OPENSSL
+option(VOXSDK_BUILD_OPENSSL
        "Cross-build OpenSSL from third_party/openssl instead of using a system one"
        ${_build_openssl_default})
-option(ECHOSDK_SHARED "Also produce a shared library (.so/.dylib/.dll) from the merged archive" OFF)
+option(VOXSDK_SHARED "Also produce a shared library (.so/.dylib/.dll) from the merged archive" OFF)
 if(WIN32 OR ANDROID_ABI OR CMAKE_SYSTEM_NAME MATCHES "iOS")
   set(_aec_default OFF)
 else()
@@ -175,27 +175,27 @@ else()
   endif()
   set(_aec_default ${WEBRTC_AP_FOUND})
 endif()
-option(ECHOSDK_WITH_WEBRTC_AEC
+option(VOXSDK_WITH_WEBRTC_AEC
        "Include WebRTC AEC module (desktop only; requires libwebrtc-audio-processing-1)"
        ${_aec_default})
 
-set(ECHOSDK_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
+set(VOXSDK_RE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/re"
     CACHE PATH "Path to libre source tree")
-set(ECHOSDK_BARESIP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/baresip"
+set(VOXSDK_BARESIP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/baresip"
     CACHE PATH "Path to baresip source tree")
 
 # ---------------------------------------------------------------------------
 # Guard: baresip internals used by src/netmon.c
 #
 # call_reset_transp() and call_laddr() are exported from libbaresip but live in
-# its private src/core.h, so EchoSDK hand-declares them in echosdk_internal.h.
+# its private src/core.h, so VoxSDK hand-declares them in voxsdk_internal.h.
 # An upstream signature change would still link and then misbehave at runtime,
 # so compare the prototypes at configure time and fail loudly instead.
 #
 # Whitespace is collapsed before matching so reformatting upstream does not
 # trip a false alarm — only a real signature change does.
 # ---------------------------------------------------------------------------
-set(_BARESIP_CORE_H "${ECHOSDK_BARESIP_SOURCE_DIR}/src/core.h")
+set(_BARESIP_CORE_H "${VOXSDK_BARESIP_SOURCE_DIR}/src/core.h")
 if(EXISTS "${_BARESIP_CORE_H}")
   file(READ "${_BARESIP_CORE_H}" _CORE_H_TEXT)
   string(REGEX REPLACE "[ \t\r\n]+" " " _CORE_H_FLAT "${_CORE_H_TEXT}")
@@ -207,20 +207,20 @@ if(EXISTS "${_BARESIP_CORE_H}")
       message(FATAL_ERROR
         "baresip's src/core.h no longer declares:\n"
         "    ${_proto}\n"
-        "src/netmon.c hand-declares this in src/echosdk_internal.h for network "
+        "src/netmon.c hand-declares this in src/voxsdk_internal.h for network "
         "handover. Update that declaration to match before building, or the "
         "mismatch will link silently and fail at runtime.")
     endif()
   endforeach()
 endif()
 
-set(ECHOSDK_MBEDTLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls"
-    CACHE PATH "Path to mbedTLS source tree (required when ECHOSDK_TLS=mbedtls)")
-set(ECHOSDK_OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openssl"
-    CACHE PATH "Path to OpenSSL source tree (required when ECHOSDK_BUILD_OPENSSL=ON)")
-set(ECHOSDK_OPUS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus"
+set(VOXSDK_MBEDTLS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls"
+    CACHE PATH "Path to mbedTLS source tree (required when VOXSDK_TLS=mbedtls)")
+set(VOXSDK_OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openssl"
+    CACHE PATH "Path to OpenSSL source tree (required when VOXSDK_BUILD_OPENSSL=ON)")
+set(VOXSDK_OPUS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus"
     CACHE PATH "Path to libopus source tree (required when opus module is enabled)")
-set(ECHOSDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist"
+set(VOXSDK_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist"
     CACHE PATH "Top-level output directory for built archives")
 
 set(SYSROOT "${CMAKE_BINARY_DIR}/sysroot")
@@ -231,25 +231,25 @@ set(SYSROOT "${CMAKE_BINARY_DIR}/sysroot")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules-mobile.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules-desktop.cmake")
 
-if(ECHOSDK_MODULES_PROFILE STREQUAL "mobile")
-  set(ECHOSDK_MODULES "${ECHOSDK_MOBILE_MODULES_BASE}")
+if(VOXSDK_MODULES_PROFILE STREQUAL "mobile")
+  set(VOXSDK_MODULES "${VOXSDK_MOBILE_MODULES_BASE}")
   # Append platform audio
   if(ANDROID_ABI)
-    set(ECHOSDK_MODULES "${ECHOSDK_MODULES};opensles")
+    set(VOXSDK_MODULES "${VOXSDK_MODULES};opensles")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # audiounit only: it provides both capture and playback on iOS via
     # kAudioUnitSubType_VoiceProcessingIO (hardware AEC).  avcapture is
     # VIDEO capture — linking it pulls AVCaptureDevice and makes App Store
     # review demand a camera-usage string for an audio-only SDK.
-    set(ECHOSDK_MODULES "${ECHOSDK_MODULES};audiounit")
+    set(VOXSDK_MODULES "${VOXSDK_MODULES};audiounit")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(ECHOSDK_MODULES "${ECHOSDK_MODULES};audiounit;coreaudio")
+    set(VOXSDK_MODULES "${VOXSDK_MODULES};audiounit;coreaudio")
   endif()
 else()
-  set(ECHOSDK_MODULES "${ECHOSDK_DESKTOP_MODULES}")
+  set(VOXSDK_MODULES "${VOXSDK_DESKTOP_MODULES}")
   if(WIN32)
-    list(REMOVE_ITEM ECHOSDK_MODULES "pulse")
-    list(APPEND ECHOSDK_MODULES "wasapi")
+    list(REMOVE_ITEM VOXSDK_MODULES "pulse")
+    list(APPEND VOXSDK_MODULES "wasapi")
   endif()
 endif()
 
@@ -257,20 +257,20 @@ endif()
 # Platform ID for dist/ subdirectory naming
 # ---------------------------------------------------------------------------
 if(ANDROID_ABI)
-  set(ECHOSDK_PLATFORM_ID "android/${ANDROID_ABI}")
+  set(VOXSDK_PLATFORM_ID "android/${ANDROID_ABI}")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   if(CMAKE_OSX_SYSROOT MATCHES "simulator")
-    set(ECHOSDK_PLATFORM_ID "ios/simulator")
+    set(VOXSDK_PLATFORM_ID "ios/simulator")
   else()
-    set(ECHOSDK_PLATFORM_ID "ios/device")
+    set(VOXSDK_PLATFORM_ID "ios/device")
   endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   string(REPLACE ";" "_" _ARCH_SLUG "${CMAKE_OSX_ARCHITECTURES}")
-  set(ECHOSDK_PLATFORM_ID "macos/${_ARCH_SLUG}")
+  set(VOXSDK_PLATFORM_ID "macos/${_ARCH_SLUG}")
 elseif(WIN32)
-  set(ECHOSDK_PLATFORM_ID "windows/x64")
+  set(VOXSDK_PLATFORM_ID "windows/x64")
 else()
-  set(ECHOSDK_PLATFORM_ID "linux/x86_64")
+  set(VOXSDK_PLATFORM_ID "linux/x86_64")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ if(MSVC)
   set(_EXT  ".lib")
   set(_RE_LIB   "re-static.lib")
   set(_BARE_LIB "libbaresip.lib")
-  set(_CORE_LIB "echosdk_core.lib")
+  set(_CORE_LIB "voxsdk_core.lib")
   # Embed TrackFileAccess=false in every generated .vcxproj for sub-projects.
   # This prevents CL.exe's PostExecuteTool from writing .tlog files, which
   # fails with "user-mapped section open" when another process has them mapped.
@@ -313,16 +313,16 @@ else()
   set(_EXT  ".a")
   set(_RE_LIB   "libre.a")
   set(_BARE_LIB "libbaresip.a")
-  set(_CORE_LIB "echosdk_core.a")
+  set(_CORE_LIB "voxsdk_core.a")
   set(_NOTRACK_ARG "")
 endif()
 
 set(_RE_A   "${SYSROOT}/lib/${_RE_LIB}")
 set(_BARE_A "${SYSROOT}/lib/${_BARE_LIB}")
 if(MSVC)
-  set(_CORE_A "${CMAKE_BINARY_DIR}/echosdk-core-build/$<CONFIG>/${_CORE_LIB}")
+  set(_CORE_A "${CMAKE_BINARY_DIR}/voxsdk-core-build/$<CONFIG>/${_CORE_LIB}")
 else()
-  set(_CORE_A "${CMAKE_BINARY_DIR}/echosdk-core-build/${_CORE_LIB}")
+  set(_CORE_A "${CMAKE_BINARY_DIR}/voxsdk-core-build/${_CORE_LIB}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -340,14 +340,14 @@ endif()
 set(OPENSSL_ARGS "")
 set(OPENSSL_EXTRA_LIBS "")
 set(OPENSSL_DEPENDS "")
-set(ECHOSDK_OPENSSL_LINK "")
+set(VOXSDK_OPENSSL_LINK "")
 
-if(ECHOSDK_BUILD_OPENSSL)
-  if(NOT EXISTS "${ECHOSDK_OPENSSL_SOURCE_DIR}/Configure")
+if(VOXSDK_BUILD_OPENSSL)
+  if(NOT EXISTS "${VOXSDK_OPENSSL_SOURCE_DIR}/Configure")
     message(FATAL_ERROR
-      "ECHOSDK_BUILD_OPENSSL=ON but OpenSSL sources not found at "
-      "${ECHOSDK_OPENSSL_SOURCE_DIR}. "
-      "Run: ECHOSDK_OPENSSL_SRC=1 scripts/fetch-third-party.sh")
+      "VOXSDK_BUILD_OPENSSL=ON but OpenSSL sources not found at "
+      "${VOXSDK_OPENSSL_SOURCE_DIR}. "
+      "Run: VOXSDK_OPENSSL_SRC=1 scripts/fetch-third-party.sh")
   endif()
 
   find_package(Perl REQUIRED)   # OpenSSL's Configure is a perl script
@@ -393,7 +393,7 @@ if(ECHOSDK_BUILD_OPENSSL)
     list(LENGTH CMAKE_OSX_ARCHITECTURES _OSSL_NARCH)
     if(_OSSL_NARCH GREATER 1)
       message(FATAL_ERROR
-        "ECHOSDK_BUILD_OPENSSL on iOS needs a single-arch build, got "
+        "VOXSDK_BUILD_OPENSSL on iOS needs a single-arch build, got "
         "CMAKE_OSX_ARCHITECTURES='${CMAKE_OSX_ARCHITECTURES}'. Build one "
         "slice per architecture and lipo them (see scripts/build-ios.sh).")
     endif()
@@ -415,7 +415,7 @@ if(ECHOSDK_BUILD_OPENSSL)
     set(_OSSL_TARGET_ARGS ${_OSSL_TARGET} "${_OSSL_MINVER}")
   else()
     message(FATAL_ERROR
-      "ECHOSDK_BUILD_OPENSSL=ON has no cross-target mapping for "
+      "VOXSDK_BUILD_OPENSSL=ON has no cross-target mapping for "
       "'${CMAKE_SYSTEM_NAME}'. Desktop builds use the system OpenSSL instead.")
   endif()
 
@@ -446,12 +446,12 @@ if(ECHOSDK_BUILD_OPENSSL)
     no-md2 no-md4 no-mdc2 no-whirlpool
     no-sm2 no-sm3 no-sm4 no-gost)
   ExternalProject_Add(openssl_project
-    SOURCE_DIR "${ECHOSDK_OPENSSL_SOURCE_DIR}"
+    SOURCE_DIR "${VOXSDK_OPENSSL_SOURCE_DIR}"
     BINARY_DIR "${CMAKE_BINARY_DIR}/openssl-build"
     CONFIGURE_COMMAND
       ${CMAKE_COMMAND} -E env
         ${_OSSL_ENV}
-        "${PERL_EXECUTABLE}" "${ECHOSDK_OPENSSL_SOURCE_DIR}/Configure"
+        "${PERL_EXECUTABLE}" "${VOXSDK_OPENSSL_SOURCE_DIR}/Configure"
         ${_OSSL_TARGET_ARGS}
         no-shared no-tests no-apps no-docs
         ${_OSSL_TRIM}
@@ -481,9 +481,9 @@ if(ECHOSDK_BUILD_OPENSSL)
   )
   set(OPENSSL_EXTRA_LIBS "${_SSL_A}" "${_CRYPTO_A}")
   set(OPENSSL_DEPENDS openssl_project)
-  # Same rationale as ECHOSDK_MBEDTLS_LINK: hand baresip the archives directly
+  # Same rationale as VOXSDK_MBEDTLS_LINK: hand baresip the archives directly
   # instead of relying on FindOpenSSL re-running in its cmake context.
-  set(ECHOSDK_OPENSSL_LINK "|${_SSL_A}|${_CRYPTO_A}")
+  set(VOXSDK_OPENSSL_LINK "|${_SSL_A}|${_CRYPTO_A}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -492,11 +492,11 @@ endif()
 set(MBEDTLS_ARGS "")
 set(MBEDTLS_EXTRA_LIBS "")
 
-if(ECHOSDK_TLS STREQUAL "mbedtls")
-  if(NOT EXISTS "${ECHOSDK_MBEDTLS_SOURCE_DIR}/CMakeLists.txt")
+if(VOXSDK_TLS STREQUAL "mbedtls")
+  if(NOT EXISTS "${VOXSDK_MBEDTLS_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
-      "ECHOSDK_TLS=mbedtls but mbedTLS sources not found at "
-      "${ECHOSDK_MBEDTLS_SOURCE_DIR}. "
+      "VOXSDK_TLS=mbedtls but mbedTLS sources not found at "
+      "${VOXSDK_MBEDTLS_SOURCE_DIR}. "
       "Run: git submodule update --init third_party/mbedtls")
   endif()
 
@@ -505,7 +505,7 @@ if(ECHOSDK_TLS STREQUAL "mbedtls")
   set(_MBEDCRYPTO_A "${SYSROOT}/lib/${_LPFX}mbedcrypto${_EXT}")
 
   ExternalProject_Add(mbedtls_project
-    SOURCE_DIR "${ECHOSDK_MBEDTLS_SOURCE_DIR}"
+    SOURCE_DIR "${VOXSDK_MBEDTLS_SOURCE_DIR}"
     BINARY_DIR "${CMAKE_BINARY_DIR}/mbedtls-build"
     LIST_SEPARATOR "|"
     CMAKE_ARGS
@@ -534,14 +534,14 @@ if(ECHOSDK_TLS STREQUAL "mbedtls")
   # Suffix appended to RE_LIBRARIES so baresip consumers (webrtc, selftest)
   # get all three mbedTLS archives without relying on FindMBEDTLS running in
   # baresip's transitive cmake context (where its module path is different).
-  set(ECHOSDK_MBEDTLS_LINK "|${_MBEDCRYPTO_A}|${_MBEDX509_A}|${_MBEDTLS_A}")
+  set(VOXSDK_MBEDTLS_LINK "|${_MBEDCRYPTO_A}|${_MBEDX509_A}|${_MBEDTLS_A}")
 else()
   set(MBEDTLS_DEPENDS "")
   set(MBEDTLS_ARGS
     "-DUSE_OPENSSL=ON"
     "-DUSE_MBEDTLS=OFF"
   )
-  set(ECHOSDK_MBEDTLS_LINK "")
+  set(VOXSDK_MBEDTLS_LINK "")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -551,10 +551,10 @@ set(OPUS_ARGS "")
 set(OPUS_EXTRA_LIBS "")
 set(OPUS_DEPENDS "")
 
-if("opus" IN_LIST ECHOSDK_MODULES)
-  if(NOT EXISTS "${ECHOSDK_OPUS_SOURCE_DIR}/CMakeLists.txt")
+if("opus" IN_LIST VOXSDK_MODULES)
+  if(NOT EXISTS "${VOXSDK_OPUS_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
-      "opus module enabled but sources not found at ${ECHOSDK_OPUS_SOURCE_DIR}. "
+      "opus module enabled but sources not found at ${VOXSDK_OPUS_SOURCE_DIR}. "
       "Run: git submodule update --init third_party/opus")
   endif()
 
@@ -566,7 +566,7 @@ if("opus" IN_LIST ECHOSDK_MODULES)
     # opus compiles dnn/arm/arm_dnn_map.c whenever OPUS_ARM_MAY_HAVE_NEON is
     # set, but the compute_activation_*/compute_conv2d_* implementations its
     # dispatch tables point at only exist when OPUS_DNN is on (DEEP_PLC / DRED
-    # / OSCE — all off here). Result: four dangling symbols in libechosdk.so
+    # / OSCE — all off here). Result: four dangling symbols in libvoxsdk.so
     # and a dlopen() failure on 32-bit devices. Those tables are compiled out
     # under OPUS_ARM_PRESUME_NEON, which is what aarch64 already gets for free
     # (OpusConfig.cmake forces it there) — that is why only v7a is affected.
@@ -575,7 +575,7 @@ if("opus" IN_LIST ECHOSDK_MODULES)
   endif()
 
   ExternalProject_Add(opus_project
-    SOURCE_DIR "${ECHOSDK_OPUS_SOURCE_DIR}"
+    SOURCE_DIR "${VOXSDK_OPUS_SOURCE_DIR}"
     BINARY_DIR "${CMAKE_BINARY_DIR}/opus-build"
     LIST_SEPARATOR "|"
     CMAKE_ARGS
@@ -604,8 +604,8 @@ endif()
 # ---------------------------------------------------------------------------
 set(RE_PLATFORM_ARGS "")
 set(_RE_CFLAGS "")
-list(APPEND RE_PLATFORM_ARGS "-DUSE_UNIXSOCK=${_BSDK_UNIXSOCK_CM}")
-if(ECHOSDK_TLS STREQUAL "mbedtls" AND NOT MSVC)
+list(APPEND RE_PLATFORM_ARGS "-DUSE_UNIXSOCK=${_VOX_UNIXSOCK_CM}")
+if(VOXSDK_TLS STREQUAL "mbedtls" AND NOT MSVC)
   # Upstream re only adds OPENSSL_INCLUDE_DIR/ZLIB to re-objs includes —
   # never MBEDTLS_INCLUDE_DIR — so hand the header path to the compiler.
   string(APPEND _RE_CFLAGS " -isystem${SYSROOT}/include")
@@ -625,7 +625,7 @@ endif()
 
 ExternalProject_Add(re_project
   DEPENDS ${MBEDTLS_DEPENDS} ${OPENSSL_DEPENDS}
-  SOURCE_DIR "${ECHOSDK_RE_SOURCE_DIR}"
+  SOURCE_DIR "${VOXSDK_RE_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/re-build"
   LIST_SEPARATOR "|"
   CMAKE_ARGS
@@ -644,18 +644,18 @@ ExternalProject_Add(re_project
   BUILD_BYPRODUCTS "${_RE_A}"
 )
 
-# Apply EchoSDK's libre patches (BYE reply-drain, the route/websock rename
+# Apply VoxSDK's libre patches (BYE reply-drain, the route/websock rename
 # hooks) before anything is compiled.  third_party/re is fetched by
 # scripts/fetch-third-party.sh at a pinned revision and gitignored — not a
 # submodule — so the patch cannot leak into upstream history.  The script is
 # idempotent and fails loudly when a re bump moves the code it splices at.
 ExternalProject_Add_Step(re_project patch_sources
   COMMAND ${CMAKE_COMMAND}
-    -DSOURCE_DIR=${ECHOSDK_RE_SOURCE_DIR}
+    -DSOURCE_DIR=${VOXSDK_RE_SOURCE_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-re-sources.cmake
   DEPENDEES update
   DEPENDERS configure
-  COMMENT "Patching libre sources (EchoSDK SIP fixes)"
+  COMMENT "Patching libre sources (VoxSDK SIP fixes)"
 )
 
 # Patch libre headers for MSVC compatibility on Windows
@@ -672,11 +672,11 @@ endif()
 # ---------------------------------------------------------------------------
 # Phase 3: build libbaresip (STATIC=ON links all modules in)
 # ---------------------------------------------------------------------------
-string(REPLACE ";" "|" ECHOSDK_MODULES_SEP "${ECHOSDK_MODULES}")
+string(REPLACE ";" "|" VOXSDK_MODULES_SEP "${VOXSDK_MODULES}")
 
 ExternalProject_Add(baresip_project
   DEPENDS re_project ${OPUS_DEPENDS} ${OPENSSL_DEPENDS}
-  SOURCE_DIR "${ECHOSDK_BARESIP_SOURCE_DIR}"
+  SOURCE_DIR "${VOXSDK_BARESIP_SOURCE_DIR}"
   BINARY_DIR "${CMAKE_BINARY_DIR}/baresip-build"
   LIST_SEPARATOR "|"
   CMAKE_ARGS
@@ -686,15 +686,15 @@ ExternalProject_Add(baresip_project
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     -DRE_INCLUDE_DIR=${SYSROOT}/include/re
     -DRE_INCLUDE_DIRS=${SYSROOT}/include/re
-    "-DRE_LIBRARY=${_RE_A}${ECHOSDK_MBEDTLS_LINK}${ECHOSDK_OPENSSL_LINK}"
-    "-DRE_LIBRARIES=${_RE_A}${ECHOSDK_MBEDTLS_LINK}${ECHOSDK_OPENSSL_LINK}"
+    "-DRE_LIBRARY=${_RE_A}${VOXSDK_MBEDTLS_LINK}${VOXSDK_OPENSSL_LINK}"
+    "-DRE_LIBRARIES=${_RE_A}${VOXSDK_MBEDTLS_LINK}${VOXSDK_OPENSSL_LINK}"
     -Dre_DIR=${SYSROOT}/lib/cmake/re
     -DSTATIC=ON
-    "-DMODULES=${ECHOSDK_MODULES_SEP}"
+    "-DMODULES=${VOXSDK_MODULES_SEP}"
     -DBUILD_TESTING=OFF
-    # Must match re and echosdk_core — see the HAVE_UNIXSOCK note above.
-    -DUSE_UNIXSOCK=${_BSDK_UNIXSOCK_CM}
-    "-DCMAKE_C_FLAGS=-DJBUF_STAT=1 -D${_BSDK_UNIXSOCK_DEF}"
+    # Must match re and voxsdk_core — see the HAVE_UNIXSOCK note above.
+    -DUSE_UNIXSOCK=${_VOX_UNIXSOCK_CM}
+    "-DCMAKE_C_FLAGS=-DJBUF_STAT=1 -D${_VOX_UNIXSOCK_DEF}"
     -DHAVE_THREADS=OFF
     ${MBEDTLS_ARGS}
     ${OPENSSL_ARGS}
@@ -719,7 +719,7 @@ ExternalProject_Add(baresip_project
 # static library).
 ExternalProject_Add_Step(baresip_project disable_executables
   COMMAND ${CMAKE_COMMAND}
-    -DSOURCE_DIR=${ECHOSDK_BARESIP_SOURCE_DIR}
+    -DSOURCE_DIR=${VOXSDK_BARESIP_SOURCE_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-baresip-sources.cmake
   DEPENDEES update
   DEPENDERS configure
@@ -729,7 +729,7 @@ ExternalProject_Add_Step(baresip_project disable_executables
 if(WIN32)
   ExternalProject_Add_Step(baresip_project patch_sources
     COMMAND ${CMAKE_COMMAND}
-      -DSOURCE_DIR=${ECHOSDK_BARESIP_SOURCE_DIR}
+      -DSOURCE_DIR=${VOXSDK_BARESIP_SOURCE_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix-msvc-baresip.cmake
     DEPENDEES update
     DEPENDERS configure
@@ -738,24 +738,24 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
-# Phase 3.5: compile EchoSDK source layer against installed headers
+# Phase 3.5: compile VoxSDK source layer against installed headers
 # ---------------------------------------------------------------------------
-ExternalProject_Add(echosdk_core_project
+ExternalProject_Add(voxsdk_core_project
   DEPENDS baresip_project
   SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
-  BINARY_DIR "${CMAKE_BINARY_DIR}/echosdk-core-build"
+  BINARY_DIR "${CMAKE_BINARY_DIR}/voxsdk-core-build"
   CMAKE_ARGS
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-    -DECHOSDK_SRC_MODE=ON
-    -DECHOSDK_SYSROOT=${SYSROOT}
-    -DECHOSDK_MODULES_PROFILE=${ECHOSDK_MODULES_PROFILE}
-    -DECHOSDK_WITH_WEBRTC_AEC=${ECHOSDK_WITH_WEBRTC_AEC}
+    -DVOXSDK_SRC_MODE=ON
+    -DVOXSDK_SYSROOT=${SYSROOT}
+    -DVOXSDK_MODULES_PROFILE=${VOXSDK_MODULES_PROFILE}
+    -DVOXSDK_WITH_WEBRTC_AEC=${VOXSDK_WITH_WEBRTC_AEC}
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     ${_NOTRACK_ARG}
     ${CROSS_ARGS}
-  # BUILD_ALWAYS: this project compiles EchoSDK's *own* src/ and platform/.
+  # BUILD_ALWAYS: this project compiles VoxSDK's *own* src/ and platform/.
   # An ExternalProject build step is stamped and runs once, so without this an
-  # incremental build silently relinks the .so from a stale echosdk_core.a and
+  # incremental build silently relinks the .so from a stale voxsdk_core.a and
   # local edits appear to have no effect. The inner ninja no-ops when nothing
   # changed, so the cost is a directory scan. Third-party projects keep their
   # stamps — their sources are pinned and only move when a revision changes.
@@ -765,34 +765,34 @@ ExternalProject_Add(echosdk_core_project
 )
 
 # ---------------------------------------------------------------------------
-# Phase 4: merge archives into single echosdk.a / bare.lib
+# Phase 4: merge archives into single voxsdk.a / vox.lib
 # ---------------------------------------------------------------------------
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergeStaticLibs.cmake")
 
 if(MSVC)
-  set(_OUT "${CMAKE_BINARY_DIR}/bare.lib")
+  set(_OUT "${CMAKE_BINARY_DIR}/vox.lib")
 else()
-  set(_OUT "${CMAKE_BINARY_DIR}/echosdk.a")
+  set(_OUT "${CMAKE_BINARY_DIR}/voxsdk.a")
 endif()
 
-echosdk_merge(
+voxsdk_merge(
   OUTPUT   "${_OUT}"
   INPUTS   "${_CORE_A}" "${_RE_A}" "${_BARE_A}" ${MBEDTLS_EXTRA_LIBS}
            ${OPENSSL_EXTRA_LIBS} ${OPUS_EXTRA_LIBS}
-  DEPENDS  echosdk_core_project
+  DEPENDS  voxsdk_core_project
 )
 
 # ---------------------------------------------------------------------------
 # Phase 4.5 (optional): link a shared library from the merged archive
 # ---------------------------------------------------------------------------
-if(ECHOSDK_SHARED)
+if(VOXSDK_SHARED)
   if(APPLE)
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
       set(_SHARED_EXT ".dylib")
     else()
       set(_SHARED_EXT ".dylib")
     endif()
-    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/echosdk${_SHARED_EXT}")
+    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/voxsdk${_SHARED_EXT}")
     add_custom_command(
       OUTPUT  "${_SHARED_OUT}"
       COMMAND "${CMAKE_C_COMPILER}" -dynamiclib
@@ -800,12 +800,12 @@ if(ECHOSDK_SHARED)
               -lz
               -framework CoreFoundation -framework Security
               -o "${_SHARED_OUT}"
-      DEPENDS echosdk "${_OUT}"
-      COMMENT "Linking echosdk.dylib"
+      DEPENDS voxsdk "${_OUT}"
+      COMMENT "Linking voxsdk.dylib"
       VERBATIM
     )
   elseif(MSVC)
-    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/echosdk.dll")
+    set(_SHARED_OUT "${CMAKE_BINARY_DIR}/voxsdk.dll")
     find_library(_SSL_LIB    NAMES libssl    ssl    PATH_SUFFIXES lib)
     find_library(_CRYPTO_LIB NAMES libcrypto crypto PATH_SUFFIXES lib)
     find_library(_ZLIB_LIB   NAMES zlib      z      zs     PATH_SUFFIXES lib)
@@ -817,16 +817,16 @@ if(ECHOSDK_SHARED)
               ws2_32.lib iphlpapi.lib crypt32.lib secur32.lib bcrypt.lib
               ole32.lib oleaut32.lib avrt.lib advapi32.lib user32.lib
               shell32.lib qwave.lib
-      DEPENDS echosdk "${_OUT}"
-      COMMENT "Linking echosdk.dll"
+      DEPENDS voxsdk "${_OUT}"
+      COMMENT "Linking voxsdk.dll"
       VERBATIM
     )
   else()
     set(_SHARED_LINK_EXTRA "")
     if(ANDROID_ABI)
       # lib prefix: Android's APK packager and dlopen conventions expect
-      # lib<name>.so; the Dart loader opens "libechosdk.so".
-      set(_SHARED_OUT "${CMAKE_BINARY_DIR}/libechosdk.so")
+      # lib<name>.so; the Dart loader opens "libvoxsdk.so".
+      set(_SHARED_OUT "${CMAKE_BINARY_DIR}/libvoxsdk.so")
       # -lz: re's cmake defines USE_ZLIB whenever find_package(ZLIB) succeeds,
       # which it does against the NDK sysroot, and re_crc32() then calls zlib's
       # crc32() for the STUN FINGERPRINT attribute. Upstream re expects
@@ -849,7 +849,7 @@ if(ECHOSDK_SHARED)
           -Wl,-z,max-page-size=16384
           -Wl,--no-undefined)
     else()
-      set(_SHARED_OUT "${CMAKE_BINARY_DIR}/echosdk.so")
+      set(_SHARED_OUT "${CMAKE_BINARY_DIR}/voxsdk.so")
       set(_SHARED_PLATFORM_LIBS -lpthread -lssl -lcrypto -lz -lm -ldl -lresolv -lpulse)
     endif()
     # --whole-archive exists for the baresip modules: each registers itself
@@ -857,7 +857,7 @@ if(ECHOSDK_SHARED)
     # would drop them all. OpenSSL has no such objects — it is only ever
     # called directly — so keep it outside the group and let the linker take
     # what it needs. Inside, --whole-archive would add ~6 MB of unreferenced
-    # libcrypto to every ABI. The merged echosdk.a still bundles OpenSSL, so
+    # libcrypto to every ABI. The merged voxsdk.a still bundles OpenSSL, so
     # static consumers keep getting one self-contained archive.
     if(OPENSSL_EXTRA_LIBS)
       set(_WHOLE_LIBS "${_CORE_A}" "${_RE_A}" "${_BARE_A}"
@@ -867,7 +867,7 @@ if(ECHOSDK_SHARED)
       set(_WHOLE_LIBS "${_OUT}")
       set(_ONDEMAND_LIBS "")
     endif()
-    # opus is already merged into echosdk.a via OPUS_EXTRA_LIBS — no -lopus needed
+    # opus is already merged into voxsdk.a via OPUS_EXTRA_LIBS — no -lopus needed
     # No --wrap flags: the SIP fixes formerly interposed here live in the
     # patched libre sources (cmake/patch-re-sources.cmake) and in ws_path.c's
     # ownership of the public websock_connect/sip_dialog_route names, so they
@@ -880,26 +880,26 @@ if(ECHOSDK_SHARED)
               ${_ONDEMAND_LIBS}
               ${_SHARED_PLATFORM_LIBS}
               -o "${_SHARED_OUT}"
-      DEPENDS echosdk "${_OUT}"
-      COMMENT "Linking echosdk.so"
+      DEPENDS voxsdk "${_OUT}"
+      COMMENT "Linking voxsdk.so"
       VERBATIM
     )
   endif()
 
-  add_custom_target(echosdk_shared ALL DEPENDS "${_SHARED_OUT}")
+  add_custom_target(voxsdk_shared ALL DEPENDS "${_SHARED_OUT}")
 endif()
 
 # ---------------------------------------------------------------------------
 # Install merged archive + headers to dist/
 # ---------------------------------------------------------------------------
-set(_DIST "${ECHOSDK_DIST_DIR}/${ECHOSDK_PLATFORM_ID}")
+set(_DIST "${VOXSDK_DIST_DIR}/${VOXSDK_PLATFORM_ID}")
 
 install(FILES "${_OUT}" DESTINATION "${_DIST}")
-if(ECHOSDK_SHARED AND DEFINED _SHARED_OUT)
+if(VOXSDK_SHARED AND DEFINED _SHARED_OUT)
   install(FILES "${_SHARED_OUT}" DESTINATION "${_DIST}")
 endif()
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/echosdk.h"
-              "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/echosdk.hpp"
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/include/voxsdk.h"
+              "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/voxsdk.hpp"
               DESTINATION "${_DIST}/include")
 install(DIRECTORY "${SYSROOT}/include/re/"  DESTINATION "${_DIST}/include/re")
 install(FILES     "${SYSROOT}/include/baresip.h" DESTINATION "${_DIST}/include")

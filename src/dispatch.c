@@ -1,8 +1,8 @@
 /**
  * @file dispatch.c  Consumer thread → re_main bridge
  *
- * All state-mutating public API calls go through bsdk_dispatch() or
- * bsdk_dispatch_sync(). These use re_thread_async_main() to post work to
+ * All state-mutating public API calls go through vox_dispatch() or
+ * vox_dispatch_sync(). These use re_thread_async_main() to post work to
  * the re_main event loop, ensuring SIP state is only mutated from re_main.
  *
  * IMPORTANT: re_thread_async_main(work, cb, arg) runs `work` on a libre
@@ -14,18 +14,18 @@
  * corrupts them exactly when fd numbers are recycled (e.g. a WSS connect
  * racing a just-destroyed account's socket teardown).
  *
- * bsdk_dispatch()      — fire-and-forget; returns immediately.
- * bsdk_dispatch_sync() — posts and blocks until work completes; runs the
+ * vox_dispatch()      — fire-and-forget; returns immediately.
+ * vox_dispatch_sync() — posts and blocks until work completes; runs the
  *                        function inline when already on the re thread
  *                        (blocking there would deadlock the loop).
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* ── Async (fire-and-forget) ─────────────────────────────────────────────── */
 
 typedef struct {
-	bsdk_main_fn fn;
+	vox_main_fn fn;
 	void        *arg;
 } dispatch_ctx_t;
 
@@ -38,16 +38,16 @@ static void dispatch_cb(int err, void *arg)
 	mem_deref(ctx);
 }
 
-int bsdk_dispatch(bsdk_main_fn fn, void *arg)
+int vox_dispatch(vox_main_fn fn, void *arg)
 {
 	dispatch_ctx_t *ctx;
 
-	if (!g_bsdk.initialized)
-		return ECHOSDK_ERR_STATE;
+	if (!g_vox.initialized)
+		return VOXSDK_ERR_STATE;
 
 	ctx = mem_alloc(sizeof(*ctx), NULL);
 	if (!ctx)
-		return ECHOSDK_ERR_NOMEM;
+		return VOXSDK_ERR_NOMEM;
 
 	ctx->fn  = fn;
 	ctx->arg = arg;
@@ -61,7 +61,7 @@ int bsdk_dispatch(bsdk_main_fn fn, void *arg)
 /* ── Synchronous ─────────────────────────────────────────────────────────── */
 
 typedef struct {
-	bsdk_main_fn fn;
+	vox_main_fn fn;
 	void        *arg;
 	mtx_t        lock;
 	cnd_t        done;
@@ -81,21 +81,21 @@ static void sync_cb(int err, void *arg)
 	/* do NOT mem_deref — caller owns ctx on its stack */
 }
 
-int bsdk_dispatch_sync(bsdk_main_fn fn, void *arg)
+int vox_dispatch_sync(vox_main_fn fn, void *arg)
 {
 	sync_ctx_t ctx;
 	int err;
 
-	if (!g_bsdk.initialized)
-		return ECHOSDK_ERR_STATE;
+	if (!g_vox.initialized)
+		return VOXSDK_ERR_STATE;
 
 	/* Already on the re-loop thread (e.g. called from a timer or netmon
 	 * handler): run inline — blocking here would deadlock the loop that
 	 * must execute the callback.  Compare against our own spawned thread:
 	 * re_thread_check() is NOT usable here because re->tid is stamped by
-	 * libre_init(), which runs on the app thread in echosdk_init(). */
-	if (g_bsdk.re_thread_running &&
-	    thrd_equal(g_bsdk.re_thread, thrd_current())) {
+	 * libre_init(), which runs on the app thread in voxsdk_init(). */
+	if (g_vox.re_thread_running &&
+	    thrd_equal(g_vox.re_thread, thrd_current())) {
 		fn(arg);
 		return 0;
 	}

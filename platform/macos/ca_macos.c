@@ -21,19 +21,19 @@
 #include <unistd.h>
 #include <Security/Security.h>
 #include <re.h>
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
 /* Longest anchor DER is ~2KB; 8KB leaves room and keeps this off the heap. */
-#define BSDK_MAX_DER 8192
+#define VOX_MAX_DER 8192
 
-static bool bsdk_write_pem(FILE *out, const uint8_t *der, size_t len)
+static bool vox_write_pem(FILE *out, const uint8_t *der, size_t len)
 {
 	/* 4 base64 chars per 3 bytes, plus a newline every 64 chars. */
-	char b64[BSDK_MAX_DER * 4 / 3 + 64];
+	char b64[VOX_MAX_DER * 4 / 3 + 64];
 	size_t olen = sizeof(b64);
 	size_t i;
 
-	if (len > BSDK_MAX_DER)
+	if (len > VOX_MAX_DER)
 		return false;
 	if (base64_encode(der, len, b64, &olen))
 		return false;
@@ -48,7 +48,7 @@ static bool bsdk_write_pem(FILE *out, const uint8_t *der, size_t len)
 	return fputs("-----END CERTIFICATE-----\n", out) >= 0;
 }
 
-const char *bsdk_platform_ca_bundle(const char *dir)
+const char *vox_platform_ca_bundle(const char *dir)
 {
 	static const char *sysfile = "/etc/ssl/cert.pem";
 	static char path[700];
@@ -80,7 +80,7 @@ const char *bsdk_platform_ca_bundle(const char *dir)
 		if (!der)
 			continue;
 
-		if (bsdk_write_pem(out, CFDataGetBytePtr(der),
+		if (vox_write_pem(out, CFDataGetBytePtr(der),
 		                   (size_t)CFDataGetLength(der)))
 			++written;
 
@@ -99,7 +99,7 @@ fallback:
 	if (!access(sysfile, R_OK))
 		return sysfile;
 
-	warning("EchoSDK: no macOS trust anchors found; TLS server "
+	warning("VoxSDK: no macOS trust anchors found; TLS server "
 	        "verification will fail unless ca_cert_path is set\n");
 	return NULL;
 }

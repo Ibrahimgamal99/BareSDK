@@ -1,5 +1,5 @@
 /**
- * @file core.c  Singleton lifecycle — echosdk_init / echosdk_shutdown
+ * @file core.c  Singleton lifecycle — voxsdk_init / voxsdk_shutdown
  */
 
 #include <stdlib.h>
@@ -9,20 +9,20 @@
 #include <winsock2.h>
 #include <windows.h>
 #endif
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* ── Global singleton ────────────────────────────────────────────────────── */
 
-struct bsdk_ctx g_bsdk;
+struct vox_ctx g_vox;
 
-#define ECHOSDK_EV_QUEUE_MAX 4096
+#define VOXSDK_EV_QUEUE_MAX 4096
 
-/* Cached result of getenv("ECHOSDK_DEBUG_INIT"); set on first call. */
-int bsdk_trace_enabled(void)
+/* Cached result of getenv("VOXSDK_DEBUG_INIT"); set on first call. */
+int vox_trace_enabled(void)
 {
 	static int cached = -1;
 	if (cached == -1) {
-		const char *v = getenv("ECHOSDK_DEBUG_INIT");
+		const char *v = getenv("VOXSDK_DEBUG_INIT");
 		cached = (v && *v && *v != '0') ? 1 : 0;
 	}
 	return cached;
@@ -30,7 +30,7 @@ int bsdk_trace_enabled(void)
 
 /* ── Deep-copy helpers ───────────────────────────────────────────────────── */
 
-char *bsdk_strdup(const char *s)
+char *vox_strdup(const char *s)
 {
 	if (!s) return NULL;
 	size_t len = strlen(s);
@@ -41,13 +41,13 @@ char *bsdk_strdup(const char *s)
 	return dup;
 }
 
-static char *bsdk_strdup_arr_elem(char **arr, const char *s)
+static char *vox_strdup_arr_elem(char **arr, const char *s)
 {
 	(void)arr;
-	return bsdk_strdup(s);
+	return vox_strdup(s);
 }
 
-static char **bsdk_strdup_strv(const char * const *src)
+static char **vox_strdup_strv(const char * const *src)
 {
 	if (!src) return NULL;
 	size_t count = 0;
@@ -55,7 +55,7 @@ static char **bsdk_strdup_strv(const char * const *src)
 	char **dst = mem_alloc((count + 1) * sizeof(char *), NULL);
 	if (!dst) return NULL;
 	for (size_t i = 0; i < count; i++) {
-		dst[i] = bsdk_strdup(src[i]);
+		dst[i] = vox_strdup(src[i]);
 		if (!dst[i]) {
 			for (size_t j = 0; j < i; j++) mem_deref(dst[j]);
 			mem_deref(dst);
@@ -66,7 +66,7 @@ static char **bsdk_strdup_strv(const char * const *src)
 	return dst;
 }
 
-static void bsdk_free_strv(char **arr)
+static void vox_free_strv(char **arr)
 {
 	if (!arr) return;
 	for (size_t i = 0; arr[i]; i++)
@@ -74,29 +74,29 @@ static void bsdk_free_strv(char **arr)
 	mem_deref(arr);
 }
 
-void bsdk_cfg_deep_copy(echosdk_config_t *dst, const echosdk_config_t *src,
-                         struct bsdk_ctx *ctx)
+void vox_cfg_deep_copy(voxsdk_config_t *dst, const voxsdk_config_t *src,
+                         struct vox_ctx *ctx)
 {
 	memcpy(dst, src, sizeof(*src));
 
-	ctx->cfg_local_ip         = bsdk_strdup(src->local_ip);
-	ctx->cfg_sip_domain       = bsdk_strdup(src->sip_domain);
-	ctx->cfg_server_url       = bsdk_strdup(src->server_url);
-	ctx->cfg_server_host      = bsdk_strdup(src->server_host);
-	ctx->cfg_outbound_proxy   = bsdk_strdup(src->outbound_proxy);
-	ctx->cfg_ca_cert_path     = bsdk_strdup(src->ca_cert_path);
-	ctx->cfg_client_cert      = bsdk_strdup(src->client_cert);
-	ctx->cfg_client_key       = bsdk_strdup(src->client_key);
-	ctx->cfg_sni_hostname     = bsdk_strdup(src->sni_hostname);
-	ctx->cfg_user_agent       = bsdk_strdup(src->user_agent);
-	ctx->cfg_ws_origin        = bsdk_strdup(src->ws_origin);
-	ctx->cfg_ws_extra_headers = bsdk_strdup_strv(src->ws_extra_headers);
-	ctx->cfg_stun_server      = bsdk_strdup(src->stun_server);
-	ctx->cfg_turn_server      = bsdk_strdup(src->turn_server);
-	ctx->cfg_turn_user        = bsdk_strdup(src->turn_user);
-	ctx->cfg_turn_pass        = bsdk_strdup(src->turn_pass);
-	ctx->cfg_pcap_path        = bsdk_strdup(src->pcap_path);
-	ctx->cfg_tmp_dir          = bsdk_strdup(src->tmp_dir);
+	ctx->cfg_local_ip         = vox_strdup(src->local_ip);
+	ctx->cfg_sip_domain       = vox_strdup(src->sip_domain);
+	ctx->cfg_server_url       = vox_strdup(src->server_url);
+	ctx->cfg_server_host      = vox_strdup(src->server_host);
+	ctx->cfg_outbound_proxy   = vox_strdup(src->outbound_proxy);
+	ctx->cfg_ca_cert_path     = vox_strdup(src->ca_cert_path);
+	ctx->cfg_client_cert      = vox_strdup(src->client_cert);
+	ctx->cfg_client_key       = vox_strdup(src->client_key);
+	ctx->cfg_sni_hostname     = vox_strdup(src->sni_hostname);
+	ctx->cfg_user_agent       = vox_strdup(src->user_agent);
+	ctx->cfg_ws_origin        = vox_strdup(src->ws_origin);
+	ctx->cfg_ws_extra_headers = vox_strdup_strv(src->ws_extra_headers);
+	ctx->cfg_stun_server      = vox_strdup(src->stun_server);
+	ctx->cfg_turn_server      = vox_strdup(src->turn_server);
+	ctx->cfg_turn_user        = vox_strdup(src->turn_user);
+	ctx->cfg_turn_pass        = vox_strdup(src->turn_pass);
+	ctx->cfg_pcap_path        = vox_strdup(src->pcap_path);
+	ctx->cfg_tmp_dir          = vox_strdup(src->tmp_dir);
 
 	dst->local_ip         = ctx->cfg_local_ip;
 	dst->sip_domain       = ctx->cfg_sip_domain;
@@ -118,7 +118,7 @@ void bsdk_cfg_deep_copy(echosdk_config_t *dst, const echosdk_config_t *src,
 	dst->tmp_dir          = ctx->cfg_tmp_dir;
 }
 
-void bsdk_cfg_deep_free(struct bsdk_ctx *ctx)
+void vox_cfg_deep_free(struct vox_ctx *ctx)
 {
 	mem_deref(ctx->cfg_local_ip);         ctx->cfg_local_ip = NULL;
 	mem_deref(ctx->cfg_sip_domain);       ctx->cfg_sip_domain = NULL;
@@ -131,7 +131,7 @@ void bsdk_cfg_deep_free(struct bsdk_ctx *ctx)
 	mem_deref(ctx->cfg_sni_hostname);     ctx->cfg_sni_hostname = NULL;
 	mem_deref(ctx->cfg_user_agent);       ctx->cfg_user_agent = NULL;
 	mem_deref(ctx->cfg_ws_origin);        ctx->cfg_ws_origin = NULL;
-	bsdk_free_strv(ctx->cfg_ws_extra_headers); ctx->cfg_ws_extra_headers = NULL;
+	vox_free_strv(ctx->cfg_ws_extra_headers); ctx->cfg_ws_extra_headers = NULL;
 	mem_deref(ctx->cfg_stun_server);      ctx->cfg_stun_server = NULL;
 	mem_deref(ctx->cfg_turn_server);      ctx->cfg_turn_server = NULL;
 	mem_deref(ctx->cfg_turn_user);        ctx->cfg_turn_user = NULL;
@@ -140,17 +140,17 @@ void bsdk_cfg_deep_free(struct bsdk_ctx *ctx)
 	mem_deref(ctx->cfg_tmp_dir);          ctx->cfg_tmp_dir   = NULL;
 }
 
-/* ── echosdk_config_init ─────────────────────────────────────────────────── */
+/* ── voxsdk_config_init ─────────────────────────────────────────────────── */
 
-void echosdk_config_init(echosdk_config_t *cfg)
+void voxsdk_config_init(voxsdk_config_t *cfg)
 {
 	if (!cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
-	cfg->version     = ECHOSDK_CONFIG_VERSION;
-	cfg->struct_size = sizeof(echosdk_config_t);
+	cfg->version     = VOXSDK_CONFIG_VERSION;
+	cfg->struct_size = sizeof(voxsdk_config_t);
 
-	cfg->transport             = ECHOSDK_TRANSPORT_UDP;
+	cfg->transport             = VOXSDK_TRANSPORT_UDP;
 	cfg->verify_server         = true;
 	cfg->reg_expires           = 3600;
 	cfg->reg_refresh_pct       = 75;
@@ -167,10 +167,10 @@ void echosdk_config_init(echosdk_config_t *cfg)
 	cfg->session_timer_enabled = true;
 	cfg->session_expires_s     = 1800;
 	cfg->session_min_se_s      = 90;
-	cfg->mos_method            = ECHOSDK_MOS_EMODEL;
+	cfg->mos_method            = VOXSDK_MOS_EMODEL;
 	cfg->log_level             = 1;
 	cfg->rtcp_mux              = true;
-	cfg->aec_mode              = ECHOSDK_AEC_SUPPRESSOR;
+	cfg->aec_mode              = VOXSDK_AEC_SUPPRESSOR;
 	cfg->aec_suppression_level = 1.0f;
 	/* Activate the platform audio session at init (iOS only). CallKit apps
 	 * must set this to false — see the field docs. */
@@ -205,7 +205,7 @@ void echosdk_config_init(echosdk_config_t *cfg)
 
 	/* Network handover — poll as a safety net on platforms with no OS
 	 * connectivity callback; mobile apps should set this to 0 and drive
-	 * echosdk_network_changed() from ConnectivityManager / NWPathMonitor. */
+	 * voxsdk_network_changed() from ConnectivityManager / NWPathMonitor. */
 	cfg->net_monitor_interval_s = 10;
 	cfg->net_settle_ms          = 1500;
 	cfg->net_reinvite_calls     = true;
@@ -216,7 +216,7 @@ void echosdk_config_init(echosdk_config_t *cfg)
 
 /* ── Platform temp-dir helper ────────────────────────────────────────────── */
 
-static void bsdk_resolve_tmpdir(const char *override, char *buf, size_t sz)
+static void vox_resolve_tmpdir(const char *override, char *buf, size_t sz)
 {
 	if (override && *override) {
 		str_ncpy(buf, override, sz);
@@ -234,76 +234,76 @@ static void bsdk_resolve_tmpdir(const char *override, char *buf, size_t sz)
 #endif
 }
 
-/* ── echosdk_init ────────────────────────────────────────────────────────── */
+/* ── voxsdk_init ────────────────────────────────────────────────────────── */
 
-int echosdk_init(const echosdk_config_t *cfg)
+int voxsdk_init(const voxsdk_config_t *cfg)
 {
 	int err;
 
 	if (!cfg || !cfg->event_cb)
-		return ECHOSDK_ERR_INVAL;
-	if (cfg->version != ECHOSDK_CONFIG_VERSION)
-		return ECHOSDK_ERR_INVAL;
-	if (cfg->struct_size != sizeof(echosdk_config_t))
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
+	if (cfg->version != VOXSDK_CONFIG_VERSION)
+		return VOXSDK_ERR_INVAL;
+	if (cfg->struct_size != sizeof(voxsdk_config_t))
+		return VOXSDK_ERR_INVAL;
 	if (cfg->audio_codec_count < 0 || cfg->audio_codec_count > 8)
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
 	if (cfg->audio_codec_name_count < 0 || cfg->audio_codec_name_count > 8)
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
 
 	static bool once = false;
 	if (!once) {
 		once = true;
-		mtx_init(&g_bsdk.lock, mtx_plain);
+		mtx_init(&g_vox.lock, mtx_plain);
 	}
 
-	mtx_lock(&g_bsdk.lock);
+	mtx_lock(&g_vox.lock);
 
-	if (g_bsdk.initialized) {
-		mtx_unlock(&g_bsdk.lock);
-		return ECHOSDK_ERR_ALREADY;
+	if (g_vox.initialized) {
+		mtx_unlock(&g_vox.lock);
+		return VOXSDK_ERR_ALREADY;
 	}
 
-	BSDK_TRACE("[bsdk] step 1: deep_copy\n");
-	bsdk_cfg_deep_copy(&g_bsdk.cfg, cfg, &g_bsdk);
+	VOX_TRACE("[vox] step 1: deep_copy\n");
+	vox_cfg_deep_copy(&g_vox.cfg, cfg, &g_vox);
 
-	list_init(&g_bsdk.ev_queue);
-	list_init(&g_bsdk.accounts);
-	g_bsdk.ev_queue_max = ECHOSDK_EV_QUEUE_MAX;
-	g_bsdk.ev_queue_len = 0;
-	mtx_init(&g_bsdk.ev_lock, mtx_plain);
-	cnd_init(&g_bsdk.ev_cond);
-	cnd_init(&g_bsdk.ev_idle_cond);
-	g_bsdk.ev_delivering = false;
-	mtx_init(&g_bsdk.acct_lock, mtx_plain);
-	mtx_init(&g_bsdk.pcap_lock, mtx_plain);
+	list_init(&g_vox.ev_queue);
+	list_init(&g_vox.accounts);
+	g_vox.ev_queue_max = VOXSDK_EV_QUEUE_MAX;
+	g_vox.ev_queue_len = 0;
+	mtx_init(&g_vox.ev_lock, mtx_plain);
+	cnd_init(&g_vox.ev_cond);
+	cnd_init(&g_vox.ev_idle_cond);
+	g_vox.ev_delivering = false;
+	mtx_init(&g_vox.acct_lock, mtx_plain);
+	mtx_init(&g_vox.pcap_lock, mtx_plain);
 	{
-		const uint64_t *p = (const uint64_t*)&g_bsdk.pcap_lock;
-		BSDK_TRACE("[bsdk] pcap_lock init: addr=%p bytes=%016llx %016llx %016llx %016llx %016llx\n",
+		const uint64_t *p = (const uint64_t*)&g_vox.pcap_lock;
+		VOX_TRACE("[vox] pcap_lock init: addr=%p bytes=%016llx %016llx %016llx %016llx %016llx\n",
 		       (void*)p, p[0], p[1], p[2], p[3], p[4]);
 	}
-	bsdk_call_global_init();
+	vox_call_global_init();
 
-	BSDK_TRACE("[bsdk] step 2: log_init\n");
-	err = bsdk_log_init();
+	VOX_TRACE("[vox] step 2: log_init\n");
+	err = vox_log_init();
 	if (err)
 		goto fail;
 
-	BSDK_TRACE("[bsdk] step 3: libre_init\n");
+	VOX_TRACE("[vox] step 3: libre_init\n");
 	err = libre_init();
 	if (err)
 		goto fail;
 
-	BSDK_TRACE("[bsdk] step 4: conf_path\n");
+	VOX_TRACE("[vox] step 4: conf_path\n");
 	/* Redirect baresip's config directory so it never finds or reads
 	 * ~/.config/baresip/{config,accounts,contacts,...} from disk.
-	 * All SDK configuration is driven exclusively through echosdk_config_t.
+	 * All SDK configuration is driven exclusively through voxsdk_config_t.
 	 * Directory must exist: the uuid module (required for WSS/outbound) writes into it. */
 	{
 		char _tmpbase[512];
 		char _confdir[640];
-		bsdk_resolve_tmpdir(g_bsdk.cfg.tmp_dir, _tmpbase, sizeof(_tmpbase));
-		(void)re_snprintf(_confdir, sizeof(_confdir), "%s/.echosdk", _tmpbase);
+		vox_resolve_tmpdir(g_vox.cfg.tmp_dir, _tmpbase, sizeof(_tmpbase));
+		(void)re_snprintf(_confdir, sizeof(_confdir), "%s/.voxsdk", _tmpbase);
 		(void)fs_mkdir(_confdir, 0700);
 		conf_path_set(_confdir);
 
@@ -313,9 +313,9 @@ int echosdk_init(const echosdk_config_t *cfg)
 		 * "unable to get local issuer certificate" (surfacing as
 		 * "Register: Protocol error [100]").  Fall back to whatever
 		 * the platform can offer — see platform/<os>/ca_*.c. */
-		if (!g_bsdk.cfg.ca_cert_path)
-			g_bsdk.cfg.ca_cert_path =
-				bsdk_platform_ca_bundle(_confdir);
+		if (!g_vox.cfg.ca_cert_path)
+			g_vox.cfg.ca_cert_path =
+				vox_platform_ca_bundle(_confdir);
 	}
 	conf_configure_buf((const uint8_t *)"#\n", 2);
 
@@ -352,7 +352,7 @@ int echosdk_init(const echosdk_config_t *cfg)
 	 */
 	conf_config()->net.use_linklocal = false;
 
-	BSDK_TRACE("[bsdk] step 5: baresip_init (cfg=%p)\n", (void*)conf_config());
+	VOX_TRACE("[vox] step 5: baresip_init (cfg=%p)\n", (void*)conf_config());
 #ifdef _WIN32
 	{
 		DWORD _seh = 0;
@@ -364,8 +364,8 @@ int echosdk_init(const echosdk_config_t *cfg)
 			err = -1;
 		}
 		if (_seh) {
-			HMODULE _hm = GetModuleHandleA("echosdk.dll");
-			BSDK_TRACE("[bsdk] baresip_init SEH crash! code=0x%08lX at %p (RVA=0x%llX echosdk_base=%p)\n",
+			HMODULE _hm = GetModuleHandleA("voxsdk.dll");
+			VOX_TRACE("[vox] baresip_init SEH crash! code=0x%08lX at %p (RVA=0x%llX voxsdk_base=%p)\n",
 			       _seh, _crash_addr,
 			       _hm ? (unsigned long long)((char*)_crash_addr - (char*)_hm) : 0,
 			       (void*)_hm);
@@ -375,7 +375,7 @@ int echosdk_init(const echosdk_config_t *cfg)
 #else
 	err = baresip_init(conf_config());
 #endif
-	BSDK_TRACE("[bsdk] step 5 done: err=%d\n", err);
+	VOX_TRACE("[vox] step 5 done: err=%d\n", err);
 	if (err)
 		goto fail;
 
@@ -385,12 +385,12 @@ int echosdk_init(const echosdk_config_t *cfg)
 
 	conf_config()->call.accept = true;
 
-	BSDK_TRACE("[bsdk] step 6: dns_init\n");
-	err = bsdk_dns_init();
+	VOX_TRACE("[vox] step 6: dns_init\n");
+	err = vox_dns_init();
 	if (err)
 		goto fail;
 
-	bsdk_timers_configure(&g_bsdk.cfg);
+	vox_timers_configure(&g_vox.cfg);
 
 	/* Pre-configure the transport mask before ua_init.
 	 * Bits: UDP=1<<0, TCP=1<<1, TLS=1<<2, WS=1<<3, WSS=1<<4 */
@@ -400,10 +400,10 @@ int echosdk_init(const echosdk_config_t *cfg)
 	                                (1u << SIP_TRANSP_WS)  |
 	                                (1u << SIP_TRANSP_WSS);
 
-	BSDK_TRACE("[bsdk] step 7: ua_init\n");
+	VOX_TRACE("[vox] step 7: ua_init\n");
 	{
-		const char *sw = g_bsdk.cfg.user_agent ? g_bsdk.cfg.user_agent
-		                                       : "EchoSDK/1.0";
+		const char *sw = g_vox.cfg.user_agent ? g_vox.cfg.user_agent
+		                                       : "VoxSDK/1.0";
 		err = ua_init(sw, true, true, true);
 	}
 	if (err)
@@ -412,44 +412,44 @@ int echosdk_init(const echosdk_config_t *cfg)
 	{
 		struct tls *tls = uag_tls();
 		if (tls) {
-			if (g_bsdk.cfg.ca_cert_path)
-				tls_add_ca(tls, g_bsdk.cfg.ca_cert_path);
-			if (!g_bsdk.cfg.verify_server)
+			if (g_vox.cfg.ca_cert_path)
+				tls_add_ca(tls, g_vox.cfg.ca_cert_path);
+			if (!g_vox.cfg.verify_server)
 				tls_disable_verify_server(tls);
 		}
 	}
 
-	BSDK_TRACE("[bsdk] step 8: event_init\n");
-	err = bsdk_event_init();
+	VOX_TRACE("[vox] step 8: event_init\n");
+	err = vox_event_init();
 	if (err)
 		goto fail;
 
-	if (g_bsdk.cfg.trace_sip) {
-		err = bsdk_trace_init();
+	if (g_vox.cfg.trace_sip) {
+		err = vox_trace_init();
 		if (err)
 			goto fail;
 	}
 
-	BSDK_TRACE("[bsdk] step 9: modules_init\n");
+	VOX_TRACE("[vox] step 9: modules_init\n");
 	err = modules_init();
 	if (err)
 		goto fail;
-	BSDK_TRACE("[bsdk] step 9 done\n");
+	VOX_TRACE("[vox] step 9 done\n");
 
 	/* After modules_init: the ice module has to have registered its media-NAT
 	 * before we can interpose the gathering deadline on it.  ENOENT just means
 	 * this build has no ice module, and then no INVITE is ever deferred. */
-	if (bsdk_ice_shim_init() == 0)
-		BSDK_TRACE("[bsdk] step 9b: ice gathering deadline installed\n");
+	if (vox_ice_shim_init() == 0)
+		VOX_TRACE("[vox] step 9b: ice gathering deadline installed\n");
 
 	/* Platform audio session setup (iOS AVAudioSession; no-op elsewhere).
 	 * Non-fatal: a session category the OS refuses right now (e.g. during
 	 * a CallKit-owned activation) still leaves the stack usable. */
-	if (bsdk_platform_audio_init(g_bsdk.cfg.platform_audio_activate))
-		warning("EchoSDK: platform audio init failed\n");
+	if (vox_platform_audio_init(g_vox.cfg.platform_audio_activate))
+		warning("VoxSDK: platform audio init failed\n");
 
 	{
-		const echosdk_opus_config_t *op = &g_bsdk.cfg.opus;
+		const voxsdk_opus_config_t *op = &g_vox.cfg.opus;
 		char obuf[256];
 		int  olen = 0;
 		if (op->bitrate > 0)
@@ -469,8 +469,8 @@ int echosdk_init(const echosdk_config_t *cfg)
 		 * this percentage, and baresip's opus decoder gates FEC
 		 * reconstruction on `opus_packet_loss > 0` — so with it unset,
 		 * `opus.fec` alone conceals nothing. */
-		if (g_bsdk.cfg.opus_expected_loss_pct) {
-			uint32_t pl = g_bsdk.cfg.opus_expected_loss_pct;
+		if (g_vox.cfg.opus_expected_loss_pct) {
+			uint32_t pl = g_vox.cfg.opus_expected_loss_pct;
 			if (pl > 100)
 				pl = 100;
 			olen += re_snprintf(obuf + olen, sizeof(obuf) - olen,
@@ -481,138 +481,138 @@ int echosdk_init(const echosdk_config_t *cfg)
 		if (olen > 0)
 			conf_configure_buf((const uint8_t *)obuf, (size_t)olen);
 	}
-	if (g_bsdk.cfg.jbuf_type == ECHOSDK_JBUF_FIXED) {
+	if (g_vox.cfg.jbuf_type == VOXSDK_JBUF_FIXED) {
 		struct config *c = conf_config();
 		c->avt.audio.jbtype = JBUF_FIXED;
 	}
 
-	BSDK_TRACE("[bsdk] step 10: audio_processing_init\n");
-	bsdk_audio_processing_init(g_bsdk.cfg.ns, g_bsdk.cfg.agc,
-	                           g_bsdk.cfg.aec_mode,
-	                           g_bsdk.cfg.aec_suppression_level,
-	                           g_bsdk.cfg.mic_gain_db,
-	                           g_bsdk.cfg.speaker_gain_db);
-	bsdk_tap_global_init();
+	VOX_TRACE("[vox] step 10: audio_processing_init\n");
+	vox_audio_processing_init(g_vox.cfg.ns, g_vox.cfg.agc,
+	                           g_vox.cfg.aec_mode,
+	                           g_vox.cfg.aec_suppression_level,
+	                           g_vox.cfg.mic_gain_db,
+	                           g_vox.cfg.speaker_gain_db);
+	vox_tap_global_init();
 
-	BSDK_TRACE("[bsdk] step 11: message_init\n");
-	err = bsdk_message_init();
+	VOX_TRACE("[vox] step 11: message_init\n");
+	err = vox_message_init();
 	if (err)
 		goto fail;
 
-	BSDK_TRACE("[bsdk] step 12: presence_init\n");
-	err = bsdk_presence_init();
+	VOX_TRACE("[vox] step 12: presence_init\n");
+	err = vox_presence_init();
 	if (err)
 		goto fail;
 
-	if (g_bsdk.cfg.pcap_path) {
-		err = bsdk_pcap_open(g_bsdk.cfg.pcap_path);
+	if (g_vox.cfg.pcap_path) {
+		err = vox_pcap_open(g_vox.cfg.pcap_path);
 		if (err)
 			goto fail;
 	}
 
-	if (g_bsdk.cfg.stats_interval_ms > 0) {
-		err = bsdk_stats_init();
+	if (g_vox.cfg.stats_interval_ms > 0) {
+		err = vox_stats_init();
 		if (err)
 			goto fail;
 	}
 
-	BSDK_TRACE("[bsdk] step 13: netmon_init\n");
-	err = bsdk_netmon_init();
+	VOX_TRACE("[vox] step 13: netmon_init\n");
+	err = vox_netmon_init();
 	if (err)
 		goto fail;
 
-	BSDK_TRACE("[bsdk] step 14: re_loop_start\n");
-	err = bsdk_re_loop_start();
+	VOX_TRACE("[vox] step 14: re_loop_start\n");
+	err = vox_re_loop_start();
 	if (err)
 		goto fail;
 
-	BSDK_TRACE("[bsdk] step 15: done\n");
-	g_bsdk.initialized = true;
-	mtx_unlock(&g_bsdk.lock);
-	return ECHOSDK_OK;
+	VOX_TRACE("[vox] step 15: done\n");
+	g_vox.initialized = true;
+	mtx_unlock(&g_vox.lock);
+	return VOXSDK_OK;
 
 fail:
-	BSDK_TRACE("[bsdk] fail: cleanup start\n");
-	warning("EchoSDK: init failed: %m\n", err);
-	bsdk_re_loop_stop();
-	bsdk_netmon_close();
-	bsdk_call_setup_watch_close();
-	bsdk_stats_close();
-	bsdk_trace_close();
-	bsdk_event_close();
+	VOX_TRACE("[vox] fail: cleanup start\n");
+	warning("VoxSDK: init failed: %m\n", err);
+	vox_re_loop_stop();
+	vox_netmon_close();
+	vox_call_setup_watch_close();
+	vox_stats_close();
+	vox_trace_close();
+	vox_event_close();
 	ua_close();
-	bsdk_call_global_reset();
-	bsdk_ice_shim_close();
-	bsdk_dns_close();
+	vox_call_global_reset();
+	vox_ice_shim_close();
+	vox_dns_close();
 #ifdef _WIN32
 	{ __try { baresip_close(); } __except(EXCEPTION_EXECUTE_HANDLER) {
-		BSDK_TRACE("[bsdk] baresip_close crash: 0x%08lX\n", GetExceptionCode()); } }
+		VOX_TRACE("[vox] baresip_close crash: 0x%08lX\n", GetExceptionCode()); } }
 #else
 	baresip_close();
 #endif
 	libre_close();
-	bsdk_log_close();
-	bsdk_pcap_close();
-	bsdk_cfg_deep_free(&g_bsdk);
-	memset(&g_bsdk, 0, sizeof(g_bsdk));
-	mtx_unlock(&g_bsdk.lock);
-	return err ? err : ECHOSDK_ERR_STATE;
+	vox_log_close();
+	vox_pcap_close();
+	vox_cfg_deep_free(&g_vox);
+	memset(&g_vox, 0, sizeof(g_vox));
+	mtx_unlock(&g_vox.lock);
+	return err ? err : VOXSDK_ERR_STATE;
 }
 
-/* ── echosdk_is_initialized ──────────────────────────────────────────────── */
+/* ── voxsdk_is_initialized ──────────────────────────────────────────────── */
 
-bool echosdk_is_initialized(void)
+bool voxsdk_is_initialized(void)
 {
-	/* g_bsdk.lock is only initialized on the first echosdk_init(); before
+	/* g_vox.lock is only initialized on the first voxsdk_init(); before
 	 * that the zeroed struct is answer enough and locking would be UB. */
-	if (!g_bsdk.initialized)
+	if (!g_vox.initialized)
 		return false;
 
-	mtx_lock(&g_bsdk.lock);
-	bool up = g_bsdk.initialized;
-	mtx_unlock(&g_bsdk.lock);
+	mtx_lock(&g_vox.lock);
+	bool up = g_vox.initialized;
+	mtx_unlock(&g_vox.lock);
 	return up;
 }
 
-/* ── echosdk_set_event_handler ───────────────────────────────────────────── */
+/* ── voxsdk_set_event_handler ───────────────────────────────────────────── */
 
-int echosdk_set_event_handler(echosdk_event_cb_t cb, void *userdata,
+int voxsdk_set_event_handler(voxsdk_event_cb_t cb, void *userdata,
                                bool deliver_owned_events)
 {
-	if (!g_bsdk.initialized)
-		return ECHOSDK_ERR_STATE;
+	if (!g_vox.initialized)
+		return VOXSDK_ERR_STATE;
 
-	mtx_lock(&g_bsdk.lock);
-	if (!g_bsdk.initialized) {
-		mtx_unlock(&g_bsdk.lock);
-		return ECHOSDK_ERR_STATE;
+	mtx_lock(&g_vox.lock);
+	if (!g_vox.initialized) {
+		mtx_unlock(&g_vox.lock);
+		return VOXSDK_ERR_STATE;
 	}
 
 	/* ev_lock is the one the event thread holds around its snapshot of
 	 * these three fields, so taking it here means a delivery either sees
 	 * the whole old handler or the whole new one — never a callback
 	 * paired with the wrong userdata or ownership mode. */
-	mtx_lock(&g_bsdk.ev_lock);
-	g_bsdk.cfg.event_cb             = cb;
-	g_bsdk.cfg.event_userdata       = userdata;
-	g_bsdk.cfg.deliver_owned_events = deliver_owned_events;
+	mtx_lock(&g_vox.ev_lock);
+	g_vox.cfg.event_cb             = cb;
+	g_vox.cfg.event_userdata       = userdata;
+	g_vox.cfg.deliver_owned_events = deliver_owned_events;
 
 	/* Then wait out a delivery that had already snapshotted the old
 	 * handler, so callers can free it (close a Dart NativeCallable, unload
 	 * a plugin) the moment this returns.  Skipped when called from inside
 	 * the callback itself — that delivery is this thread, and waiting for
 	 * it would wait forever. */
-	if (!thrd_equal(thrd_current(), g_bsdk.ev_thread)) {
-		while (g_bsdk.ev_delivering)
-			cnd_wait(&g_bsdk.ev_idle_cond, &g_bsdk.ev_lock);
+	if (!thrd_equal(thrd_current(), g_vox.ev_thread)) {
+		while (g_vox.ev_delivering)
+			cnd_wait(&g_vox.ev_idle_cond, &g_vox.ev_lock);
 	}
-	mtx_unlock(&g_bsdk.ev_lock);
+	mtx_unlock(&g_vox.ev_lock);
 
-	mtx_unlock(&g_bsdk.lock);
-	return ECHOSDK_OK;
+	mtx_unlock(&g_vox.lock);
+	return VOXSDK_OK;
 }
 
-/* ── echosdk_shutdown ────────────────────────────────────────────────────── */
+/* ── voxsdk_shutdown ────────────────────────────────────────────────────── */
 
 /* Runs on the re thread: hang up all calls and free the UA. Audio drivers
  * (PulseAudio, CoreAudio, WASAPI, …) must be torn down from the same thread
@@ -624,97 +624,97 @@ static void hangup_ua_fn(void *arg)
 	*pua = mem_deref(*pua);
 }
 
-void echosdk_shutdown(void)
+void voxsdk_shutdown(void)
 {
-	mtx_lock(&g_bsdk.lock);
-	if (!g_bsdk.initialized) {
-		mtx_unlock(&g_bsdk.lock);
+	mtx_lock(&g_vox.lock);
+	if (!g_vox.initialized) {
+		mtx_unlock(&g_vox.lock);
 		return;
 	}
 
 	/* Stop the handover state machine before anything it touches (UAs,
 	 * calls) is torn down.  Timers are cancelled after the re loop stops. */
-	bsdk_netmon_stop();
+	vox_netmon_stop();
 
-	BSDK_TRACE("[bsdk] shutdown: event_close\n");
-	bsdk_event_close();
+	VOX_TRACE("[vox] shutdown: event_close\n");
+	vox_event_close();
 
-	BSDK_TRACE("[bsdk] shutdown: stats/trace/msg/presence/audio\n");
-	bsdk_stats_close();
-	bsdk_trace_close();
-	bsdk_message_close();
-	bsdk_presence_close();
-	bsdk_audio_processing_close();
+	VOX_TRACE("[vox] shutdown: stats/trace/msg/presence/audio\n");
+	vox_stats_close();
+	vox_trace_close();
+	vox_message_close();
+	vox_presence_close();
+	vox_audio_processing_close();
 
-	BSDK_TRACE("[bsdk] shutdown: account loop\n");
+	VOX_TRACE("[vox] shutdown: account loop\n");
 	/* Hang up all active calls and free UAs on the re thread BEFORE stopping
 	 * the event loop.  ua_hangup() triggers audio stream teardown; audio
 	 * drivers interact with their own mainloops and must be called from the
 	 * same thread that opened the streams. */
 	struct le *le, *le_tmp;
-	LIST_FOREACH_SAFE(&g_bsdk.accounts, le, le_tmp) {
-		struct echosdk_account *acct = le->data;
+	LIST_FOREACH_SAFE(&g_vox.accounts, le, le_tmp) {
+		struct voxsdk_account *acct = le->data;
 		acct->destroyed = true;
 		tmr_cancel(&acct->retry_tmr);
 		tmr_cancel(&acct->reg_watch_tmr);
 		tmr_cancel(&acct->ka_tmr);
 		if (acct->ua)
-			bsdk_dispatch_sync(hangup_ua_fn, &acct->ua);
-		bsdk_acct_cfg_deep_free(acct);
+			vox_dispatch_sync(hangup_ua_fn, &acct->ua);
+		vox_acct_cfg_deep_free(acct);
 		list_unlink(&acct->le);
 		mem_deref(acct);
 	}
 
-	BSDK_TRACE("[bsdk] shutdown: re_loop_stop\n");
-	bsdk_re_loop_stop();
+	VOX_TRACE("[vox] shutdown: re_loop_stop\n");
+	vox_re_loop_stop();
 
 	/* After the loop has stopped so no handover timer can fire mid-teardown. */
-	BSDK_TRACE("[bsdk] shutdown: netmon_close\n");
-	bsdk_netmon_close();
-	bsdk_call_setup_watch_close();
+	VOX_TRACE("[vox] shutdown: netmon_close\n");
+	vox_netmon_close();
+	vox_call_setup_watch_close();
 
-	BSDK_TRACE("[bsdk] shutdown: ua_close\n");
+	VOX_TRACE("[vox] shutdown: ua_close\n");
 	ua_close();
-	BSDK_TRACE("[bsdk] shutdown: module_app_unload\n");
+	VOX_TRACE("[vox] shutdown: module_app_unload\n");
 	module_app_unload();
-	BSDK_TRACE("[bsdk] shutdown: audio_external_close\n");
+	VOX_TRACE("[vox] shutdown: audio_external_close\n");
 	/* After ua_close/module unload — every audio stream is gone, so no
 	 * device of ours can still be open — and before baresip_close(), whose
 	 * baresip_init() counterpart re-inits ausrcl/auplayl and would strand
 	 * a registration we still believe we hold. */
-	bsdk_audio_external_close();
+	vox_audio_external_close();
 #ifdef __ANDROID__
 	/* After ua_close/module unload — all audio streams are gone, the
 	 * OpenSLES engine can be destroyed. */
-	bsdk_sles_vc_close();
+	vox_sles_vc_close();
 #endif
 	/* Put the ice module's vtable back before baresip_close() unloads it. */
-	bsdk_ice_shim_close();
-	BSDK_TRACE("[bsdk] shutdown: dns_close\n");
-	bsdk_dns_close();
-	BSDK_TRACE("[bsdk] shutdown: baresip_close\n");
+	vox_ice_shim_close();
+	VOX_TRACE("[vox] shutdown: dns_close\n");
+	vox_dns_close();
+	VOX_TRACE("[vox] shutdown: baresip_close\n");
 	baresip_close();
-	BSDK_TRACE("[bsdk] shutdown: cfg_deep_free\n");
-	bsdk_cfg_deep_free(&g_bsdk);
-	BSDK_TRACE("[bsdk] shutdown: pcap_close\n");
-	bsdk_pcap_close();
-	BSDK_TRACE("[bsdk] shutdown: libre_close\n");
+	VOX_TRACE("[vox] shutdown: cfg_deep_free\n");
+	vox_cfg_deep_free(&g_vox);
+	VOX_TRACE("[vox] shutdown: pcap_close\n");
+	vox_pcap_close();
+	VOX_TRACE("[vox] shutdown: libre_close\n");
 	libre_close();
-	BSDK_TRACE("[bsdk] shutdown: log_close\n");
-	bsdk_log_close();
+	VOX_TRACE("[vox] shutdown: log_close\n");
+	vox_log_close();
 
-	BSDK_TRACE("[bsdk] shutdown: call/tap reset\n");
-	bsdk_call_global_reset();
-	bsdk_tap_global_reset();
+	VOX_TRACE("[vox] shutdown: call/tap reset\n");
+	vox_call_global_reset();
+	vox_tap_global_reset();
 
-	BSDK_TRACE("[bsdk] shutdown: done\n");
-	g_bsdk.initialized = false;
-	mtx_unlock(&g_bsdk.lock);
+	VOX_TRACE("[vox] shutdown: done\n");
+	g_vox.initialized = false;
+	mtx_unlock(&g_vox.lock);
 }
 
-/* ── echosdk_version ─────────────────────────────────────────────────────── */
+/* ── voxsdk_version ─────────────────────────────────────────────────────── */
 
-const char *echosdk_version(void)
+const char *voxsdk_version(void)
 {
 	return "1.0.0";
 }

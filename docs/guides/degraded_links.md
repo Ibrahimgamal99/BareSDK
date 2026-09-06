@@ -29,8 +29,8 @@ also switch off RTCP accounting inside baresip, which silently disables quality
 alerts, media-stall detection and adaptive bitrate along with it.
 
 ```c
-echosdk_config_t cfg;
-echosdk_config_init(&cfg);        /* sensible defaults for all of the below */
+voxsdk_config_t cfg;
+voxsdk_config_init(&cfg);        /* sensible defaults for all of the below */
 
 cfg.stats_interval_ms = 2000;     /* required by everything here */
 ```
@@ -47,8 +47,8 @@ cfg.media_stall_ms = 4000;   /* warn  — default */
 cfg.rtp_timeout_s  = 0;      /* end   — default off */
 ```
 
-`media_stall_ms` fires `ECHOSDK_EV_QUALITY_ALERT` with issue
-`ECHOSDK_QUALITY_MEDIA_STALL` when inbound RTP stops advancing, and fires again
+`media_stall_ms` fires `VOXSDK_EV_QUALITY_ALERT` with issue
+`VOXSDK_QUALITY_MEDIA_STALL` when inbound RTP stops advancing, and fires again
 with `recovering = true` when it resumes. The call is left alone. This is what
 turns "the user says they can't hear anything" into an event you can act on.
 
@@ -57,9 +57,9 @@ by default because ending a call is destructive and some deployments run
 legitimate one-way media. 30–60 s is the usual choice when it is wanted.
 
 ```c
-case ECHOSDK_EV_QUALITY_ALERT: {
-    const echosdk_ev_quality_alert_t *a = &ev->u.quality_alert;
-    if (a->issue != ECHOSDK_QUALITY_MEDIA_STALL)
+case VOXSDK_EV_QUALITY_ALERT: {
+    const voxsdk_ev_quality_alert_t *a = &ev->u.quality_alert;
+    if (a->issue != VOXSDK_QUALITY_MEDIA_STALL)
         break;
     if (a->recovering)
         ui_clear_warning(a->call);
@@ -74,7 +74,7 @@ handover migration is in flight (`netmon` is already narrating that outage in
 richer terms). Per-call override:
 
 ```c
-echosdk_call_set_rtp_timeout(call, 45);   /* 0 = never, for this call */
+voxsdk_call_set_rtp_timeout(call, 45);   /* 0 = never, for this call */
 ```
 
 ---
@@ -103,9 +103,9 @@ proxy. It does two jobs at once:
   SDK re-REGISTERs immediately instead of waiting up to an hour.
 
 A probe that goes unanswered is also reported: the account moves to
-`ECHOSDK_REG_RECONNECTING`, so an app whose status indicator is bound to the
+`VOXSDK_REG_RECONNECTING`, so an app whose status indicator is bound to the
 registration state says "Reconnecting…" for a binding that is registered on
-paper and unreachable in fact. It goes back to `ECHOSDK_REG_REGISTERED` when the
+paper and unreachable in fact. It goes back to `VOXSDK_REG_REGISTERED` when the
 re-REGISTER lands — or, with `keepalive_reregister` off, when a later probe is
 answered again.
 
@@ -116,7 +116,7 @@ uplink is exactly wrong.
 On foreground or push wake, ask directly rather than waiting for the tick:
 
 ```c
-echosdk_account_keepalive_now(account);
+voxsdk_account_keepalive_now(account);
 ```
 
 ---
@@ -136,7 +136,7 @@ cfg.sip_timer_f_ms = 10000;   /* REGISTER with no response         */
 come back. Once a provisional response arrives the call moves to `RINGING`, the
 far end is demonstrably reachable, and how long to let it ring is a product
 decision, not a transport timeout. On expiry the call is cancelled with 408 and
-surfaces as `ECHOSDK_CALL_FAILED` / `ECHOSDK_ERR_TIMEOUT`.
+surfaces as `VOXSDK_CALL_FAILED` / `VOXSDK_ERR_TIMEOUT`.
 
 `sip_t1_ms` and `sip_t2_ms` exist for completeness and have no effect —
 retransmission intervals live inside libre's transaction layer.
@@ -193,8 +193,8 @@ there is nothing to vary.
 At runtime:
 
 ```c
-echosdk_set_adaptive_bitrate(true, 8000, 24000);
-echosdk_call_set_bitrate(call, 16000);   /* manual; 0 = negotiated rate */
+voxsdk_set_adaptive_bitrate(true, 8000, 24000);
+voxsdk_call_set_bitrate(call, 16000);   /* manual; 0 = negotiated rate */
 ```
 
 ### Opus FEC needs both settings

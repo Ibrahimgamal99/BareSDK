@@ -2,7 +2,7 @@
  * @file ca_android.c  Android CA trust store
  *
  * Moved here from core.c so every platform answers the same
- * bsdk_platform_ca_bundle() hook — see platform/ios/ca_ios.c for why the hook
+ * vox_platform_ca_bundle() hook — see platform/ios/ca_ios.c for why the hook
  * exists at all (libre never calls SSL_CTX_set_default_verify_paths(), so an
  * unset CAfile means an empty X509_STORE and a failed handshake on every
  * TLS/WSS registration).
@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <re.h>
-#include "../../src/echosdk_internal.h"
+#include "../../src/voxsdk_internal.h"
 
 /* ── Android CA bundle ───────────────────────────────────────────────────────
  *
@@ -27,7 +27,7 @@
  *
  * Returns a static path on success, or NULL to leave ca_cert_path unset.
  */
-const char *bsdk_platform_ca_bundle(const char *dir)
+const char *vox_platform_ca_bundle(const char *dir)
 {
 	/* Conscrypt's copy is the live store on Android 14+, where the platform
 	 * one under /system can be stale. Prefer it, fall back for older. */
@@ -80,7 +80,7 @@ const char *bsdk_platform_ca_bundle(const char *dir)
 	fclose(out);
 
 	if (!written) {
-		warning("EchoSDK: no Android system CAs found; TLS server "
+		warning("VoxSDK: no Android system CAs found; TLS server "
 		        "verification will fail unless ca_cert_path is set\n");
 		return NULL;
 	}

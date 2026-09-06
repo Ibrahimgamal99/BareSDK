@@ -2,27 +2,27 @@
 
 ## Init/shutdown trace
 
-`echosdk_init()` and `echosdk_shutdown()` walk through ~14 stages. To trace which step a hang or crash occurs at, set the `ECHOSDK_DEBUG_INIT` env var before launching:
+`voxsdk_init()` and `voxsdk_shutdown()` walk through ~14 stages. To trace which step a hang or crash occurs at, set the `VOXSDK_DEBUG_INIT` env var before launching:
 
 ```bash
 # Linux / macOS
-ECHOSDK_DEBUG_INIT=1 ./your_app
+VOXSDK_DEBUG_INIT=1 ./your_app
 ```
 
 ```powershell
 # Windows
-$env:ECHOSDK_DEBUG_INIT=1
+$env:VOXSDK_DEBUG_INIT=1
 .\your_app.exe
 ```
 
 Output looks like:
 
 ```
-[bsdk] step 1: deep_copy
-[bsdk] step 2: log_init
-[bsdk] step 3: libre_init
+[vox] step 1: deep_copy
+[vox] step 2: log_init
+[vox] step 3: libre_init
 ...
-[bsdk] step 14: done
+[vox] step 14: done
 ```
 
 Leave the variable unset for normal (silent) operation.
@@ -49,11 +49,11 @@ Enable per-message SIP tracing:
 cfg.trace_sip = true;
 ```
 
-Each `ECHOSDK_EV_SIP_TRACE` event contains the full SIP message. Log it:
+Each `VOXSDK_EV_SIP_TRACE` event contains the full SIP message. Log it:
 
 ```c
-case ECHOSDK_EV_SIP_TRACE: {
-    const char *dir = (ev->u.sip_trace.dir == ECHOSDK_MEDIA_DIR_TX)
+case VOXSDK_EV_SIP_TRACE: {
+    const char *dir = (ev->u.sip_trace.dir == VOXSDK_MEDIA_DIR_TX)
                       ? "SEND" : "RECV";
     printf("[%s %s %s]\n%s\n",
            dir, ev->u.sip_trace.transport,
@@ -81,9 +81,9 @@ case ECHOSDK_EV_SIP_TRACE: {
 Write packets to a file for Wireshark analysis:
 
 ```c
-echosdk_pcap_start("/tmp/debug.pcap");
+voxsdk_pcap_start("/tmp/debug.pcap");
 // ... reproduce issue ...
-echosdk_pcap_stop();
+voxsdk_pcap_stop();
 ```
 
 Open in Wireshark:
@@ -120,10 +120,10 @@ Enable SDP diff to see codec and encryption negotiation:
 cfg.trace_sdp_diff = true;
 ```
 
-The `ECHOSDK_EV_SDP_NEGOTIATION` event shows:
+The `VOXSDK_EV_SDP_NEGOTIATION` event shows:
 
 ```c
-case ECHOSDK_EV_SDP_NEGOTIATION: {
+case VOXSDK_EV_SDP_NEGOTIATION: {
     printf("Codec: %s  Crypto: %s\n",
            ev->u.sdp.negotiated_codec,
            ev->u.sdp.negotiated_crypto);
@@ -147,7 +147,7 @@ cfg.stats_interval_ms = 3000;
 ```
 
 ```c
-case ECHOSDK_EV_MEDIA_STATS: {
+case VOXSDK_EV_MEDIA_STATS: {
     printf("MOS-LQ=%.2f loss=%.1f%% jitter=%.1fms RTT=%.1fms\n",
            ev->u.stats.mos_lq, ev->u.stats.loss_pct,
            ev->u.stats.jitter_ms, ev->u.stats.rtt_ms);
@@ -170,7 +170,7 @@ case ECHOSDK_EV_MEDIA_STATS: {
 
 | Problem | Check |
 |---|---|
-| No REGISTER sent | `echosdk_account_register()` called? Network reachable? |
+| No REGISTER sent | `voxsdk_account_register()` called? Network reachable? |
 | 401 Unauthorized | Wrong `uri` or `password`; check `auth_user` override |
 | 403 Forbidden | Account not provisioned on server; check `uri` domain |
 | 408 Timeout | Wrong `server_host`/`server_port`; firewall blocks SIP port |
@@ -189,7 +189,7 @@ attempt 4: wait 16s
 max:      wait 5 min  (reg_retry_max_ms)
 ```
 
-Monitor retries via `retry_attempt` and `retry_delay_ms` in `ECHOSDK_EV_REG_STATE`.
+Monitor retries via `retry_attempt` and `retry_delay_ms` in `VOXSDK_EV_REG_STATE`.
 
 ---
 
@@ -197,13 +197,13 @@ Monitor retries via `retry_attempt` and `retry_delay_ms` in `ECHOSDK_EV_REG_STAT
 
 | Code | Meaning | Action |
 |---|---|---|
-| `ECHOSDK_ERR_DNS` | Cannot resolve server hostname | Check DNS / network |
-| `ECHOSDK_ERR_TRANSPORT` | TCP/TLS/WebSocket connection failed | Check firewall, TLS cert |
-| `ECHOSDK_ERR_AUTH` | SIP authentication failed | Verify credentials |
-| `ECHOSDK_ERR_TIMEOUT` | No response (timer B/F expired) | Check server reachability |
-| `ECHOSDK_ERR_SERVER_5XX` | Server error | Check server logs |
-| `ECHOSDK_ERR_WS_PROTOCOL_REJECTED` | WebSocket upgrade rejected | Check `ws_origin`, server config |
-| `ECHOSDK_ERR_STATE` | API called in wrong lifecycle state | Check call/account state before calling |
+| `VOXSDK_ERR_DNS` | Cannot resolve server hostname | Check DNS / network |
+| `VOXSDK_ERR_TRANSPORT` | TCP/TLS/WebSocket connection failed | Check firewall, TLS cert |
+| `VOXSDK_ERR_AUTH` | SIP authentication failed | Verify credentials |
+| `VOXSDK_ERR_TIMEOUT` | No response (timer B/F expired) | Check server reachability |
+| `VOXSDK_ERR_SERVER_5XX` | Server error | Check server logs |
+| `VOXSDK_ERR_WS_PROTOCOL_REJECTED` | WebSocket upgrade rejected | Check `ws_origin`, server config |
+| `VOXSDK_ERR_STATE` | API called in wrong lifecycle state | Check call/account state before calling |
 
 ---
 
@@ -216,8 +216,8 @@ legitimate one. These are the log lines the SDK emits so that does not happen.
 ### The BYE that never left
 
 ```
-EchoSDK/sipsess: BYE queued
-EchoSDK/sipsess: BYE could not be sent (…) — the peer will stay on the call
+VoxSDK/sipsess: BYE queued
+VoxSDK/sipsess: BYE could not be sent (…) — the peer will stay on the call
                  until it gives up on its own
 ```
 
@@ -234,7 +234,7 @@ far end stays connected. Read the line at teardown:
 ### In-dialog requests routed away from the WebSocket flow
 
 ```
-EchoSDK: ws in-dialog route echo:5060 is not the registration flow;
+VoxSDK: ws in-dialog route echo:5060 is not the registration flow;
          routing over pbx.example.com:443 instead (RFC 7118 B.2)
 ```
 
@@ -248,7 +248,7 @@ was accepted. This line means the SDK put it back on the registration flow.
 ### ICE candidates the peer was never told about
 
 ```
-EchoSDK/ice: selected local candidate <addr> was never signalled (offered <addr>)
+VoxSDK/ice: selected local candidate <addr> was never signalled (offered <addr>)
              — re-offering so the peer accepts our media
 ```
 
@@ -260,7 +260,7 @@ the one on network handover, logged as `restarting ICE on <addr>`.
 ### ICE gathering that never finishes
 
 ```
-EchoSDK/ice: candidate gathering did not complete in time; offering the
+VoxSDK/ice: candidate gathering did not complete in time; offering the
              candidates gathered so far (cfg.ice_gathering_timeout_ms=2000)
 ```
 
@@ -274,7 +274,7 @@ dial, `restart` for the re-gather of an ICE restart on network handover.
 ### ICE restart on handover
 
 ```
-EchoSDK/ice: restarting ICE on 100.82.7.19 — new credentials, re-gathering,
+VoxSDK/ice: restarting ICE on 100.82.7.19 — new credentials, re-gathering,
              re-INVITE follows within 2000 ms
 ```
 
@@ -289,8 +289,8 @@ If a call still fails to migrate, look for the reasons a restart could not be
 performed:
 
 ```
-EchoSDK/ice: restart: replacement session failed (...) — keeping the current ICE state
-EchoSDK/ice: restart gathering failed (...) — offering the candidates gathered so far
+VoxSDK/ice: restart: replacement session failed (...) — keeping the current ICE state
+VoxSDK/ice: restart gathering failed (...) — offering the candidates gathered so far
 ```
 
 The first falls back to the plain re-INVITE and emits `CALL_ICE_STALE`; the
@@ -331,9 +331,9 @@ A WSS/WebRTC-facing PBX always offers `SAVPF`; set `media_enc` to DTLS-SRTP.
 ## Debug workflow
 
 1. Set `log_level = 2`, `trace_sip = true`, `trace_sdp_diff = true`.
-2. Start pcap capture: `echosdk_pcap_start("debug.pcap")`.
+2. Start pcap capture: `voxsdk_pcap_start("debug.pcap")`.
 3. Reproduce the issue.
-4. Stop pcap: `echosdk_pcap_stop()`.
+4. Stop pcap: `voxsdk_pcap_stop()`.
 5. Review SIP trace output for message flow.
 6. Open pcap in Wireshark for detailed analysis.
 7. Set `log_level = 3` if more detail is needed.

@@ -14,7 +14,7 @@
  *
  *   1. Media-stall detection.  Watch the inbound RTP packet counter.  When it
  *      stops advancing for cfg.media_stall_ms, raise a non-fatal
- *      ECHOSDK_QUALITY_MEDIA_STALL alert; raise it again with `recovering`
+ *      VOXSDK_QUALITY_MEDIA_STALL alert; raise it again with `recovering`
  *      when packets resume.  This is deliberately *not* a call teardown —
  *      cfg.rtp_timeout_s (baresip's avt.rtp_timeout) is there for apps that
  *      want the fatal version, and it defaults to off because ending a call
@@ -47,42 +47,42 @@
  * All functions here run on the re_main thread.
  */
 
-#include "echosdk_internal.h"
+#include "voxsdk_internal.h"
 
 /* Opus refuses a maxaveragebitrate outside this range (modules/opus/sdp.c),
  * so a target outside it would be silently ignored rather than clamped. */
-#define BSDK_ADAPT_BR_MIN   6000u
-#define BSDK_ADAPT_BR_MAX 510000u
+#define VOX_ADAPT_BR_MIN   6000u
+#define VOX_ADAPT_BR_MAX 510000u
 
 /* ── Config accessors (0 in the config means "use the documented default") ── */
 
 static uint32_t adapt_min_br(void)
 {
-	uint32_t v = g_bsdk.cfg.adapt_min_bitrate ? g_bsdk.cfg.adapt_min_bitrate
+	uint32_t v = g_vox.cfg.adapt_min_bitrate ? g_vox.cfg.adapt_min_bitrate
 	                                          : 12000u;
-	return v < BSDK_ADAPT_BR_MIN ? BSDK_ADAPT_BR_MIN : v;
+	return v < VOX_ADAPT_BR_MIN ? VOX_ADAPT_BR_MIN : v;
 }
 
 static uint32_t adapt_max_br(void)
 {
-	uint32_t v = g_bsdk.cfg.adapt_max_bitrate ? g_bsdk.cfg.adapt_max_bitrate
+	uint32_t v = g_vox.cfg.adapt_max_bitrate ? g_vox.cfg.adapt_max_bitrate
 	                                          : 32000u;
-	if (v > BSDK_ADAPT_BR_MAX)
-		v = BSDK_ADAPT_BR_MAX;
+	if (v > VOX_ADAPT_BR_MAX)
+		v = VOX_ADAPT_BR_MAX;
 	/* A max below min would make every step a no-op in one direction. */
 	return v < adapt_min_br() ? adapt_min_br() : v;
 }
 
 static float adapt_down_pct(void)
 {
-	return g_bsdk.cfg.adapt_loss_down_pct > 0.f
-	     ? g_bsdk.cfg.adapt_loss_down_pct : 5.0f;
+	return g_vox.cfg.adapt_loss_down_pct > 0.f
+	     ? g_vox.cfg.adapt_loss_down_pct : 5.0f;
 }
 
 static float adapt_up_pct(void)
 {
-	float up = g_bsdk.cfg.adapt_loss_up_pct > 0.f
-	         ? g_bsdk.cfg.adapt_loss_up_pct : 1.0f;
+	float up = g_vox.cfg.adapt_loss_up_pct > 0.f
+	         ? g_vox.cfg.adapt_loss_up_pct : 1.0f;
 	/* Keep the dead band non-empty; equal thresholds would let a single
 	 * loss reading both trigger a step down and count as a clean tick. */
 	return up >= adapt_down_pct() ? adapt_down_pct() * 0.5f : up;
@@ -90,7 +90,7 @@ static float adapt_up_pct(void)
 
 static uint32_t adapt_recover_ticks(void)
 {
-	return g_bsdk.cfg.adapt_recover_ticks ? g_bsdk.cfg.adapt_recover_ticks
+	return g_vox.cfg.adapt_recover_ticks ? g_vox.cfg.adapt_recover_ticks
 	                                      : 5u;
 }
 
@@ -111,7 +111,7 @@ static uint32_t adapt_recover_ticks(void)
  * @param bitrate  bps to advertise, or 0 to only strip.
  * @return 0 on success, EINVAL on overflow (caller then leaves the rate be).
  */
-int bsdk_adapt_fmtp_set_bitrate(char *buf, size_t sz, const char *src,
+int vox_adapt_fmtp_set_bitrate(char *buf, size_t sz, const char *src,
                                 uint32_t bitrate)
 {
 	static const char key[] = "maxaveragebitrate";
@@ -167,7 +167,7 @@ int bsdk_adapt_fmtp_set_bitrate(char *buf, size_t sz, const char *src,
  * the negotiated codec has no encoder-update handler, which is how a G.711
  * call reports "nothing to adapt".
  */
-int bsdk_adapt_apply_bitrate(struct echosdk_call *lc, uint32_t bitrate)
+int vox_adapt_apply_bitrate(struct voxsdk_call *lc, uint32_t bitrate)
 {
 	struct audio            *au;
 	struct stream           *strm;
@@ -195,7 +195,7 @@ int bsdk_adapt_apply_bitrate(struct echosdk_call *lc, uint32_t bitrate)
 	if (!ac->encupdh)
 		return ENOTSUP;   /* fixed-rate codec — nothing to vary */
 
-	err = bsdk_adapt_fmtp_set_bitrate(fmtp, sizeof(fmtp), sc->params,
+	err = vox_adapt_fmtp_set_bitrate(fmtp, sizeof(fmtp), sc->params,
 	                                  bitrate);
 	if (err)
 		return err;
@@ -216,7 +216,7 @@ int bsdk_adapt_apply_bitrate(struct echosdk_call *lc, uint32_t bitrate)
  * (cmake/patches/dtls_srtp-state.new), so a handshake that is going to
  * complete at all can still be trying 11.2 s in.  This spans it, and matches
  * the deadline ice_shim.c holds its candidate re-offer for. */
-#define BSDK_MEDIA_SETUP_GRACE_MS 12000
+#define VOX_MEDIA_SETUP_GRACE_MS 12000
 
 /**
  * Is this call's media encryption still being set up?
@@ -236,17 +236,17 @@ int bsdk_adapt_apply_bitrate(struct echosdk_call *lc, uint32_t bitrate)
  * so holds for the full grace once — bounded, once per call, and the alert
  * still follows.
  */
-static bool media_setup_pending(const struct echosdk_call *lc)
+static bool media_setup_pending(const struct voxsdk_call *lc)
 {
 	struct list *streaml;
 	struct le *le;
-	echosdk_media_enc_t enc;
+	voxsdk_media_enc_t enc;
 
 	if (!lc->bc)
 		return false;
 
-	enc = lc->acct ? lc->acct->cfg.media_enc : g_bsdk.cfg.media_enc;
-	if (enc != ECHOSDK_MEDIA_ENC_DTLS_SRTP)
+	enc = lc->acct ? lc->acct->cfg.media_enc : g_vox.cfg.media_enc;
+	if (enc != VOXSDK_MEDIA_ENC_DTLS_SRTP)
 		return false;
 
 	streaml = call_streaml(lc->bc);
@@ -263,24 +263,24 @@ static bool media_setup_pending(const struct echosdk_call *lc)
 	return false;
 }
 
-static void stall_clear(struct echosdk_call *lc, uint32_t elapsed_ms)
+static void stall_clear(struct voxsdk_call *lc, uint32_t elapsed_ms)
 {
 	if (!lc->stall_active)
 		return;
 
 	lc->stall_active = false;
-	bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MEDIA_STALL,
+	vox_post_quality_alert(lc, VOXSDK_QUALITY_MEDIA_STALL,
 	                        (float)elapsed_ms,
-	                        (float)g_bsdk.cfg.media_stall_ms, true);
+	                        (float)g_vox.cfg.media_stall_ms, true);
 }
 
-static void stall_tick(struct echosdk_call *lc,
-                        const echosdk_ev_media_stats_t *s)
+static void stall_tick(struct voxsdk_call *lc,
+                        const voxsdk_ev_media_stats_t *s)
 {
 	uint64_t now = tmr_jiffies();
 	uint32_t elapsed;
 
-	if (!g_bsdk.cfg.media_stall_ms)
+	if (!g_vox.cfg.media_stall_ms)
 		return;
 
 	/* A held call carries no RTP by design, and a call mid-handover has
@@ -288,12 +288,12 @@ static void stall_tick(struct echosdk_call *lc,
 	 * MIGRATED / MIGRATION_FAILED).  Reporting a stall in either case would
 	 * be a second, less informative voice on the same event — so treat both
 	 * as a fresh start rather than a stall. */
-	if (lc->state == ECHOSDK_CALL_HELD || lc->local_hold ||
+	if (lc->state == VOXSDK_CALL_HELD || lc->local_hold ||
 	    call_is_onhold(lc->bc) ||
-	    lc->net_mig_state == BSDK_MIG_STALLED ||
-	    lc->net_mig_state == BSDK_MIG_WAIT_ADDR ||
-	    lc->net_mig_state == BSDK_MIG_DEFERRED ||
-	    lc->net_mig_state == BSDK_MIG_SENT) {
+	    lc->net_mig_state == VOX_MIG_STALLED ||
+	    lc->net_mig_state == VOX_MIG_WAIT_ADDR ||
+	    lc->net_mig_state == VOX_MIG_DEFERRED ||
+	    lc->net_mig_state == VOX_MIG_SENT) {
 
 		stall_clear(lc, 0);
 		lc->stall_rx_packets = s->packets_received;
@@ -313,20 +313,20 @@ static void stall_tick(struct echosdk_call *lc,
 	 * classic symptom of a NAT that never opened — is reported too. */
 	elapsed = (uint32_t)(now - lc->stall_since);
 
-	if (!lc->stall_active && elapsed >= g_bsdk.cfg.media_stall_ms) {
+	if (!lc->stall_active && elapsed >= g_vox.cfg.media_stall_ms) {
 
 		/* Media that has not started yet has not stalled.  Give the
 		 * handshake its ladder before calling this a fault — the alert
 		 * and the repair both still follow if it never lands, they just
 		 * stop arriving while it is still plausibly in flight. */
-		if (elapsed < BSDK_MEDIA_SETUP_GRACE_MS &&
+		if (elapsed < VOX_MEDIA_SETUP_GRACE_MS &&
 		    media_setup_pending(lc))
 			return;
 
 		lc->stall_active = true;
-		bsdk_post_quality_alert(lc, ECHOSDK_QUALITY_MEDIA_STALL,
+		vox_post_quality_alert(lc, VOXSDK_QUALITY_MEDIA_STALL,
 		                        (float)elapsed,
-		                        (float)g_bsdk.cfg.media_stall_ms, false);
+		                        (float)g_vox.cfg.media_stall_ms, false);
 
 		/* Reporting it is not the same as doing something about it.  The
 		 * repair is netmon's — the route may have moved under the call
@@ -334,18 +334,18 @@ static void stall_tick(struct echosdk_call *lc,
 		 * address our flow uses), none of which raises a local address
 		 * change for netmon to notice on its own.  It is bounded and
 		 * rate-limited there, and it declines calls it cannot help. */
-		bsdk_netmon_call_stalled(lc);
+		vox_netmon_call_stalled(lc);
 	}
 }
 
 /* ── Bitrate adaptation ──────────────────────────────────────────────────── */
 
-static void bitrate_tick(struct echosdk_call *lc,
-                          const echosdk_ev_media_stats_t *s)
+static void bitrate_tick(struct voxsdk_call *lc,
+                          const voxsdk_ev_media_stats_t *s)
 {
 	uint32_t min_br, max_br, cur, next;
 
-	if (!g_bsdk.cfg.adaptive_bitrate)
+	if (!g_vox.cfg.adaptive_bitrate)
 		return;
 
 	/* loss_pct is derived from the peer's receiver report, which baresip
@@ -388,16 +388,16 @@ static void bitrate_tick(struct echosdk_call *lc,
 	if (next == cur)
 		return;
 
-	if (bsdk_adapt_apply_bitrate(lc, next))
+	if (vox_adapt_apply_bitrate(lc, next))
 		return;   /* fixed-rate codec or transient error — try again later */
 
-	info("EchoSDK: adaptive bitrate %u -> %u bps (loss %.1f%%)\n",
+	info("VoxSDK: adaptive bitrate %u -> %u bps (loss %.1f%%)\n",
 	     cur, next, s->loss_pct);
 }
 
 /* ── Entry points ────────────────────────────────────────────────────────── */
 
-void bsdk_adapt_call_start(struct echosdk_call *lc)
+void vox_adapt_call_start(struct voxsdk_call *lc)
 {
 	if (!lc)
 		return;
@@ -409,8 +409,8 @@ void bsdk_adapt_call_start(struct echosdk_call *lc)
 	lc->stall_since       = tmr_jiffies();
 }
 
-void bsdk_adapt_tick(struct echosdk_call *lc,
-                      const echosdk_ev_media_stats_t *s)
+void vox_adapt_tick(struct voxsdk_call *lc,
+                      const voxsdk_ev_media_stats_t *s)
 {
 	if (!lc || !lc->bc || !s)
 		return;
@@ -422,7 +422,7 @@ void bsdk_adapt_tick(struct echosdk_call *lc,
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_call *lc;
+	struct voxsdk_call *lc;
 	uint32_t             bitrate;
 	int                  result;
 } setbr_ctx_t;
@@ -430,29 +430,29 @@ typedef struct {
 static void set_bitrate_fn(void *arg)
 {
 	setbr_ctx_t *ctx = arg;
-	int err = bsdk_adapt_apply_bitrate(ctx->lc, ctx->bitrate);
+	int err = vox_adapt_apply_bitrate(ctx->lc, ctx->bitrate);
 
 	switch (err) {
-	case 0:       ctx->result = ECHOSDK_OK;            break;
-	case EINVAL:  ctx->result = ECHOSDK_ERR_INVAL;     break;
+	case 0:       ctx->result = VOXSDK_OK;            break;
+	case EINVAL:  ctx->result = VOXSDK_ERR_INVAL;     break;
 	case ENOENT:
-	case ENOTSUP: ctx->result = ECHOSDK_ERR_STATE;     break;
-	default:      ctx->result = ECHOSDK_ERR_TRANSPORT; break;
+	case ENOTSUP: ctx->result = VOXSDK_ERR_STATE;     break;
+	default:      ctx->result = VOXSDK_ERR_TRANSPORT; break;
 	}
 }
 
-int echosdk_call_set_bitrate(echosdk_call_handle_t call, uint32_t bitrate_bps)
+int voxsdk_call_set_bitrate(voxsdk_call_handle_t call, uint32_t bitrate_bps)
 {
 	setbr_ctx_t ctx = { .lc = call, .bitrate = bitrate_bps, .result = 0 };
 	int err;
 
 	if (!call)
-		return ECHOSDK_ERR_INVAL;
-	if (bitrate_bps && (bitrate_bps < BSDK_ADAPT_BR_MIN ||
-	                    bitrate_bps > BSDK_ADAPT_BR_MAX))
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
+	if (bitrate_bps && (bitrate_bps < VOX_ADAPT_BR_MIN ||
+	                    bitrate_bps > VOX_ADAPT_BR_MAX))
+		return VOXSDK_ERR_INVAL;
 
-	err = bsdk_dispatch_sync(set_bitrate_fn, &ctx);
+	err = vox_dispatch_sync(set_bitrate_fn, &ctx);
 	return err ? err : ctx.result;
 }
 
@@ -466,25 +466,25 @@ static void set_adaptive_fn(void *arg)
 {
 	adaptcfg_ctx_t *ctx = arg;
 
-	g_bsdk.cfg.adaptive_bitrate = ctx->enabled;
+	g_vox.cfg.adaptive_bitrate = ctx->enabled;
 	if (ctx->min_bps)
-		g_bsdk.cfg.adapt_min_bitrate = ctx->min_bps;
+		g_vox.cfg.adapt_min_bitrate = ctx->min_bps;
 	if (ctx->max_bps)
-		g_bsdk.cfg.adapt_max_bitrate = ctx->max_bps;
+		g_vox.cfg.adapt_max_bitrate = ctx->max_bps;
 }
 
-void echosdk_set_adaptive_bitrate(bool enabled, uint32_t min_bps,
+void voxsdk_set_adaptive_bitrate(bool enabled, uint32_t min_bps,
                                    uint32_t max_bps)
 {
 	adaptcfg_ctx_t ctx = { .enabled = enabled, .min_bps = min_bps,
 	                       .max_bps = max_bps };
-	(void)bsdk_dispatch_sync(set_adaptive_fn, &ctx);
+	(void)vox_dispatch_sync(set_adaptive_fn, &ctx);
 }
 
 /* ── Per-call RTP timeout ────────────────────────────────────────────────── */
 
 typedef struct {
-	struct echosdk_call *lc;
+	struct voxsdk_call *lc;
 	uint32_t             seconds;
 	int                  result;
 } rtptmo_ctx_t;
@@ -492,10 +492,10 @@ typedef struct {
 static void set_rtp_timeout_fn(void *arg)
 {
 	rtptmo_ctx_t *ctx = arg;
-	struct echosdk_call *lc = ctx->lc;
+	struct voxsdk_call *lc = ctx->lc;
 
 	if (!lc->bc) {
-		ctx->result = ECHOSDK_ERR_STATE;
+		ctx->result = VOXSDK_ERR_STATE;
 		return;
 	}
 
@@ -512,17 +512,17 @@ static void set_rtp_timeout_fn(void *arg)
 		if (strm)
 			stream_enable_rtp_timeout(strm, ctx->seconds * 1000u);
 	}
-	ctx->result = ECHOSDK_OK;
+	ctx->result = VOXSDK_OK;
 }
 
-int echosdk_call_set_rtp_timeout(echosdk_call_handle_t call, uint32_t seconds)
+int voxsdk_call_set_rtp_timeout(voxsdk_call_handle_t call, uint32_t seconds)
 {
 	rtptmo_ctx_t ctx = { .lc = call, .seconds = seconds, .result = 0 };
 	int err;
 
 	if (!call)
-		return ECHOSDK_ERR_INVAL;
+		return VOXSDK_ERR_INVAL;
 
-	err = bsdk_dispatch_sync(set_rtp_timeout_fn, &ctx);
+	err = vox_dispatch_sync(set_rtp_timeout_fn, &ctx);
 	return err ? err : ctx.result;
 }

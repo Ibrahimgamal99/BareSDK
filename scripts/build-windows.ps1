@@ -1,5 +1,5 @@
-# Build EchoSDK for Windows x64.
-# Output: dist\windows\x64\echosdk.dll + echosdk.lib (import lib) + bare.lib + dist\windows\x64\include\
+# Build VoxSDK for Windows x64.
+# Output: dist\windows\x64\voxsdk.dll + voxsdk.lib (import lib) + vox.lib + dist\windows\x64\include\
 #
 # Prerequisites:
 #   - Visual Studio 2022 (or 2019)
@@ -54,19 +54,19 @@ cmake -S $Root -B $BuildDir `
     -G "Visual Studio 17 2022" -A x64 `
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" `
     -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
-    -DECHOSDK_TLS=openssl `
-    -DECHOSDK_MODULES_PROFILE=desktop `
-    -DECHOSDK_WITH_WEBRTC_AEC=OFF
+    -DVOXSDK_TLS=openssl `
+    -DVOXSDK_MODULES_PROFILE=desktop `
+    -DVOXSDK_WITH_WEBRTC_AEC=OFF
 
 Write-Host "=== Building ==="
-cmake --build $BuildDir --config $BuildType --target echosdk
+cmake --build $BuildDir --config $BuildType --target voxsdk
 if ($LASTEXITCODE -ne 0) { Write-Error "cmake --build failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
 
 Write-Host "=== Installing ==="
 cmake --install $BuildDir --config $BuildType
 if ($LASTEXITCODE -ne 0) { Write-Error "cmake --install failed (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
 
-$StaticLib = Join-Path $Root "dist\windows\x64\bare.lib"
+$StaticLib = Join-Path $Root "dist\windows\x64\vox.lib"
 if (Test-Path $StaticLib) {
     $size = (Get-Item $StaticLib).Length / 1MB
     Write-Host ""
@@ -78,7 +78,7 @@ if (Test-Path $StaticLib) {
 
 # ── Link shared library (DLL, no extra runtime deps beyond MSVC CRT) ─────────
 # vcpkg x64-windows-static-md: OpenSSL + zlib statically embedded.
-# opus is already in bare.lib (built from third_party/opus by CMake).
+# opus is already in vox.lib (built from third_party/opus by CMake).
 # Windows system libs (ws2_32/crypt32/ole32/avrt etc.) are always present.
 $VcpkgLibs  = Join-Path $VcpkgRoot "installed\x64-windows-static-md\lib"
 $SslLib     = Join-Path $VcpkgLibs "libssl.lib"
@@ -105,15 +105,15 @@ if (-not (Test-Path $ZlibLib)) {
     exit 1
 }
 
-$DllPath = Join-Path $Root "dist\windows\x64\echosdk.dll"
-$DefPath = Join-Path $Root "dist\windows\x64\echosdk.def"
-$HeaderPath = Join-Path $Root "include\echosdk.h"
+$DllPath = Join-Path $Root "dist\windows\x64\voxsdk.dll"
+$DefPath = Join-Path $Root "dist\windows\x64\voxsdk.def"
+$HeaderPath = Join-Path $Root "include\voxsdk.h"
 
 Write-Host ""
 Write-Host "=== Generating DEF file ==="
 $exports = @()
 foreach ($line in Get-Content $HeaderPath) {
-    if ($line -match '^\s*ECHOSDK_EXPORT\s+.*?[*\s](\w+)\s*\(') {
+    if ($line -match '^\s*VOXSDK_EXPORT\s+.*?[*\s](\w+)\s*\(') {
         $exports += $Matches[1]
     }
 }
@@ -146,7 +146,7 @@ $LinkArgs = "/DLL /NOLOGO /DEF:`"$DefPath`" /OUT:`"$DllPath`" /WHOLEARCHIVE:`"$S
 if (Test-Path $VcvarsAll) {
     # Use call operator with properly escaped arguments
     $BatContent = "@echo off`ncall `"$VcvarsAll`" x64 >nul 2>&1`n`"$LinkExe`" $LinkArgs`n"
-    $TempBat = Join-Path $env:TEMP "link_echosdk.bat"
+    $TempBat = Join-Path $env:TEMP "link_voxsdk.bat"
     $BatContent | Out-File -FilePath $TempBat -Encoding ASCII
     & cmd /c $TempBat
     Remove-Item $TempBat -ErrorAction SilentlyContinue

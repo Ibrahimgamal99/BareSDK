@@ -13,7 +13,7 @@ $Deps = @(
     @{ Name = "baresip"; Url = "https://github.com/baresip/baresip.git"; Rev = "a9b3749608d129f0017ce940b24b777fa1f2d38b" }
     @{ Name = "opus";    Url = "https://github.com/xiph/opus.git";       Rev = "f8f99516092f4311a9b0784f190ff982df8eb2e6" }
 )
-if ($env:ECHOSDK_TLS -eq "mbedtls") {
+if ($env:VOXSDK_TLS -eq "mbedtls") {
     $Deps += @{ Name = "mbedtls"; Url = "https://github.com/Mbed-TLS/mbedtls.git"; Rev = "2f2b202f8e72ef01aa0b743ef9df2abb0a3527d9" }
 }
 

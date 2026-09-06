@@ -1,5 +1,5 @@
 # patch-baresip-sources.cmake
-# Apply EchoSDK's baresip patches at build time.  Two jobs:
+# Apply VoxSDK's baresip patches at build time.  Two jobs:
 #   1. Disable baresip's executables (baresip_exe, test/, webrtc/) everywhere.
 #   2. Make dtls_srtp recover from a handshake that is perturbed or stalls.
 # Usage: cmake -DSOURCE_DIR=path/to/baresip -P patch-baresip-sources.cmake
@@ -12,14 +12,14 @@
 #
 # The SDK owns the public websock_connect() and sip_dialog_route() names:
 # libre's definitions are renamed to __real_* (cmake/patch-re-sources.cmake)
-# and the only provider of the public symbols is EchoSDK's src/ws_path.c.
+# and the only provider of the public symbols is VoxSDK's src/ws_path.c.
 # baresip's executables link libre directly without ws_path.c, so they stop
 # linking — and the SDK only ever consumes libbaresip.a anyway.  This is the
 # executable-disabling half of what fix-msvc-baresip.cmake did for MSVC,
 # promoted to every platform now that the rename is unconditional.
 #
-# Idempotent behind the "# EchoSDK-disabled" marker (the legacy
-# "# EchoSDK-msvc-disabled" marker from fix-msvc-baresip.cmake also counts, so
+# Idempotent behind the "# VoxSDK-disabled" marker (the legacy
+# "# VoxSDK-msvc-disabled" marker from fix-msvc-baresip.cmake also counts, so
 # a Windows tree patched by the older script is left alone).
 
 if(NOT DEFINED SOURCE_DIR)
@@ -33,8 +33,8 @@ endif()
 
 file(READ "${BARESIP_CMAKE}" CONTENT)
 
-string(FIND "${CONTENT}" "# EchoSDK-disabled" _ALREADY)
-string(FIND "${CONTENT}" "# EchoSDK-msvc-disabled" _ALREADY_MSVC)
+string(FIND "${CONTENT}" "# VoxSDK-disabled" _ALREADY)
+string(FIND "${CONTENT}" "# VoxSDK-msvc-disabled" _ALREADY_MSVC)
 if(NOT _ALREADY EQUAL -1 OR NOT _ALREADY_MSVC EQUAL -1)
   message(STATUS "patch-baresip-sources: ${BARESIP_CMAKE} already patched (executables disabled)")
   set(_SKIP_EXES TRUE)
@@ -60,15 +60,15 @@ endforeach()
 
 string(REPLACE
   "add_subdirectory(webrtc)"
-  "# add_subdirectory(webrtc)  # EchoSDK-disabled"
+  "# add_subdirectory(webrtc)  # VoxSDK-disabled"
   CONTENT "${CONTENT}")
 string(REPLACE
   "add_subdirectory(test)"
-  "# add_subdirectory(test)  # EchoSDK-disabled"
+  "# add_subdirectory(test)  # VoxSDK-disabled"
   CONTENT "${CONTENT}")
 string(REPLACE
   "add_executable(baresip_exe src/main.c)"
-  "add_executable(baresip_exe EXCLUDE_FROM_ALL src/main.c)  # EchoSDK-disabled"
+  "add_executable(baresip_exe EXCLUDE_FROM_ALL src/main.c)  # VoxSDK-disabled"
   CONTENT "${CONTENT}")
 # The exe's OUTPUT_NAME collides with the library target's name: Ninja resolves
 # `--build --target baresip` to the FILE named baresip (the excluded exe) and
@@ -76,11 +76,11 @@ string(REPLACE
 # library on every generator.
 string(REPLACE
   "set_target_properties(baresip_exe PROPERTIES OUTPUT_NAME baresip)"
-  "set_target_properties(baresip_exe PROPERTIES OUTPUT_NAME baresip_exe)  # EchoSDK-disabled"
+  "set_target_properties(baresip_exe PROPERTIES OUTPUT_NAME baresip_exe)  # VoxSDK-disabled"
   CONTENT "${CONTENT}")
 string(REPLACE
   "install(TARGETS baresip_exe baresip"
-  "install(TARGETS baresip  # EchoSDK-disabled baresip_exe"
+  "install(TARGETS baresip  # VoxSDK-disabled baresip_exe"
   CONTENT "${CONTENT}")
 
 file(WRITE "${BARESIP_CMAKE}" "${CONTENT}")
@@ -130,7 +130,7 @@ if(NOT EXISTS "${DTLS_SRTP_C}")
 endif()
 
 file(READ "${DTLS_SRTP_C}" DCONTENT)
-string(FIND "${DCONTENT}" "EchoSDK-patched" _DTLS_DONE)
+string(FIND "${DCONTENT}" "VoxSDK-patched" _DTLS_DONE)
 
 if(NOT _DTLS_DONE EQUAL -1)
   message(STATUS "patch-baresip-sources: ${DTLS_SRTP_C} already patched (dtls recovery)")
@@ -189,7 +189,7 @@ if(NOT EXISTS "${ICE_C}")
 endif()
 
 file(READ "${ICE_C}" ICONTENT)
-string(FIND "${ICONTENT}" "EchoSDK-patched" _ICE_DONE)
+string(FIND "${ICONTENT}" "VoxSDK-patched" _ICE_DONE)
 
 if(NOT _ICE_DONE EQUAL -1)
   message(STATUS "patch-baresip-sources: ${ICE_C} already patched (interface selection)")

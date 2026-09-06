@@ -1,4 +1,4 @@
-/// EchoSDK example softphone.
+/// VoxSDK example softphone.
 ///
 /// Three tabs:
 ///  1. Account  — registration over UDP/TCP/TLS/WS/WSS, codec preference,
@@ -10,7 +10,7 @@ library;
 
 import 'dart:async';
 
-import 'package:echo_sdk/echo_sdk.dart';
+import 'package:vox_sdk/vox_sdk.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -18,16 +18,16 @@ import 'account_store.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const EchoSDKExampleApp());
+  runApp(const VoxSDKExampleApp());
 }
 
-class EchoSDKExampleApp extends StatelessWidget {
-  const EchoSDKExampleApp({super.key});
+class VoxSDKExampleApp extends StatelessWidget {
+  const VoxSDKExampleApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'EchoSDK example',
+      title: 'VoxSDK example',
       theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
       home: const PhonePage(),
     );
@@ -45,10 +45,10 @@ class _PhonePageState extends State<PhonePage>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 3, vsync: this);
 
-  EchoSDK? _sdk;
+  VoxSDK? _sdk;
   Account? _account;
   Call? _call;
-  StreamSubscription<EchoSDKEvent>? _sub;
+  StreamSubscription<VoxSDKEvent>? _sub;
 
   // ── form state ─────────────────────────────────────────────────────────
   final _user = TextEditingController(text: 'alice@pbx.example.com');
@@ -279,7 +279,7 @@ class _PhonePageState extends State<PhonePage>
 
   void _logLine(String s) {
     // ignore: avoid_print
-    print('BSDKLOG $s');
+    print('VOXLOG $s');
     setState(() {
       _log.add(s.trimRight());
       if (_log.length > 500) _log.removeRange(0, _log.length - 500);
@@ -300,8 +300,8 @@ class _PhonePageState extends State<PhonePage>
     }
 
     try {
-      _sdk ??= await EchoSDK.start(
-        config: const EchoSDKConfig(
+      _sdk ??= await VoxSDK.start(
+        config: const VoxSDKConfig(
           logLevel: 3,
           traceSip: true,
           statsIntervalMs: 2000,
@@ -374,7 +374,7 @@ class _PhonePageState extends State<PhonePage>
 
   // ── event handling ─────────────────────────────────────────────────────
 
-  void _onEvent(EchoSDKEvent ev) {
+  void _onEvent(VoxSDKEvent ev) {
     if (!mounted) return;
     switch (ev) {
       case RegStateEvent e:
@@ -538,7 +538,7 @@ class _PhonePageState extends State<PhonePage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('EchoSDK'),
+        title: const Text('VoxSDK'),
         bottom: TabBar(controller: _tabs, tabs: const [
           Tab(icon: Icon(Icons.account_circle), text: 'Account'),
           Tab(icon: Icon(Icons.call), text: 'Call'),
